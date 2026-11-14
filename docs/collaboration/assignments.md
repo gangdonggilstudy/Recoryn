@@ -1,6 +1,80 @@
 # Recoryn 작업 배정표
 
-현재 단계: 사용자 승인에 따른 P0.1 녹음 코어 구현·로컬 검증 완료. 아래 D 배정은 설계 이력, P 배정은 첫 구현 이력이다. 후속 구현 배정 전 신규 세션은 온보딩 후 대기한다. 오케스트레이터만 이 표를 수정한다. pane ID는 조회 시점의 식별자이며 재접속 후 재조회한다.
+현재 단계: 사용자 지시에 따라 설계 v1.0의 구현 완료까지 개발한다. 아래 D/P 배정은 완료 이력이며 B 배정이 현재 활성 범위다. 배정 없는 신규 세션은 온보딩 후 대기한다. 오케스트레이터만 이 표를 수정한다. pane ID는 조회 시점의 식별자이며 재접속 후 재조회한다.
+
+## 2026-11-14 강제 재부팅 후 재개
+
+사용자가 worker 탭의 Codex 4세션과 메인 오케스트레이터 재개를 요청했다. 실제 재조회한 Recoryn workspace는 w5, main은 w5:t1/w5:p1, worker는 w5:t2의 기존 4개 pane이다. 저장소의 staged/unstaged/untracked 변경은 복구 입력으로 보존한다. 이전 검증 수치를 현재 snapshot의 통과로 재사용하지 않는다.
+
+| 재개 배정 | 담당 pane | 이번 쓰기 범위 | 수락 기준 및 시작 순서 | 상태 |
+| --- | --- | --- | --- | --- |
+| R00 / B10 | root / w5:p1 | 협업·공용 계약·구현 증거, 공용 패키지·CI·CLI, models/*, app/inference.py 및 관련 기존 root 시험. 아래 worker 소유 파일 제외 | 배정 복구, 기준 회귀, API 조정, 독립 리뷰 통합. 실제 장치·모델·외부 서비스는 미실행 유지 | VERIFIED |
+| R11 / B11·B23·BR11 | w5:p2 | 기존 B11 content/jobs 및 전용 unit 시험, B23 scripts/build_release.py·packaging/*·tests/release/*·release-checklist.md, BR11 기존 지정 리뷰·독립 시험 | 현 reader/remote-intent/resume 및 BR11 재확인 상태를 먼저 점검하고 남은 수정 후 패키징 재개. 원본 보존·무캡처 offscreen/synthetic 시험 | VERIFIED |
+| R12 / B21·B12 | w5:p3 | 기존 B21 전체 지정 파일 및 tests/unit/test_power.py, B12 capture/devices.py·wasapi.py·audio/* 및 전용 unit 시험 | 저장된 부분 구현을 확인하고 B21 증분 전사·편집 보호·power/epoch·미터·Ollama UI·명시 재실행 연결을 이어간다. 공개 API는 root와 조정 | VERIFIED |
+| R13 / B22·BR13·BR23 | w5:p4 | B22 diarization/*·test_diarization.py·test_diarization_contract.py·diarization.md, BR13/BR23 기존 지정 리뷰·독립 시험 | BR23 RECHECKED 증거를 현재 코드와 확인하고 B22의 로컬 전용·선택 의존성·취소·원문 불변 계약 구현 재개. B21과 UI 파일 공유 금지 | VERIFIED |
+| R14 / B14·BR14·BR24·BR30 | w5:p5 | 기존 B14/B14U security/*·diagnostics/*·ui/privacy.py 및 지정 시험, BR14/24/30 기존 리뷰·독립 시험, tests/integration/test_ollama_runtime_independent.py | 보안·게시·모델 검토의 현재 미해결 항목 확인, ManagedOllama 독립 반례·owned-process 종료·attestation 검토. 대상 root 코드 직접 수정 금지 | VERIFIED |
+
+새 worker는 온보딩 후 현재 diff를 읽고 이 배정 범위에서 이어간다. 추가 세션 생성·위임과 Git 인덱스/commit/push 조작은 금지한다. 작성자는 자체 시험과 REVIEW_READY를 보고하고 독립 검토자가 재확인한다. 인프라 권한 오류는 제품 실패와 분리한다.
+
+R11과 R13의 ONBOARDING_READY를 root가 수신했다. 두 세션 모두 문서·담당 diff 확인, 기존 변경 보존, 소유권 충돌 없음과 핵심 규칙·미검증 범위를 보고했다. R11은 복구 후 관련 회귀 352 PASS를 보고했으며 최종 통합 수치로 합산하지 않는다. 사용자는 배정 범위의 지시를 재확인 없이 전달하고 작업 결과를 오케스트레이터가 받아 검증 후 서버로 push하도록 재확인했다. worker의 Git 조작 금지는 유지한다.
+
+R12도 ONBOARDING_READY와 관련 197 PASS를 보고했다. 기존 API로 B21 배선을 이어가며 ManagedOllama의 readiness·수명 수정은 root/R14 경계에서 조정한다. R14의 독립 Ollama 후속 반례는 root가 8 FAIL/28 PASS로 재현했다. 이를 위한 추가 배정: root는 models/ollama.py·새 models 하위 수명 모듈·전용 unit 시험과 providers/contracts.py·_common.py의 선택 실행 guard 계약을 작성한다. R14는 security/gateway.py의 선택 dispatch_guard 및 for_session 보존, ui/privacy.py의 고정 proof guard 연결과 전용 시험을 작성한다. guard 순서는 consent → ledger → owner이며 owner는 consent를 역호출하지 않는다. R14 작성분은 R13이 독립 재확인하며 root helper는 R14가 기존 원 반례로 재확인한다. 기존 trusted static attestation API는 호환하고 managed proof는 종료·owner 교체·파일 변경 시 무효화한다.
+
+R13의 B22는 자체 55 PASS·strict mypy 9파일과 함께 REVIEW_READY다. R11의 B23은 자체 371 PASS 및 source smoke/정적 검사 보고를 수신했으며 대형 frozen build는 root의 최종 snapshot에서 수행한다. 교차 검토를 추가 배정했다: BR41/R11은 diarization 읽기 전용, docs/reviews/product-diarization-review.md·tests/integration/test_diarization_independent.py만 작성한다. BR42/R13은 packaging 및 build_release.py 읽기 전용, docs/reviews/product-release-review.md·tests/integration/test_release_independent.py만 작성한다. R13은 BR42 전 새 B14 guard의 BR23 독립 재확인도 수행한다. 작성자 단독 종결은 금지한다.
+
+R12/B21은 변경 runtime 6파일·관련 시험과 자체 350 PASS를 제출해 REVIEW_READY로 동결했다. 최신 B21의 BR13 AI/편집/모델·근거 검토는 R13에게 기존 BR13 리뷰·독립 시험 범위로 재배정했다. 최신 desktop/power/control lane의 BR12는 B21 작성자가 아닌 R11에게 기존 BR12 리뷰·독립 시험 범위를 이전했다. R12는 root 작성 CI·pyproject·공용 계약·복구 증거만 독립 검토하는 BR44를 맡으며 docs/reviews/product-integration-review.md만 작성한다. 자신의 B21 작성분 최종 승인과 분리한다.
+
+후속 판정: BR41-01은 R11 원 반례 재확인으로 RECHECKED, BR30-01~09는 R14의 독립 66 PASS/관련 297 PASS와 최종 hash로 RECHECKED다. BR23 새 guard/DTO는 R13 독립 43 PASS로 REVIEW_READY, 신규 OPEN 0건이다. R13은 BR42 수정 원 반례 포함 90 PASS를 보고했으며 문서 재확인 마감 중이다. BR13-07 S2(GUI tick에서 in-flight owner handoff lock 대기)는 R13 독립 1 FAIL로 발견되어 R12/B21을 WORKING으로 되돌리고 비동기 attestation 검사·늦은 결과 세대 보호를 재배정했다. R12의 BR44 독립 문서 역할과 B21 수정자 역할은 분리한다. root 최종 artifact·전체 회귀는 이 수정과 리뷰가 끝난 snapshot에서 다시 고정한다.
+
+최종 재동결: BR12-09/R11 및 BR13-07/R13의 최종 runtime hash·원 반례가 RECHECKED이고 BR44-01~03도 RECHECKED다. R15는 R14에게 docs/reviews/product-final-qa.md만 추가 배정해 독립 전체 실행·coverage·전후 source/test/config map·정적 검사를 수행한다. 첫 R15 실행은 1443 PASS/fixture 1 FAIL이며 통과로 마감하지 않는다. QA-R15-01의 status JSON 존재/쓰기 경쟁을 교정하기 위해 root에 test_model_runtime_independent.py·test_ollama_runtime_independent.py·test_ollama.py의 합성 coordination receipt 게시 부분만 임시 재배정했다. 같은 디렉터리의 staging→replace로만 교정하고 제품/원 oracle·종료 assertion·timeout은 변경하지 않는다. R15가 새 시험 map으로 전체 재확인하며 최초 실패/이력을 보존한다. runtime/config와 최종 EXE/wheel 입력은 변경하지 않는다.
+
+최종 통합 판정: R15 재동결 실행 1444 PASS/실패·skip·xfail 0, line 93.37%/branch 86.89%, 핵심 package 분리 예산·Ruff/format/mypy 모두 PASS다. source/test/config 132파일의 전후 LF tree SHA는 `c3a9df87b4545e016652ad13c01605bba1ac6870d8f594ad884a613b20673b64`이며 root도 같은 값을 독립 재현했다. 원 검토자의 RECHECKED와 실제 hash를 대조해 이번 개발 증분 발견을 root가 CLOSED 처리한다. root 최종 EXE 후보의 frozen smoke·TEMP 설치/제거·원본 canary·wheel 격리 실행과 runtime 67/build input 79파일 일치도 PASS다. R00/R11~R14 및 B11~B23의 VERIFIED는 이 개발 증분의 코드·오프라인 계약 검증이며 전체 설계 v1.0·실장비·실모델·G3/G4/공식 릴리스 완료가 아니다. B10의 전체 제품 개발 책임은 계속 활성이다. 후속 상태와 실제 Git 출판 결과는 product-results 후단 및 commit/원격 ref로 확인한다. worker 4세션은 추가 배정 대기 상태로 유지하며 root만 commit/push한다.
+
+## 활성 제품 구현 배정
+
+상세 파일·API·수락 기준은 [제품 구현 계약](../implementation/product-contracts.md)을 따른다. 이번 단계의 작성자 배정이며 독립 리뷰는 작성 완료 후 다른 세션에 다시 배정한다.
+
+| 배정 | 역할 / pane | 수정 허용 범위 | 핵심 수락 기준 | 상태 |
+| --- | --- | --- | --- | --- |
+| B10 | 오케스트레이터·UX·릴리스 / w5:p1 | 계약·협업 문서, app/*, ui/*, models/*, cli.py, 패키지·CI·scripts, UI/E2E/model 시험 | 전체 기능 연결, 실제 검증 범위·근거 기록, 독립 리뷰 통합, 최종 commit/push | WORKING |
+| B11 | 아키텍트·데이터 / w5:p2 | content/*, jobs/__init__.py 및 runner.py, 전용 content/runner/jobs 유닛 시험 | immutable revision, CAS·삭제·취소 경쟁, Job 결과 단일 transaction 게시, bounded runner | VERIFIED |
+| B12 | Windows 오디오 / w5:p3 | capture/wasapi.py 및 devices.py, audio/*, 전용 wasapi/audio 유닛 시험 | native format·packet timestamp·stop ack, fake COM 경계, gap·정렬·VAD·파생 변환 | VERIFIED |
+| B13 | ML·AI / w5:p4 | providers/*, transcription/*, summarization/*, 전용 provider/contract 시험, provider-matrix.md | 선택 로컬 모델, STT/요약 분리, Gateway 경유, 부분·근거·긴 문서 계약 | VERIFIED |
+| B14 / B14U | 보안·QA·동의 UX / w5:p5 | security/*, diagnostics/*, ui/privacy.py, 전용 security/diagnostics 유닛 및 test_gateway.py, tests/ui/test_privacy_ui.py | DNS 전 기본 차단, 철회·원격 UNKNOWN·비용 영속, Windows vault, 비밀 가림, 독립 제공업체·동의·예산 UI | VERIFIED |
+
+모든 세션은 추가 위임·Git 변경·승인 대리·실사용자 녹음·유료 호출을 하지 않는다. 공개 API 변경은 root에 제안하고 배정 확정 후 반영한다. 기존 P0.1 증거는 새 코드까지 승인한 것으로 계산하지 않는다.
+
+### 제품 독립 리뷰 배정
+
+작성 파일 수정과 리뷰 종결은 분리한다. 아래 리뷰는 작성 완료 후 시작하고 대상 수정은 작성자에게 돌린다. 리뷰어는 지정 리뷰 문서와 독립 반례 시험만 수정한다.
+
+| 리뷰 | 검토자 | 읽기 전용 대상 | 수정 허용 결과 | 상태 |
+| --- | --- | --- | --- | --- |
+| BR13 | B13 ML / w5:p4 | B10 app/ai.py, inference.py, media.py, models/*, ui/ai_bridge.py·content.py 및 관련 시험 | docs/reviews/product-ai-integration.md, tests/integration/test_ai_independent.py | VERIFIED |
+| BR12 | R11 아키텍트 / w5:p2 | B10 app/desktop.py·recording.py, ui/main.py·tasks.py·meter.py, media.py 및 관련 시험 | docs/reviews/product-desktop-audio.md, tests/integration/test_desktop_independent.py | VERIFIED |
+| BR11 | B11 아키텍트 / w5:p2 | B12 capture/devices.py·wasapi.py, audio/* 및 관련 시험 | docs/reviews/product-native-audio.md, tests/integration/test_native_independent.py | VERIFIED |
+| BR14 | B14 보안·QA / w5:p5 | B13 providers/*, transcription/*, summarization/* 및 관련 시험 | docs/reviews/product-provider-security.md, tests/integration/test_provider_security_independent.py | VERIFIED |
+| BR23 | B13 ML·보안 / w5:p4 | B14 security/*·diagnostics/*·ui/privacy.py 및 관련 시험 | docs/reviews/product-egress-review.md, tests/integration/test_egress_independent.py | VERIFIED |
+| BR24 | B14 QA·아키텍처 / w5:p5 | B11 jobs/*·content/* 및 B10 library._active_jobs 연동 | docs/reviews/product-publication-review.md, tests/integration/test_publication_independent.py | VERIFIED |
+| BR30 | B14 보안·QA / w5:p5 | B10 models/*·app/inference.py, model/inference 유닛 | docs/reviews/product-model-runtime.md, tests/integration/test_model_runtime_independent.py | VERIFIED |
+
+이후 B11/B12/B14의 작성 완료에 따라 다른 세션의 리뷰를 추가한다. B10의 native capture 생명주기는 B12 오디오 검토, 삭제·전송 UI는 B14 외 검토자가 별도로 검증한다. B10에 storage/library.py의 _active_jobs만 추가 배정한다. 영속 job_sessions 바인딩이 있는 해당 세션 Job 또는 미바인딩 Job만 삭제를 차단하며 기존 미바인딩 계약은 유지한다. 기존 storage 회귀와 독립 검토를 요구한다.
+
+### 후속 기능 구현 배정
+
+이 표의 파일 소유권은 해당 배정 동안 이전 B10/B12 소유권보다 우선한다. 기존 교차 검토는 이전 snapshot의 증거이며 새 작성분에는 다른 세션의 리뷰가 필요하다.
+
+| 배정 | 작성자 | 수정 허용 파일 | 수락 기준 | 상태 |
+| --- | --- | --- | --- | --- |
+| B21 | 오디오·데스크톱 UX / w5:p3 | app/ai.py·desktop.py·media.py, app/power.py, ui/main.py·ai_bridge.py·content.py·models.py·meter.py·power.py, tests/e2e/test_ai_workflow.py, tests/unit/test_desktop.py·test_media.py·test_power.py, tests/ui/test_desktop_ui.py·test_content_ui.py·test_models_ui.py·test_live_ui.py | 확정 신규 청크만 증분/VAD 임시 전사, 편집 보호·전체 정정본, AI 준비와 녹음 제어 분리, power/sleep 후 새 epoch, 메타데이터·미터, local Ollama helper UI 연결, 취소·UNKNOWN 명시 재실행, 근거 재생 무결성 | VERIFIED |
+| B23 | 아키텍트·릴리스 / w5:p2 | scripts/build_release.py, packaging/*, tests/release/*, docs/implementation/release-checklist.md | frozen spawn entry, 동적 Qt onedir EXE·사용자 범위 설치/제거·원본 유지, 실제 포함 파일 inventory/SBOM/license/hash, 조용한 합성·offscreen smoke | VERIFIED |
+| B22 | ML·선택 화자 구분 / w5:p4 | diarization/*, tests/unit/test_diarization.py, tests/contract/test_diarization_contract.py, docs/implementation/diarization.md | 검증된 로컬 ONNX만 선택 로드, 미설치·미지원 capability, 익명 speaker·겹침/불확실·범위 명시, 원문 불변 파생 revision, owned process 취소·무전송 fake 시험 | VERIFIED |
+
+B21의 privacy.py, models/*, app/inference.py, jobs/*, content/*, capture/*, audio/*는 읽기 전용이다. 공개 API 변경은 제안 후 root 확정을 받는다. B23은 현재 reader/remote-intent/resume 및 BR11 재확인을 완료한 뒤 시작한다. 버전·공용 CI·README·최종 artifact 생성과 배포 승인은 root가 통합한다.
+
+B22는 BR23 독립 재확인 후 시작한다. sherpa-onnx 등 공식 offline ONNX API와 모델 라이선스를 확인해 구체 버전·필수 파일을 먼저 제안한다. pickle/임의 remote code/SDK 자동 다운로드는 허용하지 않는다. capability의 최대 처리 범위와 CPU/GPU 지원을 사실대로 표시하고 모델 정확도·화자 신원 식별을 주장하지 않는다. 실제 가중치·음성·원격 서비스 시험은 실행하지 않는다. 의존성·UI 연결은 root/B21이 통합한다.
+
+## 완료한 설계 배정
 
 | 배정 ID | 역할 | 현재 pane | 소유 파일 | 수락 기준 | 상태 |
 | --- | --- | --- | --- | --- | --- |

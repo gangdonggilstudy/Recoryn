@@ -40,6 +40,7 @@ def _parser() -> argparse.ArgumentParser:
         "--root", type=Path, default=_default_root(), help="local library directory"
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("gui", help="open the optional desktop; recording requires user action")
     simulate = commands.add_parser("simulate", help="record two deterministic synthetic tracks")
     simulate.add_argument("--seconds", type=_duration, default=1.0)
     commands.add_parser("list", help="list stored sessions")
@@ -127,8 +128,8 @@ def _export(library: Any, session_id: str, output: Path) -> dict[str, Any]:
         verified = verify_bundle(library.root / chunk.relative_path)
         if verified.sha256 != chunk.sha256:
             raise ValueError("Source bundle does not match the catalog")
-        if chunk.format.sample_type not in {"s16le", "s24le", "s32le"}:
-            raise ValueError("This increment exports integer PCM WAV only")
+        if chunk.format.sample_type not in {"s16le", "s24le", "s32le", "f32le"}:
+            raise ValueError("Unsupported export PCM format")
         grouped[(chunk.track_id, chunk.epoch_id)].append(chunk)
     destination = _output_directory(output, library.root)
     files: list[dict[str, Any]] = []
@@ -210,7 +211,11 @@ def _export_contiguous_runs(
                         stream = stack.enter_context((destination / filename).open("xb"))
                         audio = stack.enter_context(wave.open(stream, "wb"))
                         audio.setnchannels(format.channels)
-                        audio.setsampwidth(format.frame_bytes // format.channels)
+                        audio.setsampwidth(
+                            2
+                            if format.sample_type == "f32le"
+                            else format.frame_bytes // format.channels
+                        )
                         audio.setframerate(format.sample_rate)
                         entry = {
                             "file": filename,
@@ -227,6 +232,10 @@ def _export_contiguous_runs(
                     payload = pcm.read(record["length"])
                     if len(payload) != record["length"]:
                         raise ValueError("Source media changed during export")
+                    if format.sample_type == "f32le":
+                        from recoryn.app.media import _int16
+
+                        payload = _int16(payload, format)
                     audio.writeframesraw(payload)
                     entry["source_ranges"].append(
                         {
@@ -249,6 +258,14 @@ def _export_contiguous_runs(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "gui":
+        try:
+            from recoryn.ui import launch
+
+            return launch(str(args.root))
+        except ImportError:
+            _print({"error": "DESKTOP_DEPENDENCY_MISSING", "install": "recoryn[desktop]"})
+            return 1
     # Help/version return before optional runtime modules or storage initialization.
     from recoryn.storage import Library
 
@@ -273,6 +290,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif args.command == "recover":
                 result = library.recover_session(args.session_id)
             elif args.command == "delete":
+                from recoryn.security import ConsentStore
+
+                with ConsentStore(library.root / "security.sqlite") as consents:
+                    consents.revoke_session(args.session_id)
                 result = library.delete_session(args.session_id)
             else:
                 result = _export(library, args.session_id, args.output)

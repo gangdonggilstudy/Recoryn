@@ -2,7 +2,7 @@
 
 ## Scope and authority
 
-사용자의 최신 지시가 우선한다. 현재 단계는 **P0.1 녹음 코어 검증 완료 및 후속 P0 개발 준비**다. 사용자가 개발 진행을 승인했으며 오케스트레이터의 명시적 배정 범위에서 애플리케이션 코드와 시험을 작성한다. [구현 계약](docs/implementation/p0-contracts.md), [현재 실행 결과](docs/implementation/p0-results.md)와 작업 배정표를 따른다. 설계 완성과 구현 완료 및 Windows 실장비 검증 완료를 구분한다. 실제 마이크·시스템 소리 캡처, 모델 다운로드와 클라우드 호출은 현재 자동 검증 범위에 포함하지 않는다.
+사용자의 최신 지시가 우선한다. 현재 단계는 **설계 v1.0의 구현 완료를 목표로 한 개발**이다. 사용자가 전체 구현 진행을 승인했으며 오케스트레이터의 명시적 배정 범위에서 애플리케이션 코드와 시험을 작성한다. [제품 구현 계약](docs/implementation/product-contracts.md), [기존 코어 계약](docs/implementation/p0-contracts.md), [현재 실행 결과](docs/implementation/p0-results.md)와 작업 배정표를 따른다. 설계 완성과 구현 완료 및 Windows 실장비 검증 완료를 구분한다. 사용자 조작 없는 실제 음성 캡처, 모델 다운로드와 유료 클라우드 호출은 자동 검증하지 않는다.
 
 ## Start every new session
 

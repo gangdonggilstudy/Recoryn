@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -80,9 +80,11 @@ def _fence(value: object) -> int:
 class JobStore:
     """SQLite-linearized Job/Attempt state, with at most three local attempts.
 
-    All methods except claim return JobRecord; recover_abandoned returns a list
-    of affected JobRecords. Missing IDs raise KeyError. Stale execution tokens
-    raise StateConflict. Cancellation is a durable request, not a worker kill.
+    Mutating state transitions return JobRecord; claim returns AttemptRecord,
+    recovery returns affected JobRecords, reader/intent writes return None and
+    local_reader_active returns bool or unknown(None). Missing IDs raise KeyError.
+    Stale execution tokens raise StateConflict. Cancellation is a durable request,
+    not a worker kill.
     Recovery must only be invoked by the sole restarting coordinator after all
     previous workers have stopped; it does not infer owner liveness from a PID.
     Explicit create job_id values are durable request identities: deduplication
@@ -96,6 +98,7 @@ class JobStore:
             raise ValidationError("db_path must be a Path")
         self._lock = RLock()
         self._closed = False
+        self._in_publication = False
         self._db = sqlite3.connect(
             db_path, timeout=5.0, isolation_level=None, check_same_thread=False
         )
@@ -137,6 +140,22 @@ class JobStore:
                 );
                 INSERT OR IGNORE INTO job_create_receipts(request_job_id, job_id)
                     SELECT job_id, job_id FROM jobs;
+                CREATE TABLE IF NOT EXISTS job_sessions (
+                    job_id TEXT PRIMARY KEY REFERENCES jobs(job_id), session_id TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS job_session_lookup ON job_sessions(session_id);
+                CREATE TABLE IF NOT EXISTS job_local_readers (
+                    job_id TEXT PRIMARY KEY REFERENCES jobs(job_id),
+                    attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+                    fence INTEGER NOT NULL CHECK(fence > 0),
+                    active INTEGER NOT NULL CHECK(active IN (0,1))
+                );
+                CREATE TABLE IF NOT EXISTS job_remote_intents (
+                    attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+                    reservation_id TEXT NOT NULL, job_id TEXT NOT NULL REFERENCES jobs(job_id),
+                    fence INTEGER NOT NULL CHECK(fence > 0),
+                    PRIMARY KEY(attempt_id,reservation_id)
+                );
                 COMMIT;
             """)
         except BaseException:
@@ -154,9 +173,13 @@ class JobStore:
     def _ensure_open(self) -> None:
         if self._closed:
             raise StateConflict("JobStore is closed")
+        if self._in_publication:
+            raise StateConflict("Job publication callbacks cannot reenter JobStore")
 
     def close(self) -> None:
         with self._lock:
+            if self._in_publication:
+                raise StateConflict("Job publication callbacks cannot close JobStore")
             if not self._closed:
                 self._db.close()
                 self._closed = True
@@ -250,6 +273,12 @@ class JobStore:
         _text(owner, "owner", 256)
         with self._transaction():
             job = self._get(job_id)
+            self._session_live(job_id)
+            reader = self._db.execute(
+                "SELECT active FROM job_local_readers WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if reader is not None and reader[0]:
+                raise StateConflict("LOCAL_READER_STILL_ACTIVE")
             claimable = job.state in (JobState.QUEUED, JobState.BACKOFF) or (
                 job.state == JobState.BLOCKED and job.blocked_reason == "ABANDONED"
             )
@@ -279,8 +308,85 @@ class JobStore:
                 "error_code=NULL, blocked_reason=NULL, state_version=state_version+1 WHERE job_id=?",
                 (attempt.fence, attempt.attempt_no, attempt.attempt_id, owner, job_id),
             )
+            self._db.execute(
+                "INSERT INTO job_local_readers VALUES(?,?,?,0) ON CONFLICT(job_id) DO UPDATE SET "
+                "attempt_id=excluded.attempt_id,fence=excluded.fence,active=0",
+                (job_id, attempt.attempt_id, attempt.fence),
+            )
             self._event(job_id)
             return attempt
+
+    def _reader_identity(self, attempt: AttemptRecord) -> None:
+        if not isinstance(attempt, AttemptRecord):
+            raise ValidationError("READER_ATTEMPT_REQUIRED")
+        _text(attempt.job_id, "job_id", 128)
+        _text(attempt.attempt_id, "attempt_id", 128)
+        _text(attempt.owner, "owner", 256)
+        _fence(attempt.fence)
+        if type(attempt.attempt_no) is not int or not 1 <= attempt.attempt_no <= self.MAX_ATTEMPTS:
+            raise ValidationError("INVALID_READER_ATTEMPT_NUMBER")
+        row = self._db.execute(
+            "SELECT r.active FROM job_local_readers r JOIN attempts a "
+            "ON a.attempt_id=r.attempt_id WHERE r.job_id=? AND r.attempt_id=? AND r.fence=? "
+            "AND a.job_id=r.job_id AND a.fence=r.fence AND a.owner=? AND a.attempt_no=?",
+            (attempt.job_id, attempt.attempt_id, attempt.fence, attempt.owner, attempt.attempt_no),
+        ).fetchone()
+        if row is None:
+            raise StateConflict("STALE_LOCAL_READER")
+
+    def reader_started(self, attempt: AttemptRecord) -> None:
+        """Persist local-reader ownership before task I/O; cancellation/deletion win.
+
+        Only one physical task may use the current attempt. This receipt is not
+        a remote outcome and does not authorize publication or detached readers.
+        """
+        with self._transaction():
+            self._reader_identity(attempt)
+            self._active(attempt.job_id, attempt.attempt_id, attempt.fence)
+            self._db.execute(
+                "UPDATE job_local_readers SET active=1 WHERE job_id=?", (attempt.job_id,)
+            )
+
+    def reader_finished(self, attempt: AttemptRecord) -> None:
+        """Idempotent local I/O ACK after task exit, independent of logical fence.
+
+        Cancel/failure can advance the Job fence while the original task is
+        unwinding. Its immutable Attempt identity may ACK only its own receipt,
+        including after session deletion. A replaced attempt may never ACK it.
+        """
+        with self._transaction():
+            self._reader_identity(attempt)
+            self._db.execute(
+                "UPDATE job_local_readers SET active=0 WHERE job_id=?", (attempt.job_id,)
+            )
+
+    def local_reader_active(self, job_id: str) -> bool | None:
+        """True=local reader alive, False=explicit inactive, None=legacy/unknown."""
+        _text(job_id, "job_id", 128)
+        with self._lock:
+            self._ensure_open()
+            self._get(job_id)
+            row = self._db.execute(
+                "SELECT active FROM job_local_readers WHERE job_id=?", (job_id,)
+            ).fetchone()
+            return bool(row[0]) if row is not None else None
+
+    def mark_remote_intent(self, attempt: AttemptRecord, reservation_id: str) -> None:
+        """Commit a reservation identity before any remote dispatch may occur.
+
+        Store IDs only, never credentials, request/response bodies or endpoints.
+        This conservative marker is not proof that bytes were sent. Recovery of
+        its still-running attempt must preserve UNKNOWN rather than redispatch.
+        Split requests can record multiple immutable reservation IDs per attempt.
+        """
+        _text(reservation_id, "reservation_id", 128)
+        with self._transaction():
+            self._reader_identity(attempt)
+            self._active(attempt.job_id, attempt.attempt_id, attempt.fence)
+            self._db.execute(
+                "INSERT OR IGNORE INTO job_remote_intents VALUES(?,?,?,?)",
+                (attempt.attempt_id, reservation_id, attempt.job_id, attempt.fence),
+            )
 
     def cancel(self, job_id: str) -> JobRecord:
         _text(job_id, "job_id", 128)
@@ -308,8 +414,46 @@ class JobStore:
             )
             return self._event(job_id)
 
-    def _active(self, job_id: str, attempt_id: str, fence: int) -> JobRecord:
+    def resume(self, job_id: str) -> JobRecord:
+        """Explicitly retry known blocked work after caller policy revalidation.
+
+        This does not grant consent/budget or settle remote outcomes. UNKNOWN
+        and unconfirmed cancellation are never cleared. A never-dispatched Job
+        needs no reader ACK; a previous attempt requires an explicit inactive
+        receipt. Attempts/checkpoints/history and the three-attempt cap remain.
+        """
+        _text(job_id, "job_id", 128)
+        with self._transaction():
+            job = self._get(job_id)
+            self._session_live(job_id)
+            if (
+                job.state != JobState.BLOCKED
+                or job.blocked_reason
+                not in {"CONSENT", "AUTH", "RESOURCE", "BUDGET", "CAPABILITY", "ABANDONED"}
+                or job.cancel_requested
+                or job.attempt_count >= self.MAX_ATTEMPTS
+            ):
+                raise StateConflict("JOB_NOT_RESUMABLE")
+            reader = self._db.execute(
+                "SELECT active FROM job_local_readers WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if (reader is not None and reader[0]) or (
+                reader is None and (job.attempt_id is not None or job.attempt_count != 0)
+            ):
+                raise StateConflict("LOCAL_READER_ACK_REQUIRED")
+            self._db.execute(
+                "UPDATE jobs SET state='QUEUED',blocked_reason=NULL,error_code=NULL,owner=NULL, "
+                "fence=fence+1,state_version=state_version+1 WHERE job_id=?",
+                (job_id,),
+            )
+            return self._event(job_id)
+
+    def _active(
+        self, job_id: str, attempt_id: str, fence: int, *, check_session: bool = True
+    ) -> JobRecord:
         job = self._get(job_id)
+        if check_session:
+            self._session_live(job_id)
         if (
             job.state != JobState.RUNNING
             or job.cancel_requested
@@ -318,6 +462,57 @@ class JobStore:
         ):
             raise StateConflict("attempt is stale or no longer authorized to publish")
         return job
+
+    def bind_session(self, job_id: str, session_id: str) -> None:
+        """One immutable binding; terminal metadata survives session deletion."""
+        _text(job_id, "job_id", 128)
+        _text(session_id, "session_id", 128)
+        with self._transaction():
+            self._get(job_id)
+            row = self._db.execute(
+                "SELECT session_id FROM job_sessions WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if row is not None:
+                if row[0] != session_id:
+                    raise StateConflict("JOB_SESSION_REBIND_FORBIDDEN")
+                return
+            self._db.execute("INSERT INTO job_sessions VALUES(?,?)", (job_id, session_id))
+            self._session_live(job_id)
+
+    def list_for_session(self, session_id: str) -> list[JobRecord]:
+        _text(session_id, "session_id", 128)
+        with self._lock:
+            self._ensure_open()
+            rows = self._db.execute(
+                "SELECT j.job_id FROM jobs j JOIN job_sessions s "
+                "ON j.job_id=s.job_id WHERE s.session_id=? ORDER BY j.rowid",
+                (session_id,),
+            ).fetchall()
+            return [self._get(row[0]) for row in rows]
+
+    def _session_live(self, job_id: str) -> None:
+        row = self._db.execute(
+            "SELECT session_id FROM job_sessions WHERE job_id=?", (job_id,)
+        ).fetchone()
+        if row is None:
+            return
+        tables = {
+            r[0] for r in self._db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if (
+            "deleted_sessions" in tables
+            and self._db.execute(
+                "SELECT 1 FROM deleted_sessions WHERE session_id=?", (row[0],)
+            ).fetchone()
+            is not None
+        ):
+            raise StateConflict("JOB_SESSION_DELETED")
+        if (
+            "sessions" in tables
+            and self._db.execute("SELECT 1 FROM sessions WHERE session_id=?", (row[0],)).fetchone()
+            is None
+        ):
+            raise StateConflict("JOB_SESSION_MISSING")
 
     def complete(self, job_id: str, attempt_id: str, fence: int, result_ref: str) -> JobRecord:
         _text(job_id, "job_id", 128)
@@ -334,16 +529,147 @@ class JobStore:
             ):
                 return job
             self._active(job_id, attempt_id, fence)
+            return self._finish(job_id, attempt_id, result_ref)
+
+    def _finish(self, job_id: str, attempt_id: str, result_ref: str) -> JobRecord:
+        self._db.execute(
+            "UPDATE attempts SET state='SUCCEEDED', result_ref=? WHERE attempt_id=?",
+            (result_ref, attempt_id),
+        )
+        self._db.execute(
+            "UPDATE jobs SET state='SUCCEEDED', result_ref=?, owner=NULL, "
+            "state_version=state_version+1 WHERE job_id=?",
+            (result_ref, job_id),
+        )
+        return self._event(job_id)
+
+    def complete_with(
+        self,
+        job_id: str,
+        attempt_id: str,
+        fence: int,
+        publisher: Callable[[sqlite3.Connection], str],
+    ) -> JobRecord:
+        """Commit a trusted SQL-only publisher, result and terminal event atomically.
+
+        The callback must not reenter stores, do external I/O, alter transaction
+        boundaries or retain the connection. Python code is trusted, not sandboxed.
+        Successful replay returns the committed result without calling it twice.
+        """
+        return self._publish_with(job_id, attempt_id, fence, publisher, complete=True)[0]
+
+    @staticmethod
+    def _publication_authorizer(
+        action: int, name: str | None, value: str | None, database: str | None, trigger: str | None
+    ) -> int:
+        allowed = {
+            sqlite3.SQLITE_SELECT,
+            sqlite3.SQLITE_READ,
+            sqlite3.SQLITE_INSERT,
+            sqlite3.SQLITE_UPDATE,
+            sqlite3.SQLITE_DELETE,
+            sqlite3.SQLITE_FUNCTION,
+            sqlite3.SQLITE_RECURSIVE,
+        }
+        protected = {
+            "jobs",
+            "attempts",
+            "events",
+            "job_sessions",
+            "job_create_receipts",
+            "job_checkpoints",
+            "job_local_readers",
+            "job_remote_intents",
+            "sessions",
+            "chunks",
+            "storage_events",
+            "deleted_sessions",
+        }
+        if (
+            action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE)
+            and name in protected
+        ):
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_PRAGMA and name == "user_version" and value is None:
+            return sqlite3.SQLITE_OK
+        return sqlite3.SQLITE_OK if action in allowed else sqlite3.SQLITE_DENY
+
+    def _publish_with(
+        self,
+        job_id: str,
+        attempt_id: str,
+        fence: int,
+        publisher: Callable[[sqlite3.Connection], str],
+        *,
+        complete: bool,
+    ) -> tuple[JobRecord, str]:
+        _text(job_id, "job_id", 128)
+        _text(attempt_id, "attempt_id", 128)
+        _fence(fence)
+        if not callable(publisher) or type(complete) is not bool:
+            raise ValidationError("Invalid Job publisher")
+        with self._transaction():
+            job = self._get(job_id)
+            if (
+                complete
+                and job.state == JobState.SUCCEEDED
+                and job.attempt_id == attempt_id
+                and job.fence == fence
+                and job.result_ref is not None
+            ):
+                return job, job.result_ref
+            self._active(job_id, attempt_id, fence)
+            self._in_publication = True
+            self._db.set_authorizer(self._publication_authorizer)
+            try:
+                result_ref = publisher(self._db)
+                _text(result_ref, "result_ref")
+            finally:
+                self._db.set_authorizer(None)
+                self._in_publication = False
+            self._active(job_id, attempt_id, fence)
+            if complete:
+                return self._finish(job_id, attempt_id, result_ref), result_ref
+            # A checkpoint is discoverable after restart, but is not the final
+            # Job result and does not confer permission to change active content.
             self._db.execute(
-                "UPDATE attempts SET state='SUCCEEDED', result_ref=? WHERE attempt_id=?",
-                (result_ref, attempt_id),
+                "CREATE TABLE IF NOT EXISTS job_checkpoints ("
+                "job_id TEXT NOT NULL REFERENCES jobs(job_id), attempt_id TEXT NOT NULL, "
+                "result_ref TEXT NOT NULL, UNIQUE(job_id,result_ref))"
             )
             self._db.execute(
-                "UPDATE jobs SET state='SUCCEEDED', result_ref=?, owner=NULL, "
+                "INSERT OR IGNORE INTO job_checkpoints VALUES(?,?,?)",
+                (job_id, attempt_id, result_ref),
+            )
+            self._db.execute(
+                "UPDATE jobs SET state_version=state_version+1 WHERE job_id=?", (job_id,)
+            )
+            return self._event(job_id), result_ref
+
+    def _ack_cancelled(self, attempt: AttemptRecord, *, outcome_known: bool = True) -> JobRecord:
+        """Local worker acknowledged cancellation; never infer a remote abort."""
+        with self._transaction():
+            job = self._get(attempt.job_id)
+            if (
+                job.state != JobState.CANCEL_REQUESTED
+                or job.attempt_id != attempt.attempt_id
+                or job.fence != attempt.fence + 1
+            ):
+                return job
+            self._db.execute(
+                "UPDATE attempts SET state=? WHERE attempt_id=? AND state='RUNNING'",
+                ("CANCELLED" if outcome_known else "UNKNOWN", attempt.attempt_id),
+            )
+            self._db.execute(
+                "UPDATE jobs SET state=?, blocked_reason=?, owner=NULL, "
                 "state_version=state_version+1 WHERE job_id=?",
-                (result_ref, job_id),
+                (
+                    "CANCELLED" if outcome_known else "BLOCKED",
+                    None if outcome_known else "REMOTE_UNKNOWN",
+                    attempt.job_id,
+                ),
             )
-            return self._event(job_id)
+            return self._event(attempt.job_id)
 
     def fail(
         self,
@@ -361,7 +687,15 @@ class JobStore:
         if type(retryable) is not bool or type(outcome_known) is not bool:
             raise ValidationError("retryable and outcome_known must be bool")
         with self._transaction():
-            job = self._active(job_id, attempt_id, fence)
+            # Retiring an authorized attempt writes no content. Permit failure
+            # acknowledgement after deletion so cleanup cannot remain RUNNING.
+            job = self._active(job_id, attempt_id, fence, check_session=False)
+            try:
+                self._session_live(job_id)
+            except StateConflict:
+                # Deletion outranks local retry, while remote UNKNOWN remains
+                # UNKNOWN below until it can be reconciled without new dispatch.
+                retryable = False
             if not outcome_known or error_code == "REMOTE_OUTCOME_UNKNOWN":
                 state, attempt_state, reason = (
                     JobState.BLOCKED,
@@ -386,16 +720,51 @@ class JobStore:
             )
             return self._event(job_id)
 
-    def recover_abandoned(self) -> list[JobRecord]:
-        """Explicit sole-coordinator recovery; never invoke while workers are alive."""
+    def recover_abandoned(self, *, coordinator_exclusive: bool = False) -> list[JobRecord]:
+        """Recover logical work; only proven coordinator exclusivity clears readers.
+
+        The caller must establish that all previous tasks/owned reader processes
+        have exited. A flag is an explicit attestation, not an OS liveness probe.
+        UNKNOWN outcomes remain UNKNOWN, even when local readers are released.
+        Legacy receipts are made explicit only with that attestation.
+        """
+        if type(coordinator_exclusive) is not bool:
+            raise ValidationError("INVALID_COORDINATOR_EXCLUSIVITY")
         recovered = []
         with self._transaction():
+            if coordinator_exclusive:
+                self._db.execute("UPDATE job_local_readers SET active=0 WHERE active=1")
+                self._db.execute(
+                    "INSERT OR IGNORE INTO job_local_readers "
+                    "SELECT j.job_id,a.attempt_id,a.fence,0 FROM jobs j "
+                    "JOIN attempts a ON a.attempt_id=j.attempt_id AND a.job_id=j.job_id"
+                )
+            elif (
+                self._db.execute(
+                    "SELECT 1 FROM job_local_readers WHERE active=1 LIMIT 1"
+                ).fetchone()
+                is not None
+            ):
+                raise StateConflict("LOCAL_READERS_REQUIRE_EXCLUSIVE_RECOVERY")
             rows = self._db.execute(
                 "SELECT job_id FROM jobs WHERE state IN ('RUNNING','CANCEL_REQUESTED') ORDER BY job_id"
             ).fetchall()
             for row in rows:
                 job = self._get(row[0])
-                if job.cancel_requested:
+                remote = (
+                    self._db.execute(
+                        "SELECT 1 FROM job_remote_intents WHERE job_id=? AND attempt_id=? LIMIT 1",
+                        (job.job_id, job.attempt_id),
+                    ).fetchone()
+                    is not None
+                )
+                if remote:
+                    state, attempt_state, reason = (
+                        JobState.BLOCKED,
+                        AttemptState.UNKNOWN,
+                        "REMOTE_UNKNOWN",
+                    )
+                elif job.cancel_requested:
                     state, attempt_state, reason = JobState.CANCELLED, AttemptState.CANCELLED, None
                 elif job.attempt_count >= self.MAX_ATTEMPTS:
                     state, attempt_state, reason = JobState.FAILED, AttemptState.ABANDONED, None

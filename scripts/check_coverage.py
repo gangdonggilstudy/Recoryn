@@ -10,7 +10,8 @@ from pathlib import Path
 def main(path: Path) -> int:
     report = json.loads(path.read_text(encoding="utf-8"))
     groups: dict[str, list[int]] = {
-        name: [0, 0, 0, 0] for name in ("domain", "capture", "jobs", "storage")
+        name: [0, 0, 0, 0]
+        for name in ("domain", "capture", "jobs", "storage", "security", "content")
     }
     for name, data in report["files"].items():
         normalized = name.replace("\\", "/")

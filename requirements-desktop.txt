@@ -1,0 +1,4 @@
+# QtCore/Gui/Widgets/Multimedia runtime; Python 3.11+ / Windows x64.
+PySide6-Essentials==6.12.0
+PySide6-Addons==6.12.0
+shiboken6==6.12.0

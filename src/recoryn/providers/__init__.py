@@ -1,0 +1,43 @@
+"""Provider contracts; optional runtimes are never imported here."""
+
+from .contracts import (
+    ChunkSummary,
+    ExecutionContext,
+    GatewayLike,
+    LocalModelAttestation,
+    ProgressEvent,
+    ProviderCapabilities,
+    ProviderConfig,
+    ProviderError,
+    SegmentSpan,
+    STTProvider,
+    STTRequest,
+    STTResult,
+    SummaryCheckpoint,
+    SummaryClaim,
+    SummaryProvider,
+    SummaryRequest,
+    SummaryResult,
+    TranscriptSegment,
+)
+
+__all__ = [
+    "ChunkSummary",
+    "ExecutionContext",
+    "GatewayLike",
+    "LocalModelAttestation",
+    "ProgressEvent",
+    "ProviderCapabilities",
+    "ProviderConfig",
+    "ProviderError",
+    "SegmentSpan",
+    "STTProvider",
+    "STTRequest",
+    "STTResult",
+    "SummaryCheckpoint",
+    "SummaryClaim",
+    "SummaryProvider",
+    "SummaryRequest",
+    "SummaryResult",
+    "TranscriptSegment",
+]

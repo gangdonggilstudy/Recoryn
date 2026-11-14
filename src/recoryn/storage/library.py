@@ -581,7 +581,7 @@ class Library:
                 connection.execute(
                     "UPDATE sessions SET generation=? WHERE session_id=?", (generation, session_id)
                 )
-            if has_active_writer(self.root, session_id) or self._active_jobs():
+            if has_active_writer(self.root, session_id) or self._active_jobs(session_id):
                 return {
                     "session_id": session_id,
                     "state": "DELETE_PENDING",
@@ -607,14 +607,55 @@ class Library:
                 )
             return {"session_id": session_id, "state": "DELETED_LOCAL", "deleted": True}
 
-    def _active_jobs(self) -> bool:
+    def _active_jobs(self, session_id: str | None = None) -> bool:
         exists = self._db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'"
         ).fetchone()
         if not exists:
             return False
-        # JobStore currently has no session binding. Fail closed rather than
-        # deleting beneath any active computation whose ownership is unknown.
+        bindings = self._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_sessions'"
+        ).fetchone()
+        if bindings and session_id is not None:
+            readers = self._db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_local_readers'"
+            ).fetchone()
+            if readers:
+                scope = "(job_sessions.session_id IS NULL OR job_sessions.session_id=?)"
+                if (
+                    self._db.execute(
+                        "SELECT 1 FROM jobs LEFT JOIN job_sessions USING(job_id) "
+                        "JOIN job_local_readers USING(job_id) WHERE job_local_readers.active=1 "
+                        "AND " + scope + " LIMIT 1",
+                        (session_id,),
+                    ).fetchone()
+                    is not None
+                ):
+                    return True
+                return (
+                    self._db.execute(
+                        "SELECT 1 FROM jobs LEFT JOIN job_sessions USING(job_id) "
+                        "LEFT JOIN job_local_readers USING(job_id) "
+                        "WHERE jobs.state NOT IN ('SUCCEEDED','FAILED','CANCELLED') "
+                        "AND " + scope + " AND (jobs.state!='BLOCKED' "
+                        "OR job_sessions.session_id IS NULL OR job_local_readers.active IS NULL "
+                        "OR job_local_readers.active!=0) LIMIT 1",
+                        (session_id,),
+                    ).fetchone()
+                    is not None
+                )
+            # Unbound legacy work still fails closed. A known independent session
+            # cannot keep this session's deletion pending forever.
+            return (
+                self._db.execute(
+                    "SELECT 1 FROM jobs LEFT JOIN job_sessions USING(job_id) "
+                    "WHERE jobs.state NOT IN ('SUCCEEDED','FAILED','CANCELLED') "
+                    "AND (job_sessions.session_id IS NULL OR job_sessions.session_id=?) LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                is not None
+            )
+        # Legacy stores cannot identify the source media of an active job.
         return (
             self._db.execute(
                 "SELECT 1 FROM jobs WHERE state NOT IN ('SUCCEEDED','FAILED','CANCELLED') LIMIT 1"

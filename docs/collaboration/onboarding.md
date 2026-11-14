@@ -8,6 +8,7 @@
 4. [협업 규칙](workflow.md), [작업 배정표](assignments.md): 책임과 쓰기 범위.
 5. 배정에 관련된 `docs/reviews/`의 전문가 검토와 [검증 계획](../validation-plan.md).
 6. [품질 및 교차 검증 체계](../quality-system.md): 시험 계층, 독립 검토, 증거와 통과 기준.
+7. 구현 배정 시 [제품 구현 계약](../implementation/product-contracts.md)과 [현재 구현 증거](../implementation/product-results.md), 기존 [코어 결과](../implementation/p0-results.md)를 읽는다. 설계 문서의 당시 NOT_RUN 상태와 현재 증분의 실제 증거를 구별한다.
 
 ## 시작 확인
 

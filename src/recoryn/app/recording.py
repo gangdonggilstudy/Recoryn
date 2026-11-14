@@ -65,9 +65,32 @@ class RecordingService:
     def worker_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def health_snapshot(self) -> dict[str, Any]:
+        """Nonpersistent health for UI observation; durable totals are sealed on drain."""
+        with self._gate:
+            return {
+                "accepting": self._accepting,
+                "storage_failed": self._writer_error is not None,
+                "queue": self._queue.snapshot() if self._queue is not None else None,
+                "tracks": {
+                    track: {
+                        "accepted_frames": value["accepted_frames"],
+                        "dropped_frames": value["dropped_frames"],
+                    }
+                    for track, value in self._track_health.items()
+                },
+            }
+
     def _transition(self, target: SessionState) -> None:
         session = self.library.get_session(self.session_id)
         self.library.transition(self.session_id, target, session.state_version)
+
+    def _mark_interrupted(self) -> None:
+        session = self.library.get_session(self.session_id)
+        if session.state != SessionState.INTERRUPTED:
+            self.library.transition(
+                self.session_id, SessionState.INTERRUPTED, session.state_version
+            )
 
     def start(self) -> None:
         if self.library.get_session(self.session_id).state != SessionState.CREATED:
@@ -180,6 +203,12 @@ class RecordingService:
                 except Exception:
                     # The original failure remains primary. Recovery inspects staging.
                     pass
+            try:
+                self._mark_interrupted()
+            except Exception:
+                # A failed metadata store/deletion intent must not restart capture.
+                # health_snapshot still reports the in-memory storage failure.
+                pass
 
     def _drain(self, timeout: float | None) -> None:
         with self._gate:
@@ -204,7 +233,7 @@ class RecordingService:
                 pass
             raise RecordingError("HEALTH_PERSISTENCE_FAILED_MEDIA_PRESERVED") from error
         if self._writer_error is not None:
-            self._transition(SessionState.INTERRUPTED)
+            self._mark_interrupted()
             raise RecordingError("STORAGE_FAILED_PARTIAL_MEDIA_PRESERVED") from self._writer_error
 
     def pause(self, timeout: float | None = 5.0) -> None:
@@ -218,7 +247,9 @@ class RecordingService:
             raise RecordingError("RESUME_REQUIRES_PAUSED")
         self._begin_epoch()
 
-    def stop(self, timeout: float | None = 5.0) -> dict[str, Any]:
+    def stop(
+        self, timeout: float | None = 5.0, *, health_extra: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         state = self.library.get_session(self.session_id).state
         if state == SessionState.FINALIZED:
             return self.library.finalize_session(self.session_id)
@@ -226,6 +257,17 @@ class RecordingService:
             raise RecordingError("STOP_REQUIRES_ACTIVE_SESSION")
         if state == SessionState.RECORDING:
             self._drain(timeout)
+        if health_extra is not None:
+            try:
+                health = self.library.capture_health(self.session_id)
+                health.update(health_extra)
+                self.library.record_capture_health(self.session_id, health)
+            except Exception as error:
+                try:
+                    self._mark_interrupted()
+                except Exception:
+                    pass
+                raise RecordingError("HEALTH_PERSISTENCE_FAILED_MEDIA_PRESERVED") from error
         self._transition(SessionState.FINALIZING)
         return self.library.finalize_session(self.session_id)
 
