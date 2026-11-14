@@ -2,6 +2,23 @@
 
 현재 단계: 사용자 지시에 따라 설계 v1.0의 구현 완료까지 개발한다. 아래 D/P 배정은 완료 이력이며 B 배정이 현재 활성 범위다. 배정 없는 신규 세션은 온보딩 후 대기한다. 오케스트레이터만 이 표를 수정한다. pane ID는 조회 시점의 식별자이며 재접속 후 재조회한다.
 
+## 2026-11-15 Q: 경우의 수 기반 시험과 push 단위 적용
+
+사용자는 경계·조합·상태·순서의 경우의 수를 계산한 촘촘한 시험과 필요한 시험 계층의 적극 적용, push 단위의 사전 설계·체계화를 지시했다. 기준 commit은 30703fe이며 시작 작업 트리는 clean이다. root/Q00은 AGENTS·온보딩·workflow·quality-system·case-space/push-units 문서와 이 표, 단위 결과·통합 Git/CI를 소유한다. [경우의 수 규칙](../testing/case-space.md)과 [Q-P01~03 push 계획](push-units.md)을 먼저 읽는다.
+
+| 배정 / 실제 pane | 쓰기 허용 파일 | 수락 기준 | 독립 검토 / push |
+| --- | --- | --- | --- |
+| Q21 상태·작업 / w5:p2 | tests/property/test_job_case_space.py, docs/testing/q21-state-cases.md | 기존 시험과 중복을 조사하고 명시 event alphabet/제약/깊이의 유한 명령열·경계/fence를 독립 모델과 대조, 선언 분모·실제 실행 및 핵심 mutant 검출 | Q23 / Q-P02 |
+| Q22 오디오·수치 / w5:p3 | tests/property/test_audio_case_space.py, docs/testing/q22-audio-cases.md | PCM/분할·frame/byte·시계 경계의 유한 조합과 metamorphic/property, 분모·오차·원본 불변·핵심 mutant 검출 | Q24 / Q-P02 |
+| Q23 게시·ML 계약 / w5:p4 | tests/property/test_publication_case_space.py, docs/testing/q23-publication-cases.md | 편집/취소/게시/선택의 happens-before와 feasible 순서 전수, 원본/active/CAS/late-result 독립 oracle·핵심 mutant 검출 | Q21 / Q-P03 |
+| Q24 보안·예산 / w5:p5 | tests/property/test_security_case_space.py, docs/testing/q24-security-cases.md | scope/세대/철회/owner/예약의 feasible 결정표·시간/비용 경계, 미송신/UNKNOWN·원본 불변·핵심 mutant 검출 | Q22 / Q-P03 |
+
+Q24는 Q-P01의 root 정책을 먼저 독립 검토하며 docs/reviews/q-policy-review.md만 추가 작성한다. Q21/Q22/Q23/Q24의 독립 검토자는 각각 docs/reviews/q23-test-design.md, q24-test-design.md, q21-test-design.md, q22-test-design.md만 추가 작성한다. 즉 파일명 qNN은 검토 대상 배정 ID이며 검토자 본인의 번호가 아니다. 대상 제품/시험 코드는 직접 수정하지 않는다. 자기 작성 결과를 단독 종결하지 않는다.
+
+배정은 ASSIGNED이며 ONBOARDING_READY 뒤 충돌이 없으면 진행한다. 문서에 인자/제약/분모/oracle/기존 node·추가 node/실행/미검증을 구분한다. 최소 한 개의 명명한 핵심 mutant는 임시 소스 사본에서 검사하며 정상본과 목표 assertion 실패를 확인한다. 실제 workspace 제품 코드·공용 config·기존 시험·Git은 worker 읽기 전용이다. 발견한 제품 결함은 root에 원인·원 반례를 먼저 보고한다. 실제 장치·음성·weights 다운로드·실계정·유료 호출·추가 pane/agent 생성은 금지한다. 첫 policy push의 리뷰 외 상호 코드 리뷰는 작성 제출 뒤 root 재배정으로 시작한다.
+
+Q-P01 정확한 포함 경로: AGENTS.md, docs/collaboration/onboarding.md, docs/collaboration/workflow.md, docs/collaboration/assignments.md, docs/collaboration/push-units.md, docs/quality-system.md, docs/testing/case-space.md, docs/reviews/q-policy-review.md. Q-P02는 tests/property/test_job_case_space.py, tests/property/test_audio_case_space.py, docs/testing/q21-state-cases.md, docs/testing/q22-audio-cases.md, docs/reviews/q21-test-design.md, docs/reviews/q22-test-design.md, docs/testing/q-core-results.md를 포함한다. Q-P03는 tests/property/test_publication_case_space.py, tests/property/test_security_case_space.py, docs/testing/q23-publication-cases.md, docs/testing/q24-security-cases.md, docs/reviews/q23-test-design.md, docs/reviews/q24-test-design.md, docs/testing/q-policy-results.md를 포함한다. 제품 수정이 필요하면 이 manifest를 먼저 변경한다. 각 commit·push/CI의 실제 상태는 해당 단위 결과와 Git/원격 run에 연결한다.
+
 ## 2026-11-14 강제 재부팅 후 재개
 
 사용자가 worker 탭의 Codex 4세션과 메인 오케스트레이터 재개를 요청했다. 실제 재조회한 Recoryn workspace는 w5, main은 w5:t1/w5:p1, worker는 w5:t2의 기존 4개 pane이다. 저장소의 staged/unstaged/untracked 변경은 복구 입력으로 보존한다. 이전 검증 수치를 현재 snapshot의 통과로 재사용하지 않는다.
