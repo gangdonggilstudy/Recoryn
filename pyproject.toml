@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recoryn"
+version = "0.2.0.dev1"
+description = "Local-first recording core with recoverable audio chunks"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<10",
+  "hypothesis>=6,<7",
+  "pytest-cov>=7,<8",
+  "coverage>=7.10.6,<8",
+  "ruff>=0.15,<0.16",
+  "mypy>=1.19,<2",
+]
+
+[project.scripts]
+recoryn = "recoryn.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--strict-markers --import-mode=importlib"
+markers = [
+  "unit: deterministic module contracts",
+  "property: generated invariant checks",
+  "integration: real files, SQLite, threads or subprocesses",
+  "e2e: executable CLI workflows",
+  "hardware: explicit physical device validation",
+  "live_provider: opt-in external provider validation",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/recoryn"]
+
+[tool.coverage.run]
+branch = true
+source = ["recoryn"]
+patch = ["subprocess"]
+
+[tool.coverage.report]
+show_missing = true

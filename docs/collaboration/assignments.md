@@ -1,6 +1,6 @@
 # Recoryn 작업 배정표
 
-현재 단계: 설계 작성 및 전문가 검토. 구현 배정 없음. 상태는 문서 작업에 한정한다. 오케스트레이터만 이 표를 수정한다. pane ID는 조회 시점의 식별자이며 재접속 후 재조회한다.
+현재 단계: 사용자 승인에 따른 P0.1 녹음 코어 구현·로컬 검증 완료. 아래 D 배정은 설계 이력, P 배정은 첫 구현 이력이다. 후속 구현 배정 전 신규 세션은 온보딩 후 대기한다. 오케스트레이터만 이 표를 수정한다. pane ID는 조회 시점의 식별자이며 재접속 후 재조회한다.
 
 | 배정 ID | 역할 | 현재 pane | 소유 파일 | 수락 기준 | 상태 |
 | --- | --- | --- | --- | --- | --- |
@@ -18,4 +18,27 @@
 
 D11~D14는 1차 작성자와 다른 세션의 교차 검토다. 검토자는 통합 문서와 타 담당 문서만 읽고 자신의 교차 검토 문서에 발견 사항을 기록한다. D00의 통합 수정 후 검토자가 같은 문서에 재확인을 남긴다. 설계 종결 기록은 D00 소유의 `docs/reviews/design-signoff.md`다. 검토 요청 자체는 검토 통과가 아니다.
 
-설계 단계 결과: D01~D04 통합 및 D11~D14 재확인 완료. 24건의 문서상 발견 사항을 종결했다. 상세 근거와 한계는 [설계 검토 종결 기록](../reviews/design-signoff.md)에 둔다. 오케스트레이터가 최종 Git 검증과 push를 전담하며 실제 출판 결과는 commit과 원격 참조로 확인한다. 다음 구현 배정은 아직 없다. 제품 실행 검증은 모두 NOT_RUN이다.
+설계 단계 결과: D01~D04 통합 및 D11~D14 재확인 완료. 24건의 문서상 발견 사항을 종결했다. 상세 근거와 한계는 [설계 검토 종결 기록](../reviews/design-signoff.md)에 둔다. 오케스트레이터가 최종 Git 검증과 push를 전담하며 실제 출판 결과는 commit과 원격 참조로 확인한다. 제품 실행 검증의 현재 결과는 구현 증거에서 별도 기록한다.
+
+## P0.1 구현 배정
+
+공통 API와 수락 조건은 [구현 계약](../implementation/p0-contracts.md)을 따른다.
+
+| 배정 | 역할과 pane | 소유 파일 | 수락 기준 | 상태 |
+| --- | --- | --- | --- | --- |
+| P00 | 오케스트레이터 w5:p1 | 패키징·CI·문서, recoryn 루트/cli.py/app/*, tests/e2e/*, scripts/* | 합성 녹음→복구→WAV 실행, 통합 검사. 출판 결과는 commit/원격 ref로 별도 확인 | VERIFIED |
+| P01 | 아키텍트 w5:p2 | domain/*, jobs/*, tests/unit/test_domain.py, test_jobs.py | PCM·전이 계약, 영속 Job·Attempt·fence·취소 자체 시험 | VERIFIED |
+| P02 | 오디오 w5:p3 | capture/*, tests/unit/test_capture.py | 제한 queue/drop/close·합성 포맷/시간 자체 시험 | VERIFIED |
+| P03 | 저장 엔지니어 w5:p4 | storage/*, tests/unit/test_storage.py | journal·manifest·DB·복구·삭제·lock 자체 시험 | VERIFIED |
+| P04 | 독립 QA·보안 w5:p5 | tests/integration/*, tests/property/*, docs/reviews/p0-qa.md | 독립 oracle와 subprocess fault·보안/원본 회귀, 통합 코드 리뷰 | VERIFIED |
+
+P01~P03 작성 완료 후 상호 독립 리뷰를 새 배정으로 진행한다. 작업자는 Git 인덱스와 공용 파일을 수정하지 않는다. 실제 장치 캡처와 실장비 검증은 후속 게이트다.
+
+| 리뷰 배정 | 검토자 | 대상 | 소유 리뷰 파일 | 상태 |
+| --- | --- | --- | --- | --- |
+| P11 | P01 아키텍트 | storage와 저장·복구 테스트 | docs/reviews/p0-storage-review.md | VERIFIED |
+| P12 | P02 오디오 | domain/jobs와 작업 상태 테스트 | docs/reviews/p0-jobs-review.md | VERIFIED |
+| P13 | P03 저장 엔지니어 | capture와 포화/cutoff 테스트 | docs/reviews/p0-capture-review.md | VERIFIED |
+| P14 | P04 QA·보안 | app/CLI·네트워크·export와 전체 회귀 | docs/reviews/p0-qa.md | VERIFIED |
+
+실행 결과: 전체 379개 시험과 core별 line/branch 기준, lint·format·타입 검사 통과. 원 검토자의 재확인을 받아 구현 발견 6건을 종결했다. [P0.1 결과](../implementation/p0-results.md)의 snapshot과 한계가 기준이다. 전체 P0·Windows 실장비·G3/G4는 미완료다.
