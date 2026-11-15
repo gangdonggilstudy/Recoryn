@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from recoryn.domain import StateConflict
 from recoryn.models import ModelManager, ModelSpec
+from recoryn.models.gpu_runtime import DOWNLOAD_BYTES, TERMS, GpuRuntimeManager
 from recoryn.models.manager import parse_spec
 from recoryn.storage._safe import read_json
 from recoryn.ui.tasks import Task
@@ -40,10 +41,21 @@ class ModelPanel(QWidget):
     modelSelected = Signal(str)
     attestationChanged = Signal(object)
 
-    def __init__(self, root: Path, *, can_modify: Callable[[], bool] | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        can_modify: Callable[[], bool] | None = None,
+        release_gpu: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__()
         self.manager = ModelManager(root)
+        # L01 D10: the opt-in GPU runtime lives next to the models, never in the bundle.
+        self.gpu = GpuRuntimeManager(root.parent / "gpu-runtime")
         self.can_modify = can_modify or (lambda: True)
+        # Closes an idle transcription worker that holds the GPU runtime open.
+        self.release_gpu = release_gpu or (lambda: None)
+        self._gpu_task: Task | None = None
         self.plan: ModelSpec | None = None
         self.cancel = threading.Event()
         self.pool = QThreadPool(self)
@@ -100,6 +112,47 @@ class ModelPanel(QWidget):
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         layout.addWidget(self.progress)
+        layout.addWidget(
+            QLabel(
+                "GPU 가속(선택) — Recoryn에는 NVIDIA·Intel 코드가 들어 있지 않습니다. "
+                "GPU를 쓰려면 아래 약관에 동의한 뒤 공식 배포처(PyPI)에서 직접 받습니다."
+            )
+        )
+        self.gpu_terms = QPlainTextEdit()
+        self.gpu_terms.setReadOnly(True)
+        self.gpu_terms.setAccessibleName("GPU 런타임 약관과 받을 파일")
+        self.gpu_terms.setPlainText(
+            "\n".join(
+                [f"· {item.name}\n  적용 대상: {item.applies_to}\n  {item.url}" for item in TERMS]
+                + [
+                    "",
+                    f"받을 크기: {DOWNLOAD_BYTES:,} bytes (CTranslate2 공식판과 NVIDIA cuBLAS)",
+                    f"설치 위치: {self.gpu.active}",
+                    "고정된 크기와 SHA-256으로 검증한 뒤 필요한 파일만 풀고, 받은 묶음은 지웁니다.",
+                    "GPU를 고른 전사 프로세스만 이 런타임을 쓰며, 쓰기 직전에 전체를 다시 검증합니다.",
+                    "GPU를 쓸 수 없으면 CPU 허용 정책은 CPU로 전사하고,"
+                    " GPU 전용 정책은 전사를 시작하지 않습니다.",
+                    "(개발용 소스 실행에 CUDA판 CTranslate2가 이미 설치돼 있으면 그것을 먼저 씁니다.)",
+                ]
+            )
+        )
+        layout.addWidget(self.gpu_terms)
+        self.gpu_approval = QCheckBox(
+            "위 약관(NVIDIA·Intel·CTranslate2)을 확인했고, 이 PC에 GPU 런타임을 받는 데 동의합니다."
+        )
+        layout.addWidget(self.gpu_approval)
+        gpu_actions = QHBoxLayout()
+        self.gpu_download = QPushButton(f"GPU 런타임 받기 (약 {DOWNLOAD_BYTES // 2**20:,} MB)")
+        self.gpu_download.clicked.connect(self.download_gpu)
+        gpu_actions.addWidget(self.gpu_download)
+        self.gpu_remove = QPushButton("GPU 런타임 삭제")
+        self.gpu_remove.clicked.connect(self.remove_gpu)
+        gpu_actions.addWidget(self.gpu_remove)
+        layout.addLayout(gpu_actions)
+        self.gpu_status = QLabel()
+        self.gpu_status.setWordWrap(True)
+        layout.addWidget(self.gpu_status)
+        self.refresh_gpu()
         layout.addWidget(QLabel("로컬 Ollama — 이미 설치한 실행 파일과 모델만 사용합니다."))
         self.ollama_executable = QLineEdit()
         self.ollama_executable.setPlaceholderText("이미 설치한 ollama 실행 파일")
@@ -125,6 +178,76 @@ class ModelPanel(QWidget):
         self.ollama_stop.clicked.connect(self.stop_ollama)
         helper.addWidget(self.ollama_stop)
         layout.addLayout(helper)
+
+    def refresh_gpu(self) -> None:
+        state = self.gpu.status()
+        self.gpu_status.setText(
+            {
+                "NOT_INSTALLED": "GPU 런타임: 받지 않음",
+                "READY": "GPU 런타임: 설치됨(파일 구성·크기 확인) · GPU를 허용한 정책에서"
+                " 전사에 쓰며, 쓰기 직전에 전체를 다시 검증합니다.",
+                "DAMAGED": "GPU 런타임: 손상됨 · 쓰지 않습니다. 삭제한 뒤 다시 받으세요.",
+            }.get(state, "GPU 런타임: " + state)
+        )
+
+    def download_gpu(self) -> None:
+        if not self.gpu_approval.isChecked():
+            self.gpu_status.setText("약관을 확인하고 동의 칸을 선택한 뒤 받을 수 있습니다.")
+            return
+        if not self.can_modify():
+            self.gpu_status.setText("AI가 사용 중인 작업을 완료하거나 취소한 뒤 받으세요.")
+            return
+        self._run_gpu(
+            lambda: self.gpu.install(approved=True, cancel=self.cancel, progress=self._notify),
+            self._gpu_installed,
+        )
+
+    @property
+    def gpu_busy(self) -> bool:
+        """A GPU runtime install or removal is queued or running."""
+        return self.task is not None and self.task is self._gpu_task
+
+    def _run_gpu(self, operation: Callable[[], Any], finished: Callable[[Any], None]) -> None:
+        before = self.task
+        self._run(operation, finished)
+        if self.task is not None and self.task is not before:
+            self._gpu_task = self.task
+
+    def _gpu_installed(self, path: Path) -> None:
+        self.gpu_approval.setChecked(False)
+        self.refresh_gpu()
+        self.status.setText("GPU 런타임을 검증해 설치했습니다: " + str(path))
+
+    def remove_gpu(self) -> None:
+        if self.task is not None:
+            return
+        if not self.can_modify():
+            self.gpu_status.setText("AI가 사용 중인 작업을 완료하거나 취소한 뒤 삭제하세요.")
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "GPU 런타임 삭제",
+                "받아 둔 GPU 런타임을 삭제할까요? 삭제한 뒤에는 CPU 허용 정책은 CPU로"
+                " 전사하고, GPU 전용 정책은 다시 받기 전까지 전사를 시작하지 않습니다.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        # The dialog ran a nested event loop: AI work or a model task may have started.
+        if self.task is not None or not self.can_modify():
+            self.gpu_status.setText("AI가 사용 중인 작업을 완료하거나 취소한 뒤 삭제하세요.")
+            return
+        try:
+            self.release_gpu()
+        except Exception:
+            self.gpu_status.setText(
+                "GPU 런타임을 쓰던 전사 프로세스를 닫지 못했습니다. 잠시 뒤 다시 시도하세요."
+            )
+            return
+        self._run_gpu(self.gpu.remove, lambda _: self.refresh_gpu())
 
     @property
     def ollama_owned(self) -> bool:
@@ -301,6 +424,7 @@ class ModelPanel(QWidget):
             self.status.setText(
                 "모델 작업 중단: " + code + " · 검증 전 파일은 활성화되지 않습니다."
             )
+            self.refresh_gpu()
 
         task.signals.finished.connect(done)
         task.signals.failed.connect(failed)

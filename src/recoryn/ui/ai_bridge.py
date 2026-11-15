@@ -40,6 +40,11 @@ class DesktopAI:
         # L01 D7: Recoryn plays verified PCM itself; no Qt media decoder backend.
         self.playback = SinkPlayback(window, on_error=self._report_playback)
         self._playback_generation = 0
+        # L01 D10: the runtime install (folder generation) a worker of this run failed
+        # on is not offered again; a newly installed runtime is. Only the local worker's
+        # own explicit GPU_RUNTIME_* answer counts, never stored job history.
+        self._gpu_failed: tuple[int, int] | None = None
+        self._local_generation: tuple[int, int] | None = None
         self.pool = QThreadPool(window)
         self.pool.setMaxThreadCount(1)
         self.busy = False
@@ -151,6 +156,9 @@ class DesktopAI:
                 self._live_blocked.add(session_id)
             return
         model, policy = window.local_model.text(), window.device_policy.currentText()
+        # Read on the UI thread: a queued GPU runtime install/removal excludes the runtime.
+        # A removal is only queued while this bridge is idle, so the two never interleave.
+        gpu_change_pending = bool(getattr(window.model_panel, "gpu_busy", False))
         preparation_cancel = threading.Event()
         self._preparation_cancel = preparation_cancel
         nonce = uuid4().hex if retry else self._live_nonces.get(session_id) if provisional else None
@@ -179,24 +187,48 @@ class DesktopAI:
                             check_cancel()
                             hasher.update(block)
                 digest = hasher.hexdigest()
+                from recoryn.models.gpu_runtime import GpuRuntimeManager, gpu_source
                 from recoryn.transcription import cuda_runtime_available
 
-                # L01 D9: without a CUDA-capable CTranslate2 no GPU is a candidate.
-                gpu_ready = policy != "CPU_ONLY" and cuda_runtime_available()
-                _, gpus = probe_gpus() if gpu_ready else ("UNAVAILABLE", ())
+                # L01 D9/D10: a GPU is a candidate only with a CUDA-capable CTranslate2,
+                # either the installed one (source run) or the user's verified runtime.
+                runtime = GpuRuntimeManager(self.window.library.root / "gpu-runtime")
+                self.observe_gpu_failure()
+                generation = runtime.generation()
+                failed = self._gpu_failed is not None and self._gpu_failed == generation
+                source = gpu_source(
+                    policy,
+                    cuda_runtime_available,
+                    runtime.status,
+                    runtime_blocked=gpu_change_pending or failed,
+                )
+                runtime_root = runtime.root if source == "runtime" else None
+                _, gpus = probe_gpus() if source != "none" else ("UNAVAILABLE", ())
                 # Runtime adapter currently binds GPU zero; do not budget another GPU.
                 device, _ = ResourceScheduler().choose(
                     policy, 1024 * 2**20, tuple(gpu for gpu in gpus if gpu.index == 0)
                 )
                 key = digest + ":" + device
-                if self.local_key != key:
+                runtime_used = runtime_root if device == "cuda" else None
+                # The worker is per model, device and runtime install; the job config key
+                # stays per model and device.
+                process_key = key + ("" if runtime_used is None else ":" + repr(generation))
+                if (
+                    self.local_key != process_key
+                    or self.local is None
+                    or getattr(self.local, "gpu_failure", None) is not None
+                ):
                     activity = service.runner.snapshot()
                     if activity["active"] or activity["pending"]:
                         raise StateConflict("AI_MODEL_CHANGE_REQUIRES_IDLE")
                     if self.local:
                         self.local.close()
-                    self.local = LocalSTTProcess(Path(model).absolute(), device=device)
-                    self.local_key = key
+                        self.local = None
+                    self.local = LocalSTTProcess(
+                        Path(model).absolute(), device=device, gpu_runtime=runtime_used
+                    )
+                    self.local_key = process_key
+                    self._local_generation = None if runtime_used is None else generation
                 assert self.local is not None
                 check_cancel()
                 return service.transcribe(fixed_session, self.local, config_key=key, **options)
@@ -600,11 +632,25 @@ class DesktopAI:
                     self.panel.load(session_id)
                 if jobs:
                     job = jobs[-1]
+                    self.observe_gpu_failure()
                     self.panel.job_status.setText(
                         f"AI: {job.state.value} · {job.error_code or job.blocked_reason or ''}"
                         + (
                             " · 원격 처리·비용 미확인, 자동 재전송 없음. 명시 재실행만 가능합니다."
                             if job.blocked_reason == "REMOTE_UNKNOWN"
+                            else ""
+                        )
+                        + (
+                            " · GPU 런타임으로 실행하지 못했습니다. 모델 관리 탭에서 상태를"
+                            " 확인하세요."
+                            if (job.error_code or "").startswith("GPU_RUNTIME_")
+                            else ""
+                        )
+                        + (
+                            " 이번 실행에서는 다시 받기 전까지 이 GPU 런타임을 쓰지 않습니다"
+                            " (CPU 허용 정책은 CPU로, GPU 전용 정책은 전사를 시작하지 않음)."
+                            if (job.error_code or "").startswith("GPU_RUNTIME_")
+                            and self._gpu_failed is not None
                             else ""
                         )
                     )
@@ -655,6 +701,36 @@ class DesktopAI:
             else:
                 return
         self._transcribe(session_id=session, provisional=True)
+
+    def observe_gpu_failure(self) -> None:
+        """Record the runtime install the current local worker failed on (this run only)."""
+        local = self.local
+        if (
+            local is not None
+            and getattr(local, "gpu_failure", None) is not None
+            and self._local_generation is not None
+        ):
+            self._gpu_failed = self._local_generation
+
+    def release_gpu_runtime(self) -> None:
+        """Close an idle local worker that holds the GPU runtime open (before removal).
+
+        Refuses while AI work is preparing, queued or running, so an active worker is
+        never closed under a job.
+        """
+        if self.busy:
+            raise StateConflict("AI_MODEL_CHANGE_REQUIRES_IDLE")
+        if self.service is not None:
+            activity = self.service.runner.snapshot()
+            if activity["active"] or activity["pending"]:
+                raise StateConflict("AI_MODEL_CHANGE_REQUIRES_IDLE")
+        local = self.local
+        if local is not None and getattr(local, "gpu_runtime", None) is not None:
+            self.observe_gpu_failure()
+            local.close()
+            self.local = None
+            self.local_key = None
+            self._local_generation = None
 
     def close(self) -> None:
         self._shutting_down = True

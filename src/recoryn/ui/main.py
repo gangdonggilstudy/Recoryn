@@ -70,7 +70,11 @@ class MainWindow(QMainWindow):
         self.ai_bridge.attach_privacy(self.privacy_panel)
         from recoryn.ui.models import ModelPanel
 
-        self.model_panel = ModelPanel(library.root / "models", can_modify=self._models_idle)
+        self.model_panel = ModelPanel(
+            library.root / "models",
+            can_modify=self._models_idle,
+            release_gpu=lambda: self.ai_bridge.release_gpu_runtime(),
+        )
         self.model_panel.modelSelected.connect(self.local_model.setText)
         self.model_panel.attestationChanged.connect(self.privacy_panel.set_local_attestation)
         self.tabs.addTab(self.model_panel, "모델 관리")

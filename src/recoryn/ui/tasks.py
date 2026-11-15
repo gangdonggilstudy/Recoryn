@@ -45,6 +45,18 @@ class Task(QRunnable):
             "MODEL_CHECKSUM_MISMATCH",
             "LOCAL_MODEL_REQUIRED",
             "AI_MODEL_CHANGE_REQUIRES_IDLE",
+            # L01 D10: why a GPU could not be used or the GPU runtime could not change.
+            "RESOURCE_GPU_UNAVAILABLE",
+            "MODEL_DOWNLOAD_REQUIRES_APPROVAL",
+            "GPU_RUNTIME_UNAVAILABLE",
+            "GPU_RUNTIME_DAMAGED",
+            "GPU_RUNTIME_NOT_INSTALLED",
+            "GPU_RUNTIME_LATE",
+            "GPU_RUNTIME_UNSUPPORTED",
+            "GPU_RUNTIME_ARCHIVE_INVALID",
+            "GPU_RUNTIME_ALREADY_INSTALLED",
+            "GPU_RUNTIME_OPERATION_ACTIVE",
+            "GPU_RUNTIME_IN_USE",
         }
     )
 

@@ -19,8 +19,37 @@ from recoryn.providers import (
     STTResult,
 )
 
+# Explicit failures of the opt-in GPU runtime (L01 D10); the parent re-raises them as is.
+GPU_RUNTIME_CODES = frozenset(
+    {
+        "GPU_RUNTIME_UNAVAILABLE",
+        "GPU_RUNTIME_DAMAGED",
+        "GPU_RUNTIME_NOT_INSTALLED",
+        "GPU_RUNTIME_LATE",
+        "GPU_RUNTIME_UNSUPPORTED",
+    }
+)
 
-def _worker(model_path: str, device: str, requests: Any, replies: Any) -> None:
+
+def _activate_gpu(gpu_runtime: str | None) -> str | None:
+    """Activate the user's GPU runtime before CTranslate2 is imported; None when ready."""
+    if gpu_runtime is None:
+        return None  # a CUDA-capable CTranslate2 is already the installed one (source run)
+    try:
+        from recoryn.models.gpu_runtime import activate, supported
+
+        if not supported():
+            return "GPU_RUNTIME_UNSUPPORTED"
+        activate(Path(gpu_runtime))
+    except Exception as exc:
+        code = str(exc.args[0]) if exc.args else ""
+        return code if code in GPU_RUNTIME_CODES else "GPU_RUNTIME_UNAVAILABLE"
+    return None
+
+
+def _worker(
+    model_path: str, device: str, requests: Any, replies: Any, gpu_runtime: str | None = None
+) -> None:
     # No Qt, capture, provider discovery, download or device fallback in this process.
     os.environ.update({"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1"})
     parent = multiprocessing.parent_process()
@@ -33,6 +62,14 @@ def _worker(model_path: str, device: str, requests: Any, replies: Any) -> None:
             os._exit(0)
 
     threading.Thread(target=watch_parent, daemon=True, name="recoryn-parent-watch").start()
+    failure = _activate_gpu(gpu_runtime) if device == "cuda" else None
+    if failure is not None:
+        # Answer every request with the explicit code; never fall back silently here.
+        while True:
+            command = requests.get()
+            if command is None:
+                return
+            replies.put((command[0], failure))
     from recoryn.transcription import FasterWhisperProvider
 
     provider = FasterWhisperProvider(Path(model_path), device=device)
@@ -55,7 +92,14 @@ class LocalSTTProcess:
     remain in the parent. A killed process cannot publish a stale result itself.
     """
 
-    def __init__(self, model_path: Path, *, device: str = "cpu", timeout: float = 600) -> None:
+    def __init__(
+        self,
+        model_path: Path,
+        *,
+        device: str = "cpu",
+        timeout: float = 600,
+        gpu_runtime: Path | None = None,
+    ) -> None:
         if (
             device not in ("cpu", "cuda")
             or isinstance(timeout, bool)
@@ -65,6 +109,10 @@ class LocalSTTProcess:
         ):
             raise ProviderError("INPUT_INVALID")
         self.model_path, self.device, self.timeout = model_path, device, timeout
+        self.gpu_runtime = gpu_runtime if device == "cuda" else None
+        # The GPU runtime failure this worker answered with, if any (it answers every
+        # later request the same way); the owner then stops offering that runtime.
+        self.gpu_failure: str | None = None
         self._context = multiprocessing.get_context("spawn")
         self._process: Any = None
         self._requests: Any = None
@@ -85,7 +133,9 @@ class LocalSTTProcess:
         self._replies = self._context.Queue(maxsize=2)
         self._process = self._context.Process(
             target=_worker,
-            args=(str(self.model_path), self.device, self._requests, self._replies),
+            # The four-argument worker contract stays as is; only a GPU runtime adds one.
+            args=(str(self.model_path), self.device, self._requests, self._replies)
+            + (() if self.gpu_runtime is None else (str(self.gpu_runtime),)),
             name="recoryn-local-stt",
             daemon=True,
         )
@@ -118,6 +168,9 @@ class LocalSTTProcess:
                     continue
                 if token != self._sequence:
                     continue
+                if isinstance(result, str) and result in GPU_RUNTIME_CODES:
+                    self.gpu_failure = result
+                    raise ProviderError(result)
                 if not isinstance(result, STTResult):
                     raise ProviderError("INFERENCE_PROCESS_FAILED")
                 return result

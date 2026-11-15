@@ -438,6 +438,90 @@ L-P06 stage tree `e84123ba83e8595410fef97d72fe9efd6be54412`(283파일)를 `%TEMP
 - `ctranslate2-4.9.0-cp313-cp313-win_amd64.whl`: 20,408,731 bytes, SHA-256 `d009840a…ef095`
 - `nvidia_cublas_cu12-12.8.4.1-py3-none-win_amd64.whl`: 567,544,208 bytes, SHA-256 `47e9b821…e35af`
 
+## L-P07 GPU 런타임 앱 내 받기
+
+선행 L-P06 `83dfb8f37f5c80b6bba867e0f337127997563574`의 원격 CI [43711709953](https://github.com/gangdonggilstudy/Recoryn/actions/runs/43711709953)은 core 3.11·3.13과 optional-runtime 세 job success다(C00 GitHub API 확인).
+
+### 구현(2판, 1차 검토 반영)
+
+1차 독립 검토의 OPEN 10건을 반영했다. 다운로드 검토는 S1 3건과 S2 2건, 화면 검토는 S2 4건과 S3 1건이다. 늦은 취소(L07-04와 L07-U05)는 같은 결함이며 한 번에 고쳤다.
+
+- **`src/recoryn/models/gpu_runtime.py`:**
+  - **신뢰 기준(L07-02):** wheel 2개의 pin에 더해, 풀 파일 11개의 경로·크기·SHA-256을 소스의 `CATALOG`에 고정했다. `scripts/gpu_runtime_catalog.py`가 고정 wheel에서 다시 계산해 일치를 확인한다(`--check` → CATALOG_MATCH). 디스크의 기록 파일(`runtime.json`)은 없앴고, 신뢰하지 않는다.
+  - **압축 해제:** 각 wheel을 쓰기를 막는 handle로 열어 pin과 다시 대조하고, 같은 handle로 읽는다. catalog 파일만 풀며, 쓰는 동안 크기와 hash를 catalog와 대조한다. 경로 탈출, 절대 경로, 중복, symlink, 누락, CRC 손상, 바이트·크기 불일치는 GPU_RUNTIME_ARCHIVE_INVALID다.
+  - **풀지 않는 파일:** `cudnn64_9.dll`(`ctranslate2.dll`은 cuBLAS와 드라이버만 동적으로 부르고 cuDNN은 이름으로도 참조하지 않는다), converters·specs, dist-info 나머지다.
+  - **취소와 게시(L07-04/U05):** 다운로드 뒤, 압축 해제 중 블록마다, 게시 직전에 취소를 확인한다. 게시는 폴더 이름 바꾸기 한 번이며, 그 전의 취소는 활성 런타임과 staging을 남기지 않는다.
+  - **정리와 재시도(L07-05):** 게시 뒤 받은 묶음 삭제 실패는 설치 결과에 영향을 주지 않는다. 재시도는 남은 검증 완료 묶음을 다시 hash해 재사용하고, 손상됐으면 지우고 다시 받는다. 남은 `.extract-*`·`.remove-*`는 다음 설치나 삭제가 정리한다.
+  - **상태:** catalog와 정확히 같은 파일·폴더 집합이고 크기가 맞을 때만 READY다. 목록 밖 파일, `__pycache__`, 로컬 기록, `_rocm_sdk_*` 폴더, 링크가 있으면 DAMAGED다.
+  - **활성화(L07-01/03):** catalog 파일을 모두, 쓰기·삭제·이름 바꾸기를 막는 handle로 연다. 이 handle은 프로세스가 끝날 때까지 유지한다. 그 handle로 읽은 바이트를 검증하고, 파일 집합이 정확한지 확인한다. Python 소스는 검증한 바이트를 메모리에서 compile해 실행하므로 bytecode cache를 읽지도 쓰지도 않는다. 공식 `__init__.py`의 Windows 블록은 실행 전에 한 줄로 바꾼다. 이 블록은 `_rocm_sdk_*`·`HIP_PATH`에서 DLL 폴더를 찾고 패키지 폴더의 모든 `*.dll`을 로드하는데, 그 시작·끝과 SHA-256을 고정해 두었다. 대신 System32의 `nvcuda.dll`과 런타임 DLL 4개를 절대 경로로, 의존 순서대로 로드한다. 이때 런타임 폴더는 DLL 검색 경로에 넣지 않는다. catalog 밖의 `ctranslate2.*` 이름은 다른 finder로 넘기지 않고 ModuleNotFoundError로 끝낸다.
+  - **삭제:** 폴더 이름 바꾸기 뒤에 지운다. 작업자가 런타임을 쥐고 있으면 이름 바꾸기가 실패하고, GPU_RUNTIME_IN_USE와 함께 런타임은 그대로 남는다.
+  - **위협 경계:** 같은 사용자 권한 프로세스는 Recoryn 프로세스 메모리에 직접 쓸 수 있으므로 sandbox가 아니다. 보장하는 것은 활성화 전에 있던 파일, 남은 파일, 활성화 전·중에 바뀐 파일이 검증 없이 로드되지 않는다는 것이다.
+- **추론 프로세스(`app/inference.py`):**
+  - `device="cuda"`이고 런타임 경로가 주어지면, faster-whisper를 import하기 전에 활성화한다. 실패하면 요청마다 명시적 코드로 답한다.
+  - 부모 프로세스는 이를 `ProviderError(GPU_RUNTIME_*)`로 올리고, 그 코드를 `gpu_failure`에 기록한다.
+  - 기존 작업자 인자 4개 계약은 유지하고, 런타임이 있을 때만 다섯 번째 인자를 준다.
+- **장치 선택(`ui/ai_bridge.py`, L07-U01/U03):**
+  - `gpu_source()`는 CPU_ONLY면 none, CUDA판 CTranslate2가 설치돼 있으면(소스 실행) native, 그 밖에 런타임이 READY이고 차단되지 않았으면 runtime이다.
+  - **실패 차단:** 실패 차단은 이번 실행의 작업자가 직접 답한 GPU_RUNTIME_* 실패만 쓴다. 저장된 작업 이력은 쓰지 않는다. 차단 대상은 그 실패가 난 런타임 설치(폴더 세대)이며, 다시 받은 설치는 다시 고른다. 작업자 재사용 키에도 세대를 넣는다. 작업 설정 키는 모델과 장치로 그대로 둔다.
+  - **변경 대기:** 모델 관리 탭에서 GPU 런타임 받기나 삭제가 대기 중이면, 이를 화면 thread에서 읽어 런타임을 고르지 않는다.
+  - **작업자 놓기:** 런타임을 쥔 유휴 작업자를 닫는 `release_gpu_runtime()`을 두었다.
+- **삭제 확인 중 AI 시작(L07-U06, 2차 화면 재확인):**
+  - 삭제 확인 창은 중첩 event loop를 돌아서, 창이 떠 있는 동안 GPU 전사가 시작될 수 있다.
+  - 창이 닫힌 뒤 AI 유휴와 모델 작업 없음을 다시 확인하고, 아니면 아무것도 하지 않는다.
+  - bridge의 `release_gpu_runtime()`도 AI가 준비·대기·실행 중이면 AI_MODEL_CHANGE_REQUIRES_IDLE로 거부한다. 쓰는 중인 작업자는 어떤 경로로도 닫히지 않는다.
+- **Task 경계(`ui/tasks.py`, L07-U02):** RESOURCE_GPU_UNAVAILABLE, MODEL_DOWNLOAD_REQUIRES_APPROVAL, GPU_RUNTIME_* 9개를 사용자에게 보일 고정 코드로 추가했다.
+- **화면(`ui/models.py`, `ui/main.py`, L07-U03/U04):**
+  - 삭제를 확인받으면, 대기열에 넣기 전에 GPU 작업자를 닫는다. 닫지 못하면 삭제하지 않는다.
+  - 받기·삭제 작업이 대기하거나 실행 중이면 `gpu_busy`다.
+  - 정책 문구는 "CPU 허용 정책은 CPU로, GPU 전용 정책은 전사를 시작하지 않음"으로 나눠 쓰고, 소스 실행의 native 경우를 밝혔다.
+  - 실패 뒤에는 GPU 상태를 다시 읽는다.
+- **문서:** D10 본문의 "cuBLAS·cuDNN wheel"을 실제와 맞게 고쳤다. 받는 것은 cuBLAS wheel뿐이며, CTranslate2 wheel에 든 cuDNN DLL은 풀지 않는다.
+
+### 시험과 mutation
+
+- **단위 시험:** `tests/unit/test_gpu_runtime.py` 99개다. 검토 반례마다 따로 시험을 두었다.
+  - pyc(파일 집합 검사 실제·우회 2행), 목록 밖 DLL, HIP_PATH, 다운로드 확인 뒤 wheel 교체, catalog 밖만 다른 wheel
+  - 검증 직후 쓰기·삭제·이름 바꾸기 4가지 차단, 취소 경계 5행과 큰 파일
+  - 정리 실패, 재시도 재사용, 손상 묶음 재다운로드, 사용 중 삭제, Task 코드 4개, 패널 4개
+- **창 경로 시험:** `tests/ui/test_gpu_runtime_ui.py` 4개는 실제 MainWindow·DesktopAI·Task·ResourceScheduler를 거친다.
+  - U01은 실패, CPU, CPU, 재설치 뒤 GPU, 새 실행 GPU 순서다.
+  - U02는 GPU 전용에서 작업자 0개와 RESOURCE_GPU_UNAVAILABLE 표시다.
+  - U03은 AI 사용 중 삭제 차단, 삭제 대기 중 작업자 닫기와 CPU 선택이다.
+  - U06은 확인 창 안에서 AI가 시작된 경우, 작업자 유지·삭제 미대기·bridge 거부다.
+- **mutation:** 수정을 하나씩 되돌린 사본(pytest rootdir를 사본으로 둠)에서 21개 모두 시험에 걸렸다.
+  - **런타임 관리 14개:** 게시 전 취소, 블록 취소, bytecode loader, 공유 모드, 활성화 파일 집합, catalog 대조, 초기화 블록 교체, finder 위임, 정리 실패, 재사용, 이름 바꾸기 삭제, 차단 무시, Task 코드, pin 재확인이다.
+  - **창 경로 7개:** 변경 대기 무시, 세대 무시, 작업자 놓기 생략, 실패 관측 생략, Task 코드, 확인 창 뒤 재확인 생략, bridge 사용 중 거부 생략이다.
+  - 처음 돌렸을 때는 블록 취소, finder 위임, pin 재확인 3개가 살아남았다. 각각에 대응하는 시험을 추가했다: 큰 파일 취소, 활성화 뒤 심은 하위 모듈, catalog 밖만 다른 wheel.
+
+### 독립 검토
+
+같은 검토자가 다시 확인했다(OPEN 0).
+
+- **[다운로드 검토](../reviews/l07-gpu-download-review.md)(recoryn-security, raw SHA-256 `e0af2cf50b881a75afd0ee393f02a6db0a404839cc80313368400744f5cd7066`):**
+  - 1차에서 L07-01~03(S1)과 L07-04~05(S2)를 찾았다.
+  - 2판 재확인에서 원 반례를 다시 실행해 5건 모두 RECHECKED/CLOSED가 됐다.
+  - 정확 tree의 mypy가 `scripts/gpu_runtime_catalog.py`의 루프 변수 재사용을 잡았다. 출력 루프 변수명 2줄만 바꿨고(`d8b290f2…` → `d425a4ee…`), 검토자가 그 2줄뿐임과 `--check` CATALOG_MATCH를 다시 확인했다.
+- **[화면 검토](../reviews/l07-gpu-ui-review.md)(recoryn-desktop, raw SHA-256 `bd1b2486fd25ff421cbda717ee623dcd7ff74513dc7ce6dfffc6ba9c2ae4e62a`):**
+  - 1차에서 U01·U02·U03·U05(S2)와 U04(S3)를 찾았다.
+  - 2판 재확인에서 5건이 RECHECKED가 되고, U06(S2)이 새로 나왔다. 삭제 확인 창 안에서 AI가 시작되면 쓰는 중인 작업자를 닫는 문제였다.
+  - 3판 재확인에서 U06도 RECHECKED가 됐다. 이때 실제 QEventLoop/QTimer와 busy×active×pending 8행을 확인했다.
+- **현재 소스 후보:** `build/l07r3-1794749274`의 smoke는 PASS다. 입력 hash는 `ai_bridge.py` `9cd84982…`, `gpu_runtime.py` `407e2264…`로 현재 소스와 같다. 이전 후보 `build/l07r2-…`는 `getattr` 호환 수정 전의 `ai_bridge.py`로 만든 것이라 증거로 쓰지 않는다.
+
+### 실제 장비 확인(2판)
+
+이 PC(RTX 4070 Laptop, 드라이버 576.57)에서 수정된 제품 코드로 새 폴더 `build/gpu-e2e2`에 다시 확인했다.
+
+- **설치:** `GpuRuntimeManager.install(approved=True)`로 PyPI에서 588 MB를 받아 pin을 다시 확인하고, catalog 11개만 풀었다(12.2초). 상태는 READY, 전체 검증은 1.2초였다. 남은 것은 런타임 폴더와 빈 downloads뿐이다.
+- **활성화:** 새 프로세스(`-B`)에서 `_activate_gpu(root)`가 0.82초에 성공했다. `ctranslate2`와 `_ext`는 런타임 폴더에서 왔고 CUDA 장치 수는 1이었다. 실행 뒤 `.pyc`는 0개, 상태는 READY였다.
+- **로드된 DLL:** 런타임에서 온 것은 `ctranslate2.dll`, `libiomp5md.dll`, `cublas64_12.dll`, `cublasLt64_12.dll`, `_ext.pyd` 5개다. cuDNN은 로드되지 않았다. NVIDIA 드라이버는 System32의 `nvcuda.dll`과 DriverStore의 드라이버 구성요소에서만 왔다.
+- **실행:** 무작위 가중치 base 모델로 확인했다.
+  - 인코딩은 GPU float16 0.035초, float32 0.047초였다. 자체 빌드 CPU float32와의 최대 차이는 float16 0.0126, float32 1.3e-5다.
+  - 탐욕 생성 토큰(prompt `[[1,2,5,9],[1,3,5,9]]`, 24토큰)은 float16과 float32가 같았다.
+- **확인하지 않은 것(NOT_RUN):**
+  - 실제 음성, 실제 Whisper 가중치, faster-whisper 전체 경로의 GPU 전사
+  - frozen 앱 안의 활성화
+  - 다른 GPU·드라이버
+
 ## 미검증
 
 실제 음성·Whisper 추론 품질, GPU, 장시간 입력의 메모리 상한, clean VM, 서명, Qt corresponding source 배포, Intel·Microsoft 조건의 법률 확인은 NOT_RUN 또는 G4 OPEN이다. L-P04가 공개되면 FFmpeg corresponding source와 코덱 특허 항목은 배포물에서 사라진다. 실제 스피커 청취, 음질, 재생 중 장치 변경은 확인하지 않았다. 3채널 이상의 mono 평균은 스피커 배치를 고려한 downmix가 아니다.
