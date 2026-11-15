@@ -1,0 +1,301 @@
+{
+  "schema_version": 1,
+  "note": "Reviewed native files of the pinned 0.2.0.dev2 bundle (L01 D5, L03-01). Exact paths only: any other EXE/DLL/PYD is UNMAPPED and fails the build until reviewed and added here.",
+  "reviewed_from": "build/l03-1794719526 (112 native files)",
+  "components": [
+    {
+      "component": "CPython standard library extension",
+      "license": "PSF-2.0",
+      "status": "DECLARED",
+      "files": [
+        "_internal/_asyncio.pyd",
+        "_internal/_bz2.pyd",
+        "_internal/_ctypes.pyd",
+        "_internal/_decimal.pyd",
+        "_internal/_hashlib.pyd",
+        "_internal/_lzma.pyd",
+        "_internal/_multiprocessing.pyd",
+        "_internal/_overlapped.pyd",
+        "_internal/_queue.pyd",
+        "_internal/_socket.pyd",
+        "_internal/_sqlite3.pyd",
+        "_internal/_ssl.pyd",
+        "_internal/_uuid.pyd",
+        "_internal/_wmi.pyd",
+        "_internal/pyexpat.pyd",
+        "_internal/select.pyd",
+        "_internal/unicodedata.pyd"
+      ]
+    },
+    {
+      "component": "CTranslate2 4.9.0",
+      "license": "MIT",
+      "status": "DECLARED",
+      "files": [
+        "_internal/ctranslate2/_ext.cp313-win_amd64.pyd"
+      ]
+    },
+    {
+      "component": "CTranslate2 4.9.0 with statically linked Intel MKL",
+      "license": "MIT AND LicenseRef-Intel-Runtime-Conditions-Unconfirmed",
+      "status": "CONDITIONS_UNCONFIRMED",
+      "files": [
+        "_internal/ctranslate2/ctranslate2.dll"
+      ]
+    },
+    {
+      "component": "Intel OpenMP runtime",
+      "license": "LicenseRef-Intel-Runtime-Conditions-Unconfirmed",
+      "status": "CONDITIONS_UNCONFIRMED",
+      "files": [
+        "_internal/ctranslate2/libiomp5md.dll"
+      ]
+    },
+    {
+      "component": "protobuf",
+      "license": "BSD-3-Clause",
+      "status": "DECLARED",
+      "files": [
+        "_internal/google/_upb/_message.pyd"
+      ]
+    },
+    {
+      "component": "hf-xet",
+      "license": "Apache-2.0",
+      "status": "DECLARED",
+      "files": [
+        "_internal/hf_xet/hf_xet.pyd"
+      ]
+    },
+    {
+      "component": "OpenSSL 3 (CPython build)",
+      "license": "Apache-2.0",
+      "status": "DECLARED",
+      "files": [
+        "_internal/libcrypto-3.dll",
+        "_internal/libssl-3.dll"
+      ]
+    },
+    {
+      "component": "libffi (CPython build)",
+      "license": "MIT",
+      "status": "DECLARED",
+      "files": [
+        "_internal/libffi-8.dll"
+      ]
+    },
+    {
+      "component": "ml_dtypes",
+      "license": "Apache-2.0",
+      "status": "DECLARED",
+      "files": [
+        "_internal/ml_dtypes/_ml_dtypes_ext.cp313-win_amd64.pyd"
+      ]
+    },
+    {
+      "component": "Microsoft Visual C++ / Universal CRT runtime",
+      "license": "LicenseRef-Microsoft-Redistributable",
+      "status": "REDISTRIBUTABLE_PROPRIETARY",
+      "files": [
+        "_internal/msvcp140.dll",
+        "_internal/numpy.libs/msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll",
+        "_internal/PySide6/MSVCP140.dll",
+        "_internal/PySide6/MSVCP140_1.dll",
+        "_internal/PySide6/MSVCP140_2.dll",
+        "_internal/PySide6/VCRUNTIME140.dll",
+        "_internal/PySide6/VCRUNTIME140_1.dll",
+        "_internal/shiboken6/MSVCP140.dll",
+        "_internal/shiboken6/MSVCP140_1.dll",
+        "_internal/shiboken6/VCRUNTIME140.dll",
+        "_internal/shiboken6/VCRUNTIME140_1.dll",
+        "_internal/vcruntime140.dll",
+        "_internal/vcruntime140_1.dll"
+      ]
+    },
+    {
+      "component": "OpenBLAS (numpy wheel; GCC runtime with exception)",
+      "license": "BSD-3-Clause AND GPL-3.0-or-later WITH GCC-exception-3.1",
+      "status": "DECLARED",
+      "files": [
+        "_internal/numpy.libs/libscipy_openblas64_-9e3e5a4229c1ca39f10dc82bba9e2b2b.dll"
+      ]
+    },
+    {
+      "component": "numpy 2.3.5",
+      "license": "BSD-3-Clause",
+      "status": "DECLARED",
+      "files": [
+        "_internal/numpy/_core/_multiarray_tests.cp313-win_amd64.pyd",
+        "_internal/numpy/_core/_multiarray_umath.cp313-win_amd64.pyd",
+        "_internal/numpy/fft/_pocketfft_umath.cp313-win_amd64.pyd",
+        "_internal/numpy/linalg/_umath_linalg.cp313-win_amd64.pyd",
+        "_internal/numpy/random/_bounded_integers.cp313-win_amd64.pyd",
+        "_internal/numpy/random/_common.cp313-win_amd64.pyd",
+        "_internal/numpy/random/_generator.cp313-win_amd64.pyd",
+        "_internal/numpy/random/_mt19937.cp313-win_amd64.pyd",
+        "_internal/numpy/random/_pcg64.cp313-win_amd64.pyd",
+        "_internal/numpy/random/_philox.cp313-win_amd64.pyd",
+        "_internal/numpy/random/_sfc64.cp313-win_amd64.pyd",
+        "_internal/numpy/random/bit_generator.cp313-win_amd64.pyd",
+        "_internal/numpy/random/mtrand.cp313-win_amd64.pyd"
+      ]
+    },
+    {
+      "component": "onnx 1.23.2",
+      "license": "Apache-2.0",
+      "status": "DECLARED",
+      "files": [
+        "_internal/onnx/onnx_cpp2py_export.pyd"
+      ]
+    },
+    {
+      "component": "ONNX Runtime 1.32.0",
+      "license": "MIT",
+      "status": "DECLARED",
+      "files": [
+        "_internal/onnxruntime/capi/onnxruntime.dll",
+        "_internal/onnxruntime/capi/onnxruntime_providers_shared.dll",
+        "_internal/onnxruntime/capi/onnxruntime_pybind11_state.pyd"
+      ]
+    },
+    {
+      "component": "FFmpeg libraries built for Qt Multimedia",
+      "license": "LGPL-2.1-or-later",
+      "status": "PATENT_REVIEW_REQUIRED",
+      "files": [
+        "_internal/PySide6/avcodec-63.dll",
+        "_internal/PySide6/avformat-63.dll",
+        "_internal/PySide6/avutil-61.dll",
+        "_internal/PySide6/swresample-7.dll",
+        "_internal/PySide6/swscale-10.dll"
+      ]
+    },
+    {
+      "component": "Qt 6.12.0 plugin",
+      "license": "LGPL-3.0-only",
+      "status": "DECLARED",
+      "files": [
+        "_internal/PySide6/plugins/generic/qtuiotouchplugin.dll",
+        "_internal/PySide6/plugins/iconengines/qsvgicon.dll",
+        "_internal/PySide6/plugins/imageformats/qgif.dll",
+        "_internal/PySide6/plugins/imageformats/qicns.dll",
+        "_internal/PySide6/plugins/imageformats/qico.dll",
+        "_internal/PySide6/plugins/imageformats/qjpeg.dll",
+        "_internal/PySide6/plugins/imageformats/qsvg.dll",
+        "_internal/PySide6/plugins/imageformats/qtga.dll",
+        "_internal/PySide6/plugins/imageformats/qtiff.dll",
+        "_internal/PySide6/plugins/imageformats/qwbmp.dll",
+        "_internal/PySide6/plugins/imageformats/qwebp.dll",
+        "_internal/PySide6/plugins/multimedia/ffmpegmediaplugin.dll",
+        "_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll",
+        "_internal/PySide6/plugins/networkinformation/qnetworklistmanager.dll",
+        "_internal/PySide6/plugins/platforms/qdirect2d.dll",
+        "_internal/PySide6/plugins/platforms/qminimal.dll",
+        "_internal/PySide6/plugins/platforms/qoffscreen.dll",
+        "_internal/PySide6/plugins/platforms/qwindows.dll",
+        "_internal/PySide6/plugins/styles/qmodernwindowsstyle.dll",
+        "_internal/PySide6/plugins/tls/qcertonlybackend.dll",
+        "_internal/PySide6/plugins/tls/qopensslbackend.dll",
+        "_internal/PySide6/plugins/tls/qschannelbackend.dll"
+      ]
+    },
+    {
+      "component": "PySide6 6.12.0",
+      "license": "LGPL-3.0-only",
+      "status": "DECLARED",
+      "files": [
+        "_internal/PySide6/pyside6.abi3.dll",
+        "_internal/PySide6/QtCore.pyd",
+        "_internal/PySide6/QtGui.pyd",
+        "_internal/PySide6/QtMultimedia.pyd",
+        "_internal/PySide6/QtMultimediaWidgets.pyd",
+        "_internal/PySide6/QtNetwork.pyd",
+        "_internal/PySide6/QtWidgets.pyd"
+      ]
+    },
+    {
+      "component": "Qt 6.12.0",
+      "license": "LGPL-3.0-only",
+      "status": "DECLARED",
+      "files": [
+        "_internal/PySide6/Qt6Core.dll",
+        "_internal/PySide6/Qt6Gui.dll",
+        "_internal/PySide6/Qt6Multimedia.dll",
+        "_internal/PySide6/Qt6MultimediaWidgets.dll",
+        "_internal/PySide6/Qt6Network.dll",
+        "_internal/PySide6/Qt6OpenGL.dll",
+        "_internal/PySide6/Qt6Svg.dll",
+        "_internal/PySide6/Qt6Widgets.dll"
+      ]
+    },
+    {
+      "component": "CPython",
+      "license": "PSF-2.0",
+      "status": "DECLARED",
+      "files": [
+        "_internal/python3.dll",
+        "_internal/python313.dll"
+      ]
+    },
+    {
+      "component": "sherpa-onnx 2.0.1",
+      "license": "Apache-2.0",
+      "status": "DECLARED",
+      "files": [
+        "_internal/sherpa_onnx/lib/_sherpa_onnx.cp313-win_amd64.pyd",
+        "_internal/sherpa_onnx/lib/sherpa-onnx-c-api.dll",
+        "_internal/sherpa_onnx/lib/sherpa-onnx-cxx-api.dll"
+      ]
+    },
+    {
+      "component": "ONNX Runtime (sherpa-onnx-core build)",
+      "license": "MIT",
+      "status": "DECLARED",
+      "files": [
+        "_internal/sherpa_onnx/lib/onnxruntime.dll"
+      ]
+    },
+    {
+      "component": "shiboken6 6.12.0",
+      "license": "LGPL-3.0-only",
+      "status": "DECLARED",
+      "files": [
+        "_internal/shiboken6/Shiboken.pyd",
+        "_internal/shiboken6/shiboken6.abi3.dll"
+      ]
+    },
+    {
+      "component": "SQLite (CPython build)",
+      "license": "blessing",
+      "status": "DECLARED",
+      "files": [
+        "_internal/sqlite3.dll"
+      ]
+    },
+    {
+      "component": "tokenizers 0.23.3",
+      "license": "Apache-2.0",
+      "status": "DECLARED",
+      "files": [
+        "_internal/tokenizers/tokenizers.pyd"
+      ]
+    },
+    {
+      "component": "PyYAML / libyaml",
+      "license": "MIT",
+      "status": "DECLARED",
+      "files": [
+        "_internal/yaml/_yaml.cp313-win_amd64.pyd"
+      ]
+    },
+    {
+      "component": "PyInstaller 6.22.3 bootloader",
+      "license": "GPL-2.0-or-later WITH Bootloader-exception",
+      "status": "DECLARED",
+      "files": [
+        "Recoryn-CLI.exe",
+        "Recoryn.exe"
+      ]
+    }
+  ]
+}

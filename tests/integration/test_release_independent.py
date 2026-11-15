@@ -7,6 +7,7 @@ import importlib
 import importlib.metadata
 import json
 import runpy
+import shutil
 import socket
 import sys
 from pathlib import Path
@@ -232,6 +233,9 @@ def test_sbom_uses_observed_distribution_and_records_exact_shipped_hashes(
     (source / "pyproject.toml").write_text('[project]\nversion="9.1"\n')
     (source / "build-inputs.json").write_text('{"schema_version":1,"files":[]}')
     (source / "src" / "recoryn" / "__init__.py").write_text("# synthetic source")
+    # L-P03 made the pinned notice texts a required evidence input; supply the real ones
+    # (the SBOM/hash assertions below are unchanged).
+    shutil.copytree(ROOT / "packaging" / "notices", source / "packaging" / "notices")
     site = tmp_path / "site"
     (site / "selected").mkdir(parents=True)
     native = site / "selected" / "runtime.dll"

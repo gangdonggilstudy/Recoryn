@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "note": "Verbatim upstream license texts fixed for release notices (L01 D5). Text presence is not a legal clearance.",
+  "files": [
+    {
+      "file": "LGPL-3.0.txt",
+      "url": "https://www.gnu.org/licenses/lgpl-3.0.txt",
+      "sha256": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
+      "bytes": 7652,
+      "applies_to": [
+        "PySide6",
+        "PySide6_Essentials",
+        "PySide6_Addons",
+        "shiboken6",
+        "Qt 6.12.0 runtime"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "GPL-3.0.txt",
+      "url": "https://www.gnu.org/licenses/gpl-3.0.txt",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+      "bytes": 35149,
+      "applies_to": [
+        "LGPL-3.0 incorporates GPL-3.0 terms"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "LGPL-2.1.txt",
+      "url": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "bytes": 26419,
+      "applies_to": [
+        "FFmpeg libraries shipped by Qt Multimedia (PySide6/av*, sw*)"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "CTranslate2-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/OpenNMT/CTranslate2/v4.9.0/LICENSE",
+      "sha256": "54aa79d9fe3c09e67a16dcd95b9e88676405a6ec174efda31036983cf7672ecb",
+      "bytes": 1115,
+      "applies_to": [
+        "ctranslate2 4.9.0"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "tokenizers-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/huggingface/tokenizers/v0.23.3/LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357,
+      "applies_to": [
+        "tokenizers 0.23.3"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "sherpa-onnx-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v2.0.1/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358,
+      "applies_to": [
+        "sherpa-onnx-core 2.0.1 (wheel ships no license file)"
+      ],
+      "retrieved": "2026-11-15"
+    }
+  ]
+}

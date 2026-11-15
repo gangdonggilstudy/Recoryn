@@ -25,7 +25,10 @@ def snapshot_inputs(root: Path, destination: Path) -> Path:
         for source in (root / directory).rglob("*"):
             safe(source)
             if source.is_file() and (
-                source.suffix in {".py", ".pyi", ".spec"} or source.name == "py.typed"
+                source.suffix in {".py", ".pyi", ".spec"}
+                or source.name == "py.typed"
+                # Verbatim license texts and their pinned hashes (L01 D5).
+                or source.parent == root / "packaging" / "notices"
             ):
                 sources.append(source)
     sources.extend(path for path in root.glob("requirements*.txt") if path.is_file())
@@ -128,7 +131,7 @@ def isolated_path() -> str:
 def build(output: Path, *, smoke: bool = False) -> Path:
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root / "packaging"))
-    from release_evidence import generate
+    from release_evidence import generate, license_gaps
     from release_manager import ReleaseError, safe, verify
 
     if sys.platform != "win32":
@@ -200,6 +203,8 @@ def build(output: Path, *, smoke: bool = False) -> Path:
     verify(bundle)
     if native_import_closure(bundle):
         raise ReleaseError("NATIVE_IMPORT_UNRESOLVED")
+    if license_gaps(bundle):
+        raise ReleaseError("NATIVE_LICENSE_UNMAPPED")
     if smoke:
         with (
             (output / "smoke.stdout.json").open("xb") as out,

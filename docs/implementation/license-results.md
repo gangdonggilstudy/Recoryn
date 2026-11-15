@@ -62,6 +62,50 @@
 
 증거: `%TEMP%/recoryn-l-p02-tree-evisijv0`의 report.json, pytest.xml(`7c2872cc…6340`), coverage.json(`8b3fd6ef…1538`), 정적 검사 log. 이 결과 기록과 배정표 상태 갱신 외에는 검증 tree와 commit tree가 같다. 로컬 ignored 후보는 공개 배포물이 아니며 EXE를 Git에 올리지 않는다.
 
+## L-P03 고지·SBOM·native 대응표
+
+선행 L-P02 `7a31a6ea95aeb64ec46aada59358a48673384c5c`의 원격 CI [43679833977](https://github.com/gangdonggilstudy/Recoryn/actions/runs/43679833977)은 core 3.11·3.13과 optional-runtime 세 job success다(C00 GitHub API 확인).
+
+### 구현
+
+- **고지 원문 고정:** `packaging/notices/`에 GNU LGPL-3.0·GPL-3.0·LGPL-2.1, CTranslate2 v4.9.0 MIT, tokenizers v0.23.3·sherpa-onnx v2.0.1 Apache-2.0 원문을 upstream 그대로 두고 `SOURCES.json`에 URL·SHA-256·적용 대상을 기록했다. `.gitattributes`가 줄바꿈 변환을 막고, 빌더 snapshot이 이 파일들을 입력에 포함하며, 생성 시 해시가 다르면 NOTICE_TEXT_HASH_MISMATCH로 중단한다.
+- **Qt 표기 정정:** PySide6·shiboken6 wheel은 Qt 상용 라이선스 텍스트만 동봉한다. Recoryn이 실제로 쓰는 LGPL-3.0-only를 distributed license로 기록하고 LGPL-3.0·GPL-3.0 원문을 동봉하며 상용 텍스트는 복사하지 않는다. 선언 원문은 `recoryn:declared-license`에 그대로 남긴다.
+- **누락·산문 선언 보충:** ctranslate2·tokenizers·sherpa-onnx-core 원문을 보충했다. colorama·numpy·pyinstaller·onnxruntime·protobuf·sherpa-onnx의 산문 또는 전문 선언은 각 wheel이 동봉한 텍스트와 같은 SPDX 식으로 정규화했다. 대응 규칙이 없는 긴 선언은 전문을 필드에 붙이지 않고 `LicenseRef-Declared-As-Full-Text`로 표시한다. CycloneDX 표준 `licenses` 필드를 채운다.
+- **native 대응표:** 모든 EXE/DLL/PYD를 실제로 싣는 구성요소·라이선스·상태(DECLARED, REDISTRIBUTABLE_PROPRIETARY, CONDITIONS_UNCONFIRMED, PATENT_REVIEW_REQUIRED)로 귀속한다. 규칙이 없는 파일은 UNMAPPED이며 빌드가 NATIVE_LICENSE_UNMAPPED로 중단한다. 호스트 도구 이름(`libssl-3-x64.dll`)은 의도적으로 귀속하지 않는다.
+- **NOTICE:** 제외 정책, LGPL 구성요소의 교체 가능성과 소스 위치, 공개 배포 시 corresponding source 게시가 남은 게이트라는 사실, 구성요소별 distributed license와 고지 파일, MPL-2.0(tqdm) Source Code Form 위치, 조건 미확인·특허 검토 대상 native 파일, Intel·Microsoft 조건을 적는다. 법률 승인처럼 표현하지 않는다.
+
+### 독립 검토
+
+[고지 검토](../reviews/license-notice-review.md)(recoryn-security, w5:p5)는 OPEN 4건을 냈다. L03-01 S2 디렉터리 포괄 규칙이 미확인 native를 DECLARED로 만듦 → 검토한 112개 실제 경로만 담은 `packaging/notices/native-map.json`으로 교체, 목록 밖은 UNMAPPED. L03-02 S2 모양만 보는 SPDX 판정 → `packaging.licenses` 파서로 검증, 실패 값은 `license.name`. L03-03 S3 긴 선언 전문이 SBOM property에 남음 → hash·길이만 기록. L03-04 S3 Microsoft 조건 미확인 미표기 → NOTICE와 gate `microsoft_runtime_conditions`·`intel_runtime_conditions`에 명시. 재확인 결과는 리뷰 후단이 정본이다.
+
+같은 검토자가 원 반례를 그대로 재실행해 네 건 모두 RECHECKED/CLOSED, **OPEN 0**으로 판정했다(세 경로의 합성 DLL 모두 UNMAPPED, 부정 SPDX 3식은 `license.name`, numpy는 식별자·hash·47540자, 두 후보 NOTICE와 provenance의 Microsoft 문구·gate 확인). 검토자는 BR42 fixture 변경에서 oracle 약화를 찾지 못했다. 이전 TEMP 사본은 권한 제한으로 읽지 못해 과거 assertion과의 동일성은 주장하지 않았다. 이 부분은 C00이 `git diff --cached HEAD -- tests/integration/test_release_independent.py`로 보충 확인했다. 변경은 `import shutil` 1줄과 고지 폴더 복사 및 주석 3줄 추가뿐이며 삭제·수정된 assertion은 0줄이다.
+
+### 검증
+
+첫 정확 tree 실행(`b828b91e…`)은 7434 PASS / **1 FAIL**이었다. 기존 BR42 독립 시험 `test_sbom_uses_observed_distribution_and_records_exact_shipped_hashes`의 합성 source에 이번 단위가 필수로 만든 고지 입력이 없어 NOTICE_TEXTS_MISSING이 났다. 고지 요건을 완화하지 않고 그 fixture에 실제 `packaging/notices`만 복사했으며 SBOM·hash assertion은 바꾸지 않았다. 이 실패를 재실행 성공으로 덮지 않는다.
+
+수정 후 정확한 L-P03 stage tree `f786ddc54b1373faa18ca945fce86143db5f1cfb`(211파일)를 `%TEMP%/recoryn-l-p03b-tree-nebxqjdp/tree`에 추출해 같은 방식으로 실행했다. 추출 bytes 불일치 0, import 출처 snapshot.
+
+| 검사 | 결과 |
+| --- | --- |
+| 전체 pytest | **7435 PASS / 236.17초**, 실패·오류·skip 0 |
+| 전체 line / branch | **8158/8731 = 93.44% / 2439/2804 = 86.98%**, 분리 예산 PASS, 측정 68파일 모두 snapshot |
+| Ruff check·format / strict mypy | 135파일 / 77파일 PASS |
+
+같은 tree의 frozen 후보 `build/l03-final-1794720823`: 빌드 입력 89파일(고지 원문·SOURCES·native-map 포함)이 tree bytes와 일치, 1054파일·네이티브 112개 전부 명시 귀속(DECLARED 92, REDISTRIBUTABLE_PROPRIETARY 13, PATENT_REVIEW_REQUIRED 5, CONDITIONS_UNCONFIRMED 2, UNMAPPED 0), 금지 파일 0, import closure 0, Qt 상용 텍스트 0, `verify`와 frozen smoke PASS.
+
+| 후보 파일 | SHA-256 |
+| --- | --- |
+| Recoryn.exe | `6f216fd59d07914ae38077e419f3875d3900829355e1b4994e1b6d5581e774a0` |
+| Recoryn-CLI.exe | `6002ed06a73311d9c3a58949923c62bb3ab3930b60dd4ab09a25c41f1b215518` |
+| release-manifest.json | `7215d05b26325ee42ff8810b10eeac760fe117c28a45526125d958e773829d49` |
+| NOTICE.txt | `6b6c01b833a36ffa49a9be6bcca1fcf09bc69e7d2460301cdfcac0f2b4253f08` |
+| sbom.cdx.json | `3519a569088f0cf49e6153d3a04a3f3060782d426d5c023500c2bda39a75af88` |
+| native-origins.json | `58b0daead3ab572bac9cb8eb7a42595e8081a984d087b19c78724677bd758c9f` |
+| build-provenance.json | `dd96aebb57c995293e00904630866e1a93faa56f942162b5da85fd17c9b4f82c` |
+
+NOTICE와 SBOM은 검토자에게 제출한 수정 후보 `build/l03-1794720123`과 bytes가 같다.
+
 ## 미검증
 
 실제 음성·Whisper 추론 품질, GPU, 장시간 입력의 메모리 상한, clean VM, 서명, Qt/FFmpeg corresponding source 배포, 코덱 특허, Intel·Microsoft 조건의 법률 확인은 NOT_RUN 또는 G4 OPEN이다.

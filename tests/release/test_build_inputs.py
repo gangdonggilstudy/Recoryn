@@ -91,6 +91,28 @@ def test_snapshot_rejects_output_within_collected_inputs(tmp_path: Path) -> None
     assert not destination.exists()
 
 
+def test_snapshot_carries_pinned_notice_texts_but_no_other_packaging_data(
+    tmp_path: Path,
+) -> None:
+    # L03: release notices are build inputs with exact bytes; arbitrary data is not.
+    root = source_tree(tmp_path)
+    notices = root / "packaging" / "notices"
+    notices.mkdir()
+    (notices / "LGPL-3.0.txt").write_bytes(b"verbatim license text\r\n")
+    (notices / "SOURCES.json").write_text('{"schema_version":1,"files":[]}')
+    (root / "packaging" / "extra.dat").write_bytes(b"not an input")
+    destination = tmp_path / "candidate" / "inputs"
+    builder().snapshot_inputs(root, destination)
+    names = {
+        record["path"] for record in manager.read_json(destination / "build-inputs.json")["files"]
+    }
+    assert {"packaging/notices/LGPL-3.0.txt", "packaging/notices/SOURCES.json"} <= names
+    assert "packaging/extra.dat" not in names
+    assert (destination / "packaging/notices/LGPL-3.0.txt").read_bytes() == (
+        b"verbatim license text\r\n"
+    )
+
+
 def test_pyinstaller_path_excludes_host_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     # A Git Bash PATH once let PyInstaller collect Git's mingw64 OpenSSL DLLs.
     module = builder()
