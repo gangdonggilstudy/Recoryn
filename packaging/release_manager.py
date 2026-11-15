@@ -42,6 +42,81 @@ WEIGHTS = {
     ".mlmodel",
     ".weights",
 }
+# License policy L01 D1-D3 (docs/implementation/license-review.md). Matching is on
+# the lower-case POSIX path, case- and separator-insensitive. Directory rules match
+# ANY directory component (a hook may vendor a package below another directory,
+# L02-P01); basename prefixes cover native files wherever they are placed.
+EXCLUDED_DIRECTORIES = (
+    ("av", "PYAV_FFMPEG_GPL_CODECS"),
+    ("av.libs", "PYAV_FFMPEG_GPL_CODECS"),
+)
+EXCLUDED_DISTRIBUTIONS = (("av-", "PYAV_FFMPEG_GPL_CODECS"),)
+_NVIDIA = "NVIDIA_PROPRIETARY_NOT_REQUIRED"
+EXCLUDED_BASENAMES = (
+    ("libx264", "GPL_ONLY_VIDEO_CODEC"),
+    ("libx265", "GPL_OR_COMMERCIAL_VIDEO_CODEC"),
+    ("libopenh264", "H264_PATENT_NOT_CISCO_DISTRIBUTED"),
+    ("qt6virtualkeyboard", "QT_GPL_OR_COMMERCIAL_MODULE"),
+    ("qtvirtualkeyboardplugin", "QT_GPL_OR_COMMERCIAL_MODULE"),
+    ("qt6qml", "QT_UNUSED_VIRTUAL_KEYBOARD_DEPENDENCY"),
+    ("qt6quick", "QT_UNUSED_VIRTUAL_KEYBOARD_DEPENDENCY"),
+    ("qt6pdf", "QT_UNUSED_PDF_MODULE"),
+    ("qpdf.dll", "QT_UNUSED_PDF_MODULE"),
+    # Software OpenGL fallback (Mesa + LLVM, conditions unconfirmed per L01-02);
+    # loaded on demand only, and the Widgets/audio-only UI never requests OpenGL.
+    ("opengl32sw", "QT_SOFTWARE_OPENGL_UNUSED_CONDITIONS_UNCONFIRMED"),
+    # D3 covers every CUDA toolkit/cuDNN/TensorRT runtime, not only those seen so far
+    # (L02-P02). CPU is the default; GPU users supply their own NVIDIA runtime.
+    ("cudnn", _NVIDIA),
+    ("cublas", _NVIDIA),
+    ("cudart", _NVIDIA),
+    ("nvrtc", _NVIDIA),
+    ("nvjitlink", _NVIDIA),
+    ("cusparse", _NVIDIA),
+    ("cufft", _NVIDIA),
+    ("curand", _NVIDIA),
+    ("cusolver", _NVIDIA),
+    ("cupti", _NVIDIA),
+    ("nvtoolsext", _NVIDIA),
+    ("nvinfer", _NVIDIA),
+    ("nvonnxparser", _NVIDIA),
+    ("nvblas", _NVIDIA),
+    ("nppc", _NVIDIA),
+    ("nppi", _NVIDIA),
+    ("npps", _NVIDIA),
+)
+
+
+def excluded_component(path: str) -> str | None:
+    """Return the policy reason when a bundle path must not be distributed."""
+    parts = path.replace("\\", "/").lower().split("/")
+    for directory in parts[:-1]:
+        for excluded, reason in EXCLUDED_DIRECTORIES:
+            if directory == excluded:
+                return reason
+        for prefix, reason in EXCLUDED_DISTRIBUTIONS:
+            if directory.startswith(prefix) and directory.endswith(".dist-info"):
+                return reason
+    basename = parts[-1]
+    for prefix, reason in EXCLUDED_BASENAMES:
+        if basename.startswith(prefix):
+            return reason
+    return None
+
+
+def excluded_source(path: str) -> str | None:
+    """Policy for an Analysis TOC source path (L02-P03), by string only.
+
+    A hook can flatten a forbidden file to an innocent destination name, so the
+    source is checked too: relative to site-packages when present (a user profile
+    directory named like a package must not exclude everything), else by basename.
+    No filesystem probe happens here, keeping the UNC/no-probe contract.
+    """
+    name = path.replace("\\", "/").lower()
+    marker = "/site-packages/"
+    if marker in name:
+        return excluded_component(name.rsplit(marker, 1)[1])
+    return excluded_component(name.rsplit("/", 1)[-1])
 
 
 class ReleaseError(ValueError):
@@ -187,6 +262,8 @@ def verify(root: Path, *, allow_missing: bool = False) -> dict[str, Any]:
         raise ReleaseError("RELEASE_INTEGRITY_MISMATCH")
     if any(Path(record["path"]).suffix.lower() in WEIGHTS for record in records):
         raise ReleaseError("BUNDLED_MODEL_WEIGHTS_FORBIDDEN")
+    if any(excluded_component(record["path"]) for record in records):
+        raise ReleaseError("LICENSE_EXCLUDED_COMPONENT")
     if not {"Recoryn.exe", "Recoryn-CLI.exe"}.issubset({record["path"] for record in records}):
         raise ReleaseError("RELEASE_ENTRY_MISSING")
     return manifest

@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
-from release_manager import WEIGHTS, safe
+from release_manager import WEIGHTS, excluded_component, excluded_source, safe
 
 root = Path(SPECPATH).parent
 datas = []
@@ -44,11 +44,26 @@ datas = [(source, dest) for source, dest in datas
          if Path(source).suffix.lower() not in WEIGHTS]
 
 common = dict(pathex=[str(root / 'src'), str(root / 'packaging')], binaries=binaries,
-              datas=datas, hiddenimports=hidden, hookspath=[], runtime_hooks=[],
-              excludes=['PyQt5', 'PyQt6', 'PySide2', 'torch', 'tensorflow', 'pytest', 'IPython'],
+              datas=datas, hiddenimports=hidden, hookspath=[],
+              # L01 D1: PyAV/FFmpeg with GPL codecs is not distributed; see the hook.
+              runtime_hooks=[str(root / 'packaging' / 'rthook_no_av.py')],
+              excludes=['PyQt5', 'PyQt6', 'PySide2', 'torch', 'tensorflow', 'pytest', 'IPython',
+                        'av'],
               noarchive=False)
 gui = Analysis([str(root / 'packaging' / 'entry_gui.py')], **common)
 cli = Analysis([str(root / 'packaging' / 'entry_cli.py')], **common)
+
+# L01 D1-D3: drop license-excluded or unused native components that framework
+# hooks collect (Qt Virtual Keyboard/Qml/Quick/PDF, NVIDIA DLLs, any PyAV rest).
+# Both the destination and the source are checked: a hook may flatten a forbidden
+# source to an innocent destination name (L02-P03).
+def _allowed(row):
+    return not (excluded_component(row[0]) or excluded_source(row[1]))
+
+
+for analysis in (gui, cli):
+    analysis.binaries = [row for row in analysis.binaries if _allowed(row)]
+    analysis.datas = [row for row in analysis.datas if _allowed(row)]
 
 # Hooks can add data after the initial collection filter. Refuse a candidate
 # containing any weights, including optional VAD models, before making EXEs.

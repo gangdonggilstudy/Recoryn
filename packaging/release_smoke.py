@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from release_manager import digest
+from release_manager import digest, excluded_component
 
 
 def _block_network() -> None:
@@ -28,7 +28,18 @@ def _block_network() -> None:
 
 def _child(output: Any) -> None:
     _block_network()
-    av = importlib.import_module("av")
+    # L01 D1: the frozen bundle must not carry PyAV; its import is an inert stub.
+    frozen = bool(getattr(sys, "frozen", False))
+    stub = getattr(sys.modules.get("av"), "__recoryn_stub__", False) is True
+    if frozen and not stub:
+        raise RuntimeError("PYAV_BUNDLED_OR_HOOK_MISSING")
+    bundle = Path(getattr(sys, "_MEIPASS", "."))
+    if frozen and any(
+        excluded_component(path.relative_to(bundle).as_posix())
+        for path in bundle.rglob("*")
+        if path.is_file()
+    ):
+        raise RuntimeError("LICENSE_EXCLUDED_COMPONENT_BUNDLED")
     ctranslate2 = importlib.import_module("ctranslate2")
     faster_whisper = importlib.import_module("faster_whisper")
     onnxruntime = importlib.import_module("onnxruntime")
@@ -40,6 +51,19 @@ def _child(output: Any) -> None:
 
     from recoryn.app.inference import LocalSTTProcess
     from recoryn.app.inference import _worker as inference_worker
+    from recoryn.transcription.audio_input import prepare_whisper_audio
+
+    # Decode/resample a synthetic 0.1 s 48 kHz stereo WAV without any model.
+    with tempfile.SpooledTemporaryFile() as clip:
+        with wave.open(clip, "wb") as stream:
+            stream.setnchannels(2)
+            stream.setsampwidth(2)
+            stream.setframerate(48_000)
+            stream.writeframes(bytes((0x00, 0x10, 0x00, 0x10)) * 4_800)
+        clip.seek(0)
+        decoded = prepare_whisper_audio(clip.read(), importlib.import_module("numpy"))
+    if decoded.shape != (1_600,) or str(decoded.dtype) != "float32":
+        raise RuntimeError("STT_INPUT_DECODE_FAILED")
     from recoryn.diarization import DiarizationConfig, LocalDiarizationProcess
 
     optional = LocalDiarizationProcess(
@@ -65,7 +89,8 @@ def _child(output: Any) -> None:
         {
             "pid": os.getpid(),
             "whisper": faster_whisper.__version__,
-            "av": av.__version__,
+            "av": "NOT_BUNDLED_STUB" if stub else "SOURCE_ENVIRONMENT_NOT_USED",
+            "stt_input": "DECODED_16K_MONO_FLOAT32",
             "ctranslate2": ctranslate2.__version__,
             "onnxruntime": onnxruntime.__version__,
             "onnx": onnx.__version__,

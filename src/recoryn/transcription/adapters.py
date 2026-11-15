@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import importlib
-import io
 import re
 import threading
 import uuid
@@ -30,6 +29,7 @@ from recoryn.providers._common import (
     require_endpoint,
     segment,
 )
+from recoryn.transcription.audio_input import AudioInputError, prepare_whisper_audio
 
 
 def gemini_endpoint(config: ProviderConfig) -> str:
@@ -132,8 +132,21 @@ class FasterWhisperProvider:
             supported = getattr(self._model, "supported_languages", None)
             if language is not None and supported is not None and language not in supported:
                 raise ProviderError("LANGUAGE_UNSUPPORTED")
+            # License review L01 D1: the distribution has no PyAV/FFmpeg decoder, so
+            # Whisper receives verified PCM already converted to 16 kHz mono float32.
+            try:
+                numpy = importlib.import_module("numpy")
+            except ImportError:
+                raise ProviderError("DEPENDENCY_MISSING") from None
+            try:
+                samples = prepare_whisper_audio(audio_bytes, numpy, check=run.check)
+            except AudioInputError as exc:
+                raise ProviderError(str(exc)) from None
+            # A cancel or deadline reached while the last block was converting must
+            # stop before inference starts (L02-STT-01).
+            run.check()
             raw_segments, info = self._model.transcribe(
-                io.BytesIO(audio_bytes), language=language, vad_filter=False, word_timestamps=False
+                samples, language=language, vad_filter=False, word_timestamps=False
             )
             detected = getattr(info, "language", None)
             if isinstance(detected, str):

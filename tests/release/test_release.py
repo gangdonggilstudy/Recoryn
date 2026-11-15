@@ -308,3 +308,99 @@ def test_native_exe_dll_pyd_are_allowed_runtime_files(tmp_path: Path) -> None:
     manifest["files"] = manager.inventory(source)
     manager.atomic_json(source / manager.MANIFEST, manifest)
     assert manager.verify(source)["version"] == "1"
+
+
+# L01 license policy decision table, written by hand (not imported from the policy).
+LICENSE_EXCLUDED_PATHS = [
+    "_internal/av/__init__.pyc",
+    "_internal/av.libs/avcodec-62-0796e49249259295.dll",
+    "_internal/av-16.1.0.dist-info/METADATA",
+    "_internal/av.libs/libx264-165-11f58e196647ac55.dll",
+    "_internal/elsewhere/libx265-e5556c00d79789a6.dll",
+    "_internal/elsewhere/libopenh264-7-6e1702dbec21f21c.dll",
+    "_internal/PySide6/Qt6VirtualKeyboard.dll",
+    "_internal/PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll",
+    "_internal/PySide6/Qt6Qml.dll",
+    "_internal/PySide6/Qt6QmlModels.dll",
+    "_internal/PySide6/Qt6Quick.dll",
+    "_internal/PySide6/Qt6Pdf.dll",
+    "_internal/PySide6/plugins/imageformats/qpdf.dll",
+    "_internal/PySide6/opengl32sw.dll",
+    "_internal/ctranslate2/cudnn64_9.dll",
+    "_internal/ctranslate2/cublas64_12.dll",
+    "_internal/ctranslate2/cudart64_12.dll",
+    "_internal/ctranslate2/nvrtc64_120_0.dll",
+    # L02-P01: a hook may vendor PyAV below another directory.
+    "_internal/vendor/av.libs/avcodec-62.dll",
+    "_internal/vendor/av/__init__.pyc",
+    "_internal/vendor/AV-16.1.0.DIST-INFO/METADATA",
+    "_internal\\vendor\\av\\audio\\frame.pyd",
+    # L02-P02: the whole NVIDIA runtime family, not only the four names seen first.
+    "_internal/ctranslate2/nvJitLink_120_0.dll",
+    "_internal/ctranslate2/cusparse64_12.dll",
+    "_internal/ctranslate2/cufft64_11.dll",
+    "_internal/ctranslate2/curand64_10.dll",
+    "_internal/ctranslate2/cusolver64_11.dll",
+    "_internal/ctranslate2/cupti64_2025.1.0.dll",
+    "_internal/ctranslate2/nvToolsExt64_1.dll",
+    "_internal/ctranslate2/nvinfer_10.dll",
+    "_internal/ctranslate2/nvonnxparser_10.dll",
+    "_internal/ctranslate2/nvblas64_12.dll",
+    "_internal/ctranslate2/nppc64_12.dll",
+    "_internal/ctranslate2/nppig64_12.dll",
+    "_internal/ctranslate2/npps64_12.dll",
+]
+LICENSE_ALLOWED_LOOKALIKES = [
+    "_internal/PySide6/avcodec-63.dll",
+    "_internal/PySide6/avutil-61.dll",
+    "_internal/available/runtime.dll",
+    "_internal/avx-1.0.dist-info/METADATA",
+    "_internal/vendor/avatar/av.txt",
+    "_internal/vendor/av-tools/README",
+    "_internal/curses/_curses.pyd",
+    "_internal/PySide6/Qt6Multimedia.dll",
+    "_internal/PySide6/Qt6Svg.dll",
+    "_internal/PySide6/plugins/imageformats/qjpeg.dll",
+    "_internal/ctranslate2/libiomp5md.dll",
+    "_internal/ctranslate2/ctranslate2.dll",
+]
+
+
+def _candidate_with(tmp_path: Path, relative: str) -> Path:
+    source = artifact(tmp_path, "source", "1")
+    target = source / Path(relative)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"synthetic-component")
+    manifest = manager.read_json(source / manager.MANIFEST)
+    manifest["files"] = manager.inventory(source)
+    manager.atomic_json(source / manager.MANIFEST, manifest)
+    return source
+
+
+@pytest.mark.parametrize("relative", LICENSE_EXCLUDED_PATHS)
+def test_license_excluded_component_refuses_candidate(tmp_path: Path, relative: str) -> None:
+    source = _candidate_with(tmp_path, relative)
+    with pytest.raises(manager.ReleaseError, match="LICENSE_EXCLUDED_COMPONENT"):
+        manager.verify(source)
+    assert manager.excluded_component(relative.upper()) is not None
+
+
+@pytest.mark.parametrize("relative", LICENSE_ALLOWED_LOOKALIKES)
+def test_license_policy_keeps_required_lookalike_components(tmp_path: Path, relative: str) -> None:
+    assert manager.verify(_candidate_with(tmp_path, relative))["version"] == "1"
+    assert manager.excluded_component(relative) is None
+
+
+def test_license_policy_table_has_no_unreviewed_rule() -> None:
+    # Every rule must be represented by at least one hand-written refusal row.
+    parts = [path.replace("\\", "/").lower().split("/") for path in LICENSE_EXCLUDED_PATHS]
+    for directory, _ in manager.EXCLUDED_DIRECTORIES:
+        assert sum(directory in path[1:-1] for path in parts) >= 2, directory  # top and nested
+    for prefix, _ in manager.EXCLUDED_DISTRIBUTIONS:
+        assert any(
+            part.startswith(prefix) and part.endswith(".dist-info")
+            for path in parts
+            for part in path[:-1]
+        ), prefix
+    for prefix, _ in manager.EXCLUDED_BASENAMES:
+        assert any(path[-1].startswith(prefix) for path in parts), prefix

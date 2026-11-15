@@ -880,3 +880,97 @@ def test_backend_error_classification_never_exposes_exception(
     assert not result.complete
     assert result.error_code == ("PROVIDER_FAILED" if broken_str else "RESOURCE_EXHAUSTED")
     assert "SECRET" not in repr(result)
+
+
+def test_local_whisper_receives_decoded_16k_mono_float32_not_file_bytes(tmp_path: Path) -> None:
+    # L02: no PyAV decoder is distributed. 0.25 s of 48 kHz stereo L=R=4096 must
+    # arrive as 4000 float32 samples of 0.125; the source WAV stays unchanged.
+    import numpy as np
+
+    path = tmp_path / "clip.wav"
+    with wave.open(str(path), "wb") as stream:
+        stream.setparams((2, 2, 48_000, 0, "NONE", "not compressed"))
+        stream.writeframes((4_096).to_bytes(2, "little", signed=True) * 2 * 12_000)
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    received: list[Any] = []
+
+    def infer(audio: Any, **kwargs: Any) -> Any:
+        received.append((audio, kwargs))
+        return iter([SimpleNamespace(start=0.0, end=0.25, text="ok")]), SimpleNamespace()
+
+    adapter = FasterWhisperProvider(
+        model_dir(tmp_path), model_factory=lambda *a, **k: SimpleNamespace(transcribe=infer)
+    )
+    result = adapter.transcribe(STTRequest(path))
+    assert result.complete and result.processed_ms == 250
+    samples, kwargs = received[0]
+    assert isinstance(samples, np.ndarray) and samples.dtype == np.float32
+    assert samples.shape == (4_000,)
+    assert float(np.max(np.abs(samples[800:-800].astype(np.float64) - 0.125))) <= 1e-7
+    assert kwargs == {"language": None, "vad_filter": False, "word_timestamps": False}
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.parametrize("rate", [16_000, 48_000])
+@pytest.mark.parametrize("stop", ["cancel", "deadline"])
+def test_local_whisper_never_starts_inference_after_preprocess_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rate: int, stop: str
+) -> None:
+    # L02-STT-01: a cancel/deadline reached exactly when conversion finishes (after
+    # the last block check) must not reach the model.
+    path = tmp_path / f"clip-{rate}.wav"
+    with wave.open(str(path), "wb") as stream:
+        stream.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+        stream.writeframes(b"\x00\x08" * (rate // 10))
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    cancel = threading.Event()
+    original = stt_module.prepare_whisper_audio
+    clock = [0.0]
+    import recoryn.providers._common as provider_common
+
+    # Only the provider deadline clock is fake; threading and pytest keep real time.
+    monkeypatch.setattr(provider_common, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def prepared_then_stopped(*args: Any, **kwargs: Any) -> Any:
+        result = original(*args, **kwargs)
+        if stop == "cancel":
+            cancel.set()
+        else:
+            clock[0] = 10_000.0
+        return result
+
+    monkeypatch.setattr(stt_module, "prepare_whisper_audio", prepared_then_stopped)
+    calls: list[object] = []
+
+    def infer(*args: Any, **kwargs: Any) -> Any:
+        calls.append(args)
+        return iter([SimpleNamespace(start=0.0, end=0.1, text="late")]), SimpleNamespace()
+
+    adapter = FasterWhisperProvider(
+        model_dir(tmp_path), model_factory=lambda *a, **k: SimpleNamespace(transcribe=infer)
+    )
+    result = adapter.transcribe(STTRequest(path), ExecutionContext(cancel=cancel))
+    assert calls == []
+    assert result.error_code == ("CANCELLED" if stop == "cancel" else "TIMEOUT")
+    assert not result.complete and not result.segments
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+
+
+def test_local_whisper_without_numpy_reports_dependency_missing(
+    tmp_path: Path, audio: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    original = stt_module.importlib.import_module
+
+    def without_numpy(name: str) -> Any:
+        calls.append(name)
+        if name == "numpy":
+            raise ImportError("CANARY")
+        return original(name)
+
+    monkeypatch.setattr(stt_module.importlib, "import_module", without_numpy)
+    model = SimpleNamespace(transcribe=lambda *a, **k: pytest.fail("model must not run"))
+    adapter = FasterWhisperProvider(model_dir(tmp_path), model_factory=lambda *a, **k: model)
+    result = adapter.transcribe(STTRequest(audio))
+    assert result.error_code == "DEPENDENCY_MISSING" and "numpy" in calls
+    assert "CANARY" not in repr(result)

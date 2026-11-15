@@ -89,3 +89,41 @@ def test_snapshot_rejects_output_within_collected_inputs(tmp_path: Path) -> None
     with pytest.raises(manager.ReleaseError, match="OVERLAPS_SOURCE"):
         builder().snapshot_inputs(root, destination)
     assert not destination.exists()
+
+
+def test_pyinstaller_path_excludes_host_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A Git Bash PATH once let PyInstaller collect Git's mingw64 OpenSSL DLLs.
+    module = builder()
+    monkeypatch.setenv("SystemRoot", r"X:\Win")
+    monkeypatch.setenv("PATH", r"C:\Program Files\Git\mingw64\bin;C:\tools")
+    monkeypatch.setattr(module.sys, "executable", r"V:\venv\Scripts\python.exe")
+    monkeypatch.setattr(module.sys, "base_prefix", r"P:\Python313")
+    assert module.isolated_path().split(";") == [
+        r"V:\venv\Scripts",
+        r"P:\Python313",
+        r"P:\Python313\DLLs",
+        r"X:\Win\System32",
+        r"X:\Win",
+    ]
+
+
+def test_builder_rechecks_recorded_toc_destinations_and_sources() -> None:
+    # L02-P03: the recorded Analysis TOC is re-checked independently of the spec.
+    module = builder()
+    toc = {
+        "pure": [["av", "C:/venv/Lib/site-packages/av/__init__.py", "PYMODULE"]],
+        "binaries": [
+            ["vendor/avcodec-62.dll", "C:/venv/Lib/site-packages/av.libs/avcodec-62.dll", "BINARY"],
+            [
+                "PySide6/avcodec-63.dll",
+                "C:/venv/Lib/site-packages/PySide6/avcodec-63.dll",
+                "BINARY",
+            ],
+            ["PySide6/Qt6Pdf.dll", "C:/venv/Lib/site-packages/PySide6/Qt6Pdf.dll", "BINARY"],
+        ],
+        "datas": [["notes/README", "C:/Users/av/README", "DATA"]],
+    }
+    assert module.excluded_toc_rows(toc) == [
+        "PySide6/Qt6Pdf.dll <- C:/venv/Lib/site-packages/PySide6/Qt6Pdf.dll",
+        "vendor/avcodec-62.dll <- C:/venv/Lib/site-packages/av.libs/avcodec-62.dll",
+    ]
