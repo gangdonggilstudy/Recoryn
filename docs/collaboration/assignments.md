@@ -2,6 +2,14 @@
 
 현재 단계: 사용자 지시에 따라 설계 v1.0의 구현 완료까지 개발한다. 아래 D/P 배정은 완료 이력이며 B 배정이 현재 활성 범위다. 배정 없는 신규 세션은 온보딩 후 대기한다. 오케스트레이터만 이 표를 수정한다. pane ID는 조회 시점의 식별자이며 재접속 후 재조회한다.
 
+## 2026-11-15 오케스트레이터 인수인계 H01 / C00
+
+사용자가 Recoryn 영역의 Claude 세션으로 오케스트레이터 업무 전체를 이전하도록 명시했다. 조회한 후임은 **w5:t3/w5:p6 Claude**, cwd `D:/project/Recoryn`이다. 상세 권한·현재 정본·작업자·남은 게이트와 인수 절차는 [오케스트레이터 인계서](orchestrator-handoff.md)를 따른다. 기존 Codex root/w5:p1은 H-P01 인계 문서 단위를 마감한 뒤 읽기 전용으로 전환하고, 후임의 `ORCHESTRATOR_ACCEPTED` 회신으로 단일 오케스트레이터 권한을 전환한다. 그전에는 후임이 Git/제품/공유 문서를 쓰지 않는다. 전환 후 C00/Claude가 요구사항·설계·배정·리뷰 종결·최종 검증·commit/push·CI와 사용자 보고를 전담한다. 기존 문서의 root/Q00/B10은 과거 작성자 또는 오케스트레이터 역할이며 영구적인 Codex 전용 권한이 아니다. **계속 활성인 B10의 WORKING 상태와 root 소유 app/ui/models/cli/packaging/CI/협업 문서 범위도 C00/w5:p6이 승계하며, 아래 표의 기존 w5:p1 표기는 이력이다.** worker의 별도 소유 파일은 새 명시 배정 없이 덮어쓰지 않는다.
+
+Q21~Q24 및 관련 독립 리뷰는 **VERIFIED·파일 동결·읽기 전용 대기**다. 아래 Q 절의 ASSIGNED/배정 경로는 최초 계획 이력으로 보존하며 새 쓰기 허가가 아니다. 현재 결과는 [Q-P02](../testing/q-core-results.md), [Q-P03](../testing/q-policy-results.md)와 Git/해당 head의 CI가 정본이다. 최신 제품/시험 head `74b1167fb6c5c4957b51891511cdfa2629dc3874`의 원격 CI `43612561745`는 세 job 모두 success다. 사용자 후속 지시인 **commit trailer 금지**도 AGENTS 및 인계서에 반영한다.
+
+H-P01은 기준74b1167의 문서 전용 단위다. 정확한 manifest는 AGENTS.md, docs/collaboration/assignments.md, docs/collaboration/orchestrator-handoff.md의 3파일이며, 작성자는 기존 Codex/Q00, 독립 검토자는 후임 Claude/C00이다. 내용·상대 링크·권한 충돌·diff/commit trailer 검사를 수행한다. commit/push·원격 ref/CI 상태와 최종 수락 회신은 인계 절차에 연결하고, 이 문서 변경에 제품 시험을 추가하지 않는다.
+
 ## 2026-11-15 Q: 경우의 수 기반 시험과 push 단위 적용
 
 사용자는 경계·조합·상태·순서의 경우의 수를 계산한 촘촘한 시험과 필요한 시험 계층의 적극 적용, push 단위의 사전 설계·체계화를 지시했다. 기준 commit은 30703fe이며 시작 작업 트리는 clean이다. root/Q00은 AGENTS·온보딩·workflow·quality-system·case-space/push-units 문서와 이 표, 단위 결과·통합 Git/CI를 소유한다. [경우의 수 규칙](../testing/case-space.md)과 [Q-P01~03 push 계획](push-units.md)을 먼저 읽는다.

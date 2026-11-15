@@ -24,6 +24,7 @@
 - 작업자는 배정된 파일만 수정한다. 공용 계약 변경은 영향과 대안을 먼저 보고하고 재배정을 받은 뒤 적용한다.
 - 모든 세션은 같은 작업 디렉터리와 Git 인덱스를 공유할 수 있다. 작업자는 `git add`, commit, merge, push, reset, clean, stash 및 다른 작업자의 변경 취소를 실행하지 않는다.
 - 작업자는 파일 단위 결과, 검증 근거, 미해결 위험을 보고한다. 오케스트레이터만 검증 후 통합 commit 및 push를 수행한다.
+- 사용자 지시로 commit 메시지에는 trailer를 넣지 않는다. `Co-authored-by`, `Signed-off-by` 등 자동 attribution도 추가하지 않는다. push 전 메시지 전체와 trailer parse 결과를 확인하며, trailer 블록 밖의 자동 생성/서명 문구도 추가하지 않는다.
 - 새 세션이나 하위 에이전트에 재위임하려면 오케스트레이터의 명시적 배정이 필요하다. 기존 pane, 탭, 세션을 임의 종료하거나 서버를 중지하지 않는다.
 
 ## Product invariants
