@@ -804,16 +804,24 @@ def test_activation_codes_for_other_init_files(
 # --- Worker W ---
 
 
-def test_worker_answers_each_request_with_the_explicit_code(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("supported", "code"),
+    [(True, "GPU_RUNTIME_NOT_INSTALLED"), (False, "GPU_RUNTIME_UNSUPPORTED")],
+)
+def test_worker_answers_each_request_with_the_explicit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, supported: bool, code: str
+) -> None:
     from recoryn.app import inference
 
+    # Fixed explicitly: CI also runs CPython 3.11, where the real check says unsupported.
+    monkeypatch.setattr(gpu, "supported", lambda: supported)
     requests: queue.Queue[Any] = queue.Queue()
     replies: queue.Queue[Any] = queue.Queue()
     for item in ((1, "first"), (2, "second"), None):
         requests.put(item)
     inference._worker("model", "cuda", requests, replies, str(tmp_path / "absent"))
     answers = [replies.get_nowait(), replies.get_nowait()]
-    assert answers == [(1, "GPU_RUNTIME_NOT_INSTALLED"), (2, "GPU_RUNTIME_NOT_INSTALLED")]
+    assert answers == [(1, code), (2, code)]
 
 
 @pytest.mark.parametrize(

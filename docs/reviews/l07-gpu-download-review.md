@@ -140,3 +140,11 @@ C00의 동일 검토자 재배정에 따라 이 절만 추가했다. 최초 발�
 `.venv/Scripts/python.exe -B -W error::ResourceWarning scripts/gpu_runtime_catalog.py build/gpu-wheels --check`를 기존 wheel 두 개에 재실행해 **exit 0 / CATALOG_MATCH**를 확인했다. 다운로드·제품/시험/설정·Git/인덱스 수정은 하지 않았다.
 
 **REVIEW_READY — 소규모 변경 RECHECKED, OPEN 0건. 기존 L07-01~05 종결 판정 유지.**
+
+### L07a / Python 3.11 시험 전제 교정 확인 — 2026-11-15
+
+`git diff a6b7732 -- tests/unit/test_gpu_runtime.py`를 읽어 변경이 `test_worker_answers_each_request_with_the_explicit_code`와 그 매개변수 decorator뿐임을 확인했다. 작업본 raw SHA-256은 `c0906799a9edf0f7e8ca6000ad5208c07312d107cce8305e962ba4b349414722`다. supported만 환경 인자로 고정하고, True→GPU_RUNTIME_NOT_INSTALLED / False→GPU_RUNTIME_UNSUPPORTED를 별도의 고정 기대값으로 둔다. 실제 `_worker`를 호출하며 두 요청의 token과 정확한 오류 코드가 모두 일치해야 하는 단언은 유지된다. `_activate_gpu`의 미지원 우선 계약과도 일치하므로 **oracle 약화 없음**으로 판정한다.
+
+`QT_QPA_PLATFORM=offscreen`, `PYTHONDONTWRITEBYTECODE=1`에서 `build/py311-check/Scripts/python.exe --version`은 **Python 3.11.15**였다. `build/py311-check/Scripts/python.exe -B -W error::ResourceWarning -m pytest -p no:cacheprovider --basetemp C:\Users\gangd\AppData\Local\Temp\recoryn-l07a-py311-da34ffbb93924e38a99dad3a4b8bd10f tests/unit/test_gpu_runtime.py::test_worker_answers_each_request_with_the_explicit_code -q` → **2 PASS / 0.17초**. 네트워크·실 GPU·다운로드 및 다른 파일/Git 수정 없이 확인했다. 전체 회귀나 원격 CI 재확인으로 확대하지 않는다.
+
+**REVIEW_READY — L07a RECHECKED, OPEN 0건. 기존 L07-01~05 종결 판정 유지.**

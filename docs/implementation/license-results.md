@@ -497,7 +497,7 @@ L-P06 stage tree `e84123ba83e8595410fef97d72fe9efd6be54412`(283파일)를 `%TEMP
 
 같은 검토자가 다시 확인했다(OPEN 0).
 
-- **[다운로드 검토](../reviews/l07-gpu-download-review.md)(recoryn-security, raw SHA-256 `e0af2cf50b881a75afd0ee393f02a6db0a404839cc80313368400744f5cd7066`):**
+- **[다운로드 검토](../reviews/l07-gpu-download-review.md)(recoryn-security, raw SHA-256 `de3c5c21ee9a6db1e974a6d3b3e2dbaa0cbdaf4852702a01f4ceb6a2727c1b7b`):**
   - 1차에서 L07-01~03(S1)과 L07-04~05(S2)를 찾았다.
   - 2판 재확인에서 원 반례를 다시 실행해 5건 모두 RECHECKED/CLOSED가 됐다.
   - 정확 tree의 mypy가 `scripts/gpu_runtime_catalog.py`의 루프 변수 재사용을 잡았다. 출력 루프 변수명 2줄만 바꿨고(`d8b290f2…` → `d425a4ee…`), 검토자가 그 2줄뿐임과 `--check` CATALOG_MATCH를 다시 확인했다.
@@ -506,6 +506,15 @@ L-P06 stage tree `e84123ba83e8595410fef97d72fe9efd6be54412`(283파일)를 `%TEMP
   - 2판 재확인에서 5건이 RECHECKED가 되고, U06(S2)이 새로 나왔다. 삭제 확인 창 안에서 AI가 시작되면 쓰는 중인 작업자를 닫는 문제였다.
   - 3판 재확인에서 U06도 RECHECKED가 됐다. 이때 실제 QEventLoop/QTimer와 busy×active×pending 8행을 확인했다.
 - **현재 소스 후보:** `build/l07r3-1794749274`의 smoke는 PASS다. 입력 hash는 `ai_bridge.py` `9cd84982…`, `gpu_runtime.py` `407e2264…`로 현재 소스와 같다. 이전 후보 `build/l07r2-…`는 `getattr` 호환 수정 전의 `ai_bridge.py`로 만든 것이라 증거로 쓰지 않는다.
+
+### 원격 CI와 L-P07a
+
+L-P07 `a6b7732117604408b20f32c15a8f73030b81dbb4`의 원격 CI는 [43720957378](https://github.com/gangdonggilstudy/Recoryn/actions/runs/43720957378)이다.
+
+- **결과:** core 3.13과 optional-runtime은 success였다. core 3.11은 1건이 실패했다(7692 passed).
+- **원인:** `test_worker_answers_each_request_with_the_explicit_code`가 실행 환경을 CPython 3.13으로 가정했다. GPU 런타임은 3.13 전용이라, 3.11에서는 제품이 먼저 GPU_RUNTIME_UNSUPPORTED로 답하는 것이 맞다. 시험의 환경 가정이 틀린 것이며, 제품 코드의 문제가 아니다.
+- **L-P07a:** 그 시험이 지원 여부를 직접 고정하게 했다. 지원 환경이면 NOT_INSTALLED, 미지원 환경이면 UNSUPPORTED이며 두 행을 모두 확인한다.
+- **로컬 확인:** CPython 3.11.15(pytest만 설치한 별도 venv)에서 작업자 시험 6개와 Qt 없는 GPU 시험 92개가 PASS였다. 다운로드 검토자가 diff 범위(그 함수뿐)와 3.11 재실행 2 PASS를 확인했다(OPEN 0).
 
 ### 실제 장비 확인(2판)
 
