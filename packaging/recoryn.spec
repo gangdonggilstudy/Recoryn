@@ -53,8 +53,9 @@ common = dict(pathex=[str(root / 'src'), str(root / 'packaging')], binaries=bina
 gui = Analysis([str(root / 'packaging' / 'entry_gui.py')], **common)
 cli = Analysis([str(root / 'packaging' / 'entry_cli.py')], **common)
 
-# L01 D1-D3: drop license-excluded or unused native components that framework
-# hooks collect (Qt Virtual Keyboard/Qml/Quick/PDF, NVIDIA DLLs, any PyAV rest).
+# L01 D1-D3, D7: drop license-excluded or unused native components that framework
+# hooks collect (Qt Virtual Keyboard/Qml/Quick/PDF, NVIDIA DLLs, any PyAV rest,
+# Qt Multimedia's media backends and FFmpeg libraries; playback is Recoryn's own).
 # Both the destination and the source are checked: a hook may flatten a forbidden
 # source to an innocent destination name (L02-P03).
 def _allowed(row):

@@ -106,6 +106,91 @@
 
 NOTICE와 SBOM은 검토자에게 제출한 수정 후보 `build/l03-1794720123`과 bytes가 같다.
 
+## L-P04 Qt 미디어 백엔드·FFmpeg 제외와 PCM 직접 재생
+
+선행 L-P03 `cde8a7082051f7e8cd580fd564c6da337396315b`의 원격 CI [43694878703](https://github.com/gangdonggilstudy/Recoryn/actions/runs/43694878703)은 core 3.11·3.13과 optional-runtime 세 job success다(C00 GitHub API 확인).
+
+### 첫 설계와 독립 검토
+
+첫 후보 `build/l04-1794733273`은 FFmpeg만 빼고 재생을 Windows Media Foundation(WMF) 백엔드로 고정했다. 이 방식은 runtime hook `rthook_media_backend.py`, 제품 코드 무변경이었다. 네이티브 106개, smoke PASS였다. 두 독립 검토가 이 후보에서 다음을 찾았다.
+
+- **[패키징 검토](../reviews/l04-packaging-review.md)(recoryn-arch):**
+  - 금지 208·허용 96·TOC 216의 결정표 520행에서 누락·오제외 0이었다. 112개 대비 정확히 FFmpeg 6개만 빠졌다.
+  - **L04-P01 S2:** 출력 장치가 없을 때 재생 probe의 NOT_RUN이 smoke 최상위 PASS로 감싸졌고, 빌더는 최상위 status만 봤다.
+- **[재생 검토](../reviews/l04-playback-backend-review.md)(recoryn-desktop):**
+  - **L04-D01 S2:** WMF는 16채널에서 위치 진행이 멈추고, 64채널은 InvalidMedia였다. 제품 클립은 1~64채널을 보존한다. C00 재현에서는 1~10채널 정상, 12~32채널 정지였다.
+  - **L04-D02 S2:** 위치 지정 +500 ms에 재생 없음인 가짜 player도 smoke 진행 판정을 통과했다.
+  - **L04-D03 S2:** 로드 전 위치 지정이 두 백엔드에서 각 6형식, 12/12 모두 무시됐다. 기존 제품 결함이다.
+  - L04-P01과 같은 지적은 중복 집계하지 않았다.
+
+C00은 이 결과에 따라 WMF 고정안을 폐기하고 D7을 Recoryn PCM 직접 재생으로 바꿨다.
+
+새 후보 `build/l04b-1794734467`의 재확인 결과는 다음과 같다.
+
+- **패키징:** OPEN 0이다. L04-P01을 RECHECKED했고, 112개 대비 정확히 FFmpeg 6개와 windowsmediaplugin 1개만 빠졌다.
+- **재생:**
+  - D01·D02·D03·P01을 RECHECKED했다.
+  - 64채널×3 rate×4 위치, 768 고유행의 독립 Fraction oracle이 일치했다.
+  - 실제 무음·볼륨 0 sink로 5형식(16 kHz 12/16/64채널, 48 kHz 16/64채널)에서 정확한 frame, 진행, Idle 해제가 PASS였다.
+  - **L04-D04 S2:** 정상 시작 뒤 Qt가 sink를 StoppedState/IOError로 바꾸면 표시도 해제도 없었다. C00이 수정했다. 시작 뒤 Qt가 멈추면 sink와 버퍼를 해제하고, 오류가 있으면 상태 표시줄에 PLAYBACK_OUTPUT_FAILED를 띄운다. 원 반례 3행을 시험에 추가했다.
+  - **D04 재확인:**
+    - 현재/퇴역 sink × Idle/Stopped × NoError/IOError, 8 고유행에서 오류 표시 1회와 해제를 확인했다. 퇴역 sink의 늦은 신호는 추가 표시가 없었다.
+    - 실제 무음 sink의 정상 종료·명시 stop·재선택에서 거짓 오류는 0이었다.
+    - 최종 판정: 두 검토 모두 **OPEN 0**이다.
+- **`test_live_ui` 보충 확인:** 검토자는 권한 제한으로 이전 TEMP 사본을 읽지 못했다. 그래서 C00이 `git diff HEAD -- tests/ui/test_live_ui.py`로 대신 확인했다. 바뀐 것은 첫 assertion 하나로, `(path, 0)` 비교를 검증된 PCM의 rate·채널·전체 bytes·시작 frame 비교로 강화했다. 변조 거부 두 행은 바뀌지 않았다.
+
+### 구현
+
+- **배포 제외:** `release_manager`의 basename 규칙에 다음을 더했다. spec 필터, 빌더의 TOC 재검사, `verify`, frozen smoke 검사가 같은 정의를 공유한다. 백엔드 고정 hook은 삭제했다.
+  - FFmpeg: `ffmpegmediaplugin`과 FFmpeg 라이브러리 8종(`avcodec-`·`avformat-`·`avutil-`·`avdevice-`·`avfilter-`·`swresample-`·`swscale-`·`postproc-`)
+  - Qt 미디어 백엔드: `windowsmediaplugin`
+- **PCM 직접 재생(`src/recoryn/ui/pcm_playback.py`):**
+  - `_verify_playback`가 reader lease 안에서 클립을 한 번 읽어 해시를 다시 확인한다. 상한은 8 MiB+4096 bytes다.
+  - 16-bit PCM WAV만 허용하고 1~64채널을 받는다.
+  - 요청 위치는 `position_ms × rate // 1000` frame에서 정확히 자른다.
+  - 1~2채널은 bit 그대로, 3채널 이상은 동일 가중 mono 평균(ties-to-even)으로 만든다.
+  - 결과 bytes를 `QAudioSink`로 출력한다. 출력 장치 없음·형식 미지원·시작 오류는 각각 오류 코드로 상태 표시줄에 알린다. 버퍼가 끝나면 장치를 해제한다.
+  - 기존 결함(로드 전 위치 무시)과 WMF 채널 한계가 함께 사라진다. 재생하는 bytes가 해시를 검증한 bytes라서, 검증 뒤 player가 파일을 다시 여는 간격도 없어졌다.
+- **고지·증거:** native 대응표에서 FFmpeg 그룹과 두 백엔드 플러그인을 빼 105개가 되었다. LGPL-2.1 원문과 SOURCES 항목, NOTICE의 FFmpeg 문단도 제거했다. NOTICE는 FFmpeg와 미디어 백엔드를 배포하지 않으며 Recoryn이 검증된 PCM을 Qt 오디오 출력으로 재생한다고 적는다. gate는 `NOT_DISTRIBUTED_L01_D1_D7`이다.
+- **smoke와 빌더:**
+  - **probe 대상:** frozen smoke는 제품의 `prepare_playback`·`SinkPlayback`으로 12채널 합성 무음 WAV를 2000 ms부터 볼륨 0으로 재생한다. 12채널은 WMF가 진행하지 못한 형식이다.
+  - **진행 판정:** 150 ms와 600 ms 시점의 위치로 정확한 시작, 실제 진행, 벽시계 초과 없음을 판정한다.
+  - **NOT_RUN 처리:** 최상위 status는 재생이 확인된 경우에만 PASS다. 빌더는 smoke 코드와 따로 playback 상태를 다시 확인한다.
+  - 판정 기준은 [경우의 수](../testing/l04-media-backend-cases.md)에 있다.
+- **PySide6 6.12 호환:**
+  - `QAudioSink`가 반환하는 enum은 `QAudio` 별칭과 같다고 비교되지 않는다. 그래서 상태·오류를 이름으로 비교한다.
+  - `stateChanged` 인자를 Python으로 변환하지 못하므로 인자 없는 slot에서 `sink.state()`를 읽는다. 두 문제 모두 개발 환경에서 관측했다.
+
+### 검증
+
+L-P04 stage tree `a6ad2c79e73ff6e261c94196bde1150323b7774c`(216파일)를 `%TEMP%/recoryn-l-p04-tree-ghn4d5a0/tree`에 `core.autocrlf=false`로 추출해 실행했다. 추출 bytes 불일치 0이고, `recoryn`과 `release_manager` 모두 추출 tree에서 import됐다.
+
+| 검사 | 결과 |
+| --- | --- |
+| 전체 pytest(`--runxfail`, ResourceWarning 오류화) | **7535 PASS / 194초**, 실패·오류·skip 0 |
+| 전체 line / branch | **8274/8836 = 93.64% / 2465/2828 = 87.16%**, 분리 예산 PASS, 측정 69파일 모두 추출 tree |
+| Ruff check·format / strict mypy | PASS / 78파일 PASS |
+
+같은 tree를 따로 추출해 frozen 후보 `build/l04-final-1794735342`를 만들었다.
+
+- **입력:** 빌드 입력 89파일이 모두 tree bytes와 일치한다.
+- **구성:** 1046파일, 네이티브 105개가 모두 명시 귀속됐다(DECLARED 90, REDISTRIBUTABLE_PROPRIETARY 13, CONDITIONS_UNCONFIRMED 2, UNMAPPED 0). FFmpeg와 미디어 백엔드 플러그인은 0이다.
+- **smoke:** PASS다. 제품 경로로 12채널을 2000 ms부터 재생해 위치가 2198 → 2648 ms로 진행했다. stderr는 0 bytes다.
+- **크기:** 303.2 MB로, L-P03의 324 MB보다 줄었다.
+
+| 후보 파일 | SHA-256 |
+| --- | --- |
+| Recoryn.exe | `91c211e98d6a15cfe5783d1760355d6e845bb7c56d8d43500b4e7b3ab8c11754` |
+| Recoryn-CLI.exe | `a38ea85a80493b4bc5892fb8d5a09bbc0600d0d4f7779b26adb6133612583bae` |
+| release-manifest.json | `25cf4d056c455987aefbd0b91a2c8d316b5497623ed90fb84096e00e3b6a2d28` |
+| NOTICE.txt | `ecb4e22ee4be6663e2fb7033b72eccb91bd62f6486346813fcf7978bdc8b9171` |
+| sbom.cdx.json | `ad331b2b88335831fdfb833a90674421e3170e90e939cf6adff0ec832b0d803a` |
+| native-origins.json | `4bf7845b86e0a2ccf555f3683e92606034e9364bbc308796783385bb926dbb94` |
+| build-provenance.json | `1b5f0061664708a2be1ccca7db3a327fecc4fe38b0e0f6f2b32b4492efc4633f` |
+| smoke.stdout.json | `bb6ea2d16a9f4a83811ca11196f7b073e3b8bb44028b984d056e5f8ad68256e5` |
+
+NOTICE와 SBOM은 검토 후보 `build/l04b-1794734467`과 bytes가 같다. 이 결과 기록, 배정표 상태 갱신, 재생 검토 문서 외에는 검증 tree와 commit tree가 같다.
+
 ## 미검증
 
-실제 음성·Whisper 추론 품질, GPU, 장시간 입력의 메모리 상한, clean VM, 서명, Qt/FFmpeg corresponding source 배포, 코덱 특허, Intel·Microsoft 조건의 법률 확인은 NOT_RUN 또는 G4 OPEN이다.
+실제 음성·Whisper 추론 품질, GPU, 장시간 입력의 메모리 상한, clean VM, 서명, Qt corresponding source 배포, Intel·Microsoft 조건의 법률 확인은 NOT_RUN 또는 G4 OPEN이다. L-P04가 공개되면 FFmpeg corresponding source와 코덱 특허 항목은 배포물에서 사라진다. 실제 스피커 청취, 음질, 재생 중 장치 변경은 확인하지 않았다. 3채널 이상의 mono 평균은 스피커 배치를 고려한 downmix가 아니다.

@@ -62,7 +62,9 @@ CPython(PSF), OpenSSL 3(Apache-2.0), SQLite(public domain), libffi, numpy/OpenBL
 - **D3** NVIDIA CUDA/cuDNN DLL을 동봉하지 않는다. CPU가 기본이며 GPU는 사용자가 설치한 CUDA/cuDNN을 쓴다. GPU 실행은 계속 NOT_RUN이다.
 - **D4** 금지 목록을 한 곳에서 정의해 spec의 TOC 필터·재검사, 설치 verify, frozen 결과 검사가 공유한다. 남은 PE의 import 대상이 번들 또는 시스템에 있는지 import closure를 검사한다.
 - **D5** 라이선스 전문을 출처 URL과 SHA-256과 함께 저장소에 고정하고, Qt를 LGPL-3.0으로 정정 표기하며, 누락 고지·CycloneDX `licenses`·전면 NOTICE를 생성한다. native 귀속은 **실제 경로·hash → 정적/동적 내부 구성요소 → 버전·출처·적용 전문·예외 → 유지/제외/미확인**의 대응표로 만든다. Mesa/LLVM(`opengl32sw.dll`)과 Intel MKL/OpenMP를 명시 조사 항목으로 두고, 확인하지 못한 조건은 미확인으로 표시한다(L01-02 반영).
-- **D6** 남는 G4: Qt/PySide6/Qt FFmpeg의 corresponding source 제공 위치와 방식, Qt 모듈별 제3자 구성요소 전문의 완전성, Intel·Microsoft·Mesa/LLVM 조건의 확인, **유지하는 Qt FFmpeg에 정적으로 포함된 코덱의 특허 확인**(실제 코덱·용도·관할 기준), 서명. Recoryn은 Qt Multimedia를 WAV/PCM 근거 재생에만 쓰지만, 외부 코덱 import가 없다는 관측이나 LGPL 표기만으로 특허 검토 완료를 선언하지 않는다(L01-03 반영). 자동 수집으로 종결하지 않는다.
+- **D6** 남는 G4: Qt/PySide6/Qt FFmpeg의 corresponding source 제공 위치와 방식, Qt 모듈별 제3자 구성요소 전문의 완전성, Intel·Microsoft·Mesa/LLVM 조건의 확인, **유지하는 Qt FFmpeg에 정적으로 포함된 코덱의 특허 확인**(실제 코덱·용도·관할 기준), 서명. Recoryn은 Qt Multimedia를 WAV/PCM 근거 재생에만 쓰지만, 외부 코덱 import가 없다는 관측이나 LGPL 표기만으로 특허 검토 완료를 선언하지 않는다(L01-03 반영). 자동 수집으로 종결하지 않는다. Qt FFmpeg에 관한 항목은 L-P04의 D7이 배포물에서 제거한다.
+- **D7** (2026-11-15 L-P03 이후 추가) Qt Multimedia의 미디어 백엔드 플러그인 두 개(FFmpeg `ffmpegmediaplugin.dll`, Windows Media Foundation `windowsmediaplugin.dll`)와 FFmpeg DLL 5개(avcodec·avformat·avutil·swresample·swscale)를 배포하지 않는다. Recoryn은 Qt Multimedia를 검증된 16-bit PCM WAV 근거 클립 재생에만 쓴다. 이 클립은 최대 8 MiB다. 재생은 Recoryn이 직접 처리한다. 해시를 검증한 바로 그 bytes를 WAV로 해석하고, 요청 위치의 정확한 frame부터 잘라 Qt Multimedia 본체(LGPL-3.0)의 `QAudioSink`로 출력한다. 1~2채널은 bit 그대로 재생하고, 3채널 이상은 동일 가중 mono 평균으로 출력한다. 미디어 디코더 백엔드는 쓰지 않는다. 이로써 FFmpeg LGPL-2.1의 corresponding source 제공 의무와 Qt FFmpeg 코덱 특허 항목이 배포물에서 사라진다. 근거는 네 가지다. 첫째, import 표에서 FFmpeg DLL을 쓰는 파일은 `ffmpegmediaplugin.dll` 하나뿐이다. `Qt6Multimedia.dll`은 FFmpeg도 `mf.dll`도 import하지 않는다. 둘째, 개발 환경에서 존재하지 않는 백엔드를 지정해 플러그인이 없는 상태로 만들어도, `QAudioSink`는 16/22.05/44.1/48/96 kHz mono·stereo Int16을 지원하고 재생을 진행했다. 셋째, 처음 검토한 WMF 고정안은 L04 검토에서 다채널 회귀가 확인되어 폐기했다. 16-bit 48 kHz 무음 기준으로 1~10채널은 재생됐지만, 12~32채널은 위치가 진행하지 않았고 64채널은 InvalidMedia였다. 넷째, 두 백엔드 모두 로드 전에 지정한 위치를 무시했다. 이 기존 결함도 정확한 frame 절단으로 함께 해소된다. Media Foundation을 쓰지 않으므로 Media Feature Pack이 없는 N/KN 에디션에서도 재생 경로가 같다. 개발·소스 설치의 PySide6에 들어 있는 백엔드 플러그인은 Recoryn의 재배포가 아니다.
+- **D8** (L-P05 예정) 고지 완전성. 대상은 네 가지다. 정확한 Qt 6.12.0 소스의 attribution 기준으로 실제 동봉한 Qt 모듈·플러그인의 제3자 구성요소 고지를 넣는다. Intel MKL·OpenMP는 정확한 버전의 배포 조건 원문을 고정한다. Microsoft 런타임 13개는 공식 재배포 목록과 대조한다. Qt·PySide6 corresponding source는 정확한 upstream 위치와 hash를 기록한다. 공개 배포 때 소스를 어떻게 호스팅할지, 법률 확인과 서명은 사용자 결정(G4)으로 남긴다.
 
 ## push 단위
 
@@ -71,8 +73,10 @@ CPython(PSF), OpenSSL 3(Apache-2.0), SQLite(public domain), libffi, numpy/OpenBL
 | L-P01 | 이 검토와 계획: 이 문서, [배정표](../collaboration/assignments.md), [push 단위](../collaboration/push-units.md), docs/reviews/license-plan-review.md | C00 / recoryn-security(w5:p5) / 링크·내용·권한 검토, 선행 H-P01 CI PASS |
 | L-P02 | D1~D4 배포 제외와 PyAV 비의존 STT 입력. 파일은 배정표 L 절 | C00 / recoryn-ml(STT·리샘플), recoryn-arch(패키징) / 경우의 수 문서·독립 oracle·mutation, frozen 빌드·smoke·금지 파일 0·import closure, 정확한 tree 전체 회귀 |
 | L-P03 | D5 고지·SBOM 보완과 최종 후보 증거 | C00 / recoryn-security / 고지 생성 시험, frozen 빌드의 고지 전수 대조, 정확한 tree 전체 회귀·coverage·정적 검사 |
+| L-P04 | D7 Qt 미디어 백엔드·FFmpeg 제외와 Recoryn PCM 직접 재생. 파일은 배정표 L 절 | C00 / recoryn-arch(패키징·증거), recoryn-desktop(재생) / [경우의 수](../testing/l04-media-backend-cases.md), frozen 후보의 FFmpeg·백엔드 0과 제품 재생 경로의 음소거 smoke, native 대응표·NOTICE 재대조, 정확한 tree 전체 회귀 |
+| L-P05 | D8 고지 완전성 | C00 / recoryn-security / upstream 원문·hash 고정, frozen 후보의 고지 전수 대조, 정확한 tree 전체 회귀 |
 
-각 단위는 선행 단위의 원격 CI PASS 뒤에 공개한다. 로컬 작성과 검증은 병행할 수 있다. rollback은 각 commit의 revert이며 schema/runtime migration은 없다. 실음성·모델 weights·GPU·clean VM·서명·법률 판정은 이 계획으로 실행하거나 통과 처리하지 않는다.
+각 단위는 선행 단위의 원격 CI PASS 뒤에 공개한다. L-P04와 L-P05는 사용자의 "남은 작업 진행" 지시에 따라 L-P03 공개 뒤 추가했다. 로컬 작성과 검증은 병행할 수 있다. rollback은 각 commit의 revert이며 schema/runtime migration은 없다. 실음성·모델 weights·GPU·clean VM·서명·법률 판정은 이 계획으로 실행하거나 통과 처리하지 않는다.
 
 ## 출처
 

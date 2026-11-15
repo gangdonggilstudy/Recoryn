@@ -143,7 +143,6 @@ def _notice(
     version: str,
     components: list[dict[str, Any]],
     binaries: list[dict[str, Any]],
-    ffmpeg_text: str | None,
 ) -> str:
     lines = [
         f"Recoryn {version} DEVELOPMENT CANDIDATE - not approved for public release.",
@@ -154,26 +153,22 @@ def _notice(
         "Python runtime: CPython, PSF-2.0 including its bundled third-party terms",
         "(licenses/CPython-LICENSE.txt: OpenSSL, libffi, SQLite, zlib, expat, mpdecimal).",
         "",
-        "Not distributed by license policy L01 D1-D3: PyAV and its FFmpeg build with",
-        "x264/x265/OpenH264, Qt Virtual Keyboard with Qml/Quick, Qt PDF, the Mesa/LLVM",
-        "software OpenGL fallback, NVIDIA CUDA/cuDNN.",
+        "Not distributed by license policy L01 D1-D3 and D7: PyAV and its FFmpeg build",
+        "with x264/x265/OpenH264, Qt Multimedia's media backends (FFmpeg and Windows",
+        "Media Foundation plugins) and Qt's FFmpeg libraries, Qt Virtual Keyboard with",
+        "Qml/Quick, Qt PDF, the Mesa/LLVM software OpenGL fallback, NVIDIA CUDA/cuDNN.",
+        "No FFmpeg code is distributed. Recoryn plays its own verified 16-bit PCM WAV",
+        "clips through Qt Multimedia's audio output; no media decoder is used.",
         "",
         "LGPL components are separate shared libraries that may be replaced with",
         "compatible builds of the same version:",
         "  Qt 6.12.0, PySide6 6.12.0, shiboken6 6.12.0: LGPL-3.0-only",
         "    texts licenses/<package>/LGPL-3.0.txt and GPL-3.0.txt;",
         "    files _internal/PySide6/ and _internal/shiboken6/.",
-    ]
-    if ffmpeg_text:
-        lines += [
-            "  FFmpeg libraries built for Qt Multimedia: LGPL-2.1-or-later",
-            f"    text {ffmpeg_text}; files _internal/PySide6/av*.dll, sw*.dll.",
-        ]
-    lines += [
         "  Sources: https://download.qt.io/official_releases/qt/6.12/6.12.0/ and",
         "  https://download.qt.io/official_releases/QtForPython/. Publishing the exact",
-        "  corresponding sources (including Qt's FFmpeg build) with a public release is",
-        "  an open release gate (build-provenance.json).",
+        "  corresponding sources with a public release is an open release gate",
+        "  (build-provenance.json).",
         "",
         "Components (distributed license; notice files under licenses/):",
     ]
@@ -424,9 +419,9 @@ def generate(bundle: Path, toc_path: Path, source_root: Path) -> dict[str, Any]:
         # Texts and replaceable shared libraries are provided; publishing the
         # corresponding source for a public release is still a G4 decision.
         "qt_corresponding_source_and_notices": "LGPL_TEXTS_INCLUDED_SOURCE_OFFER_REVIEW_REQUIRED",
-        "ffmpeg_build_flags_corresponding_source_and_notices": (
-            "QT_FFMPEG_LGPL_TEXT_INCLUDED_SOURCE_AND_PATENT_REVIEW_REQUIRED"
-        ),
+        # L01 D1 and D7: verify() refuses any PyAV or Qt FFmpeg file, so no FFmpeg
+        # source offer or codec patent question remains for this distribution.
+        "ffmpeg_build_flags_corresponding_source_and_notices": "NOT_DISTRIBUTED_L01_D1_D7",
         "transitive_native_license_review": (
             "UNMAPPED_NATIVE_FILES"
             if "UNMAPPED" in statuses
@@ -463,15 +458,7 @@ def generate(bundle: Path, toc_path: Path, source_root: Path) -> dict[str, Any]:
             "unattributed_native_components": "REVIEW_REQUIRED",
         },
     )
-    ffmpeg_text = None
-    if any(row["component"].startswith("FFmpeg") for row in binaries):
-        target = license_root / "FFmpeg-Qt-Multimedia" / "LGPL-2.1.txt"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(notice_texts["LGPL-2.1.txt"], target)
-        ffmpeg_text = target.relative_to(bundle).as_posix()
-    (bundle / "NOTICE.txt").write_text(
-        _notice(version, components, binaries, ffmpeg_text), encoding="utf-8"
-    )
+    (bundle / "NOTICE.txt").write_text(_notice(version, components, binaries), encoding="utf-8")
     manifest = {
         "schema_version": 1,
         "app_id": APP_ID,

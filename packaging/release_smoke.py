@@ -103,6 +103,88 @@ def _child(output: Any) -> None:
     )
 
 
+PLAYBACK_VERIFIED = "PCM_SINK_PLAYED_MUTED_FROM_EXACT_FRAME"
+PLAYBACK_CHANNELS = 12  # Media Foundation could not advance 12..32 channels (L04 review)
+PLAYBACK_RATE = 16_000
+PLAYBACK_CLIP_MS = 3_000
+PLAYBACK_SEEK_MS = 2_000
+
+
+def overall_status(playback: dict[str, Any]) -> str:
+    """NOT_RUN or any unverified playback is never a pass (L04-P01)."""
+    return "PASS" if playback.get("status") == PLAYBACK_VERIFIED else "PLAYBACK_NOT_VERIFIED"
+
+
+def progress_ok(first: int | None, second: int | None) -> bool:
+    """Positions 150 ms and 600 ms after starting at PLAYBACK_SEEK_MS.
+
+    The start must land on the requested position, time must advance, and the
+    position must not run ahead of the wall clock (L04 playback review).
+    """
+    if first is None or second is None:
+        return False
+    return (
+        PLAYBACK_SEEK_MS <= first <= PLAYBACK_SEEK_MS + 400
+        and second - first >= 200
+        and second <= PLAYBACK_SEEK_MS + 900
+    )
+
+
+def _playback_probe(folder: Path) -> dict[str, Any]:
+    """L01 D7: the product playback path cuts the exact frame and plays it.
+
+    The clip is synthetic silence played at volume 0, so nothing is audible.
+    Without an audio output device this is reported NOT_RUN, never as a pass.
+    """
+    import hashlib
+
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtMultimedia import QMediaDevices
+
+    from recoryn.ui.pcm_playback import SinkPlayback, prepare_playback
+
+    if not QMediaDevices.audioOutputs():
+        return {"status": "NO_AUDIO_OUTPUT_DEVICE_NOT_RUN"}
+    clip = folder / "playback-probe.wav"
+    with wave.open(str(clip), "wb") as stream:
+        stream.setnchannels(PLAYBACK_CHANNELS)
+        stream.setsampwidth(2)
+        stream.setframerate(PLAYBACK_RATE)
+        stream.writeframes(bytes(PLAYBACK_CHANNELS * 2 * PLAYBACK_RATE * PLAYBACK_CLIP_MS // 1000))
+    pcm = prepare_playback(clip, hashlib.sha256(clip.read_bytes()).hexdigest(), PLAYBACK_SEEK_MS)
+    remaining = PLAYBACK_RATE * (PLAYBACK_CLIP_MS - PLAYBACK_SEEK_MS) // 1000
+    if (pcm.channels, pcm.start_frame, len(pcm.payload)) != (
+        1,
+        PLAYBACK_RATE * PLAYBACK_SEEK_MS // 1000,
+        remaining * 2,
+    ):
+        raise RuntimeError("PLAYBACK_PREPARE_FAILED")
+    player = SinkPlayback()
+    positions: list[int | None] = []
+
+    def wait(milliseconds: int) -> None:
+        loop = QEventLoop()
+        QTimer.singleShot(milliseconds, loop.quit)
+        loop.exec()
+
+    try:
+        player.start(pcm, volume=0.0)
+        wait(150)
+        positions.append(player.position_ms())
+        wait(450)
+        positions.append(player.position_ms())
+        if not player.active() or not progress_ok(*positions):
+            raise RuntimeError("PLAYBACK_SINK_DID_NOT_ADVANCE")
+    finally:
+        player.stop()
+    return {
+        "status": PLAYBACK_VERIFIED,
+        "channels_in": PLAYBACK_CHANNELS,
+        "start_frame": pcm.start_frame,
+        "positions_ms": positions,
+    }
+
+
 def run() -> dict[str, Any]:
     _block_network()
     context = multiprocessing.get_context("spawn")
@@ -163,6 +245,7 @@ def run() -> dict[str, Any]:
             if any(digest(path) != checksum for path, checksum in originals.items()):
                 raise RuntimeError("ORIGINAL_MEDIA_CHANGED")
             application = QApplication.instance() or QApplication([])
+            playback = _playback_probe(root)
             # Fail even on accidental future startup device/vault access.
             with (
                 patch(
@@ -188,12 +271,13 @@ def run() -> dict[str, Any]:
                 if devices.called or capture.called or vault.called:
                     raise RuntimeError("SMOKE_PRIVILEGED_ACCESS_ATTEMPTED")
         return {
-            "status": "PASS",
+            "status": overall_status(playback),
             "spawn": child_result,
             "qt": qVersion(),
             "recording": "FINALIZED",
             "separate_originals": "UNCHANGED_AFTER_WAV_EXPORT",
             "frames": frames,
+            "playback": playback,
             "network_default": "DENIED_BEFORE_DNS",
             "network_observation": "PYTHON_SOCKET_AUDIT_ONLY_NATIVE_TRAFFIC_NOT_OBSERVED",
             "hardware_capture": "NOT_RUN",

@@ -314,7 +314,14 @@ def test_playback_verifies_derived_and_original_hashes_before_player(ui, monkeyp
     monkeypatch.setattr(window.ai_bridge, "_play", lambda *args: played.append(args))
     window.ai_bridge.seek("mic", 0, revision["revision_id"])
     spin(app, lambda: not window.ai_bridge.busy)
-    assert played == [(path, 0)]
+    # L01 D7: the player receives the exact verified PCM, not a path to reopen later.
+    import wave
+
+    with wave.open(str(path), "rb") as clip:
+        expected = (clip.getframerate(), clip.getnchannels(), clip.readframes(clip.getnframes()))
+    assert len(played) == 1 and len(played[0]) == 1
+    pcm = played[0][0]
+    assert (pcm.sample_rate, pcm.channels, pcm.payload) == expected and pcm.start_frame == 0
     saved = path.read_bytes()
     path.write_bytes(saved[:-2] + b"!!")
     window.ai_bridge.seek("mic", 0, revision["revision_id"])

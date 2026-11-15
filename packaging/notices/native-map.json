@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "note": "Reviewed native files of the pinned 0.2.0.dev2 bundle (L01 D5, L03-01). Exact paths only: any other EXE/DLL/PYD is UNMAPPED and fails the build until reviewed and added here.",
-  "reviewed_from": "build/l03-1794719526 (112 native files)",
+  "note": "Reviewed native files of the pinned 0.2.0.dev2 bundle (L01 D5, L03-01). Exact paths only: any other EXE/DLL/PYD is UNMAPPED and fails the build until reviewed and added here. Qt Multimedia's media backend plugins and FFmpeg libraries are not distributed (L01 D7).",
+  "reviewed_from": "build/l03-1794719526 (112 native files) minus the seven L01 D7 files = 105",
   "components": [
     {
       "component": "CPython standard library extension",
@@ -159,18 +159,6 @@
       ]
     },
     {
-      "component": "FFmpeg libraries built for Qt Multimedia",
-      "license": "LGPL-2.1-or-later",
-      "status": "PATENT_REVIEW_REQUIRED",
-      "files": [
-        "_internal/PySide6/avcodec-63.dll",
-        "_internal/PySide6/avformat-63.dll",
-        "_internal/PySide6/avutil-61.dll",
-        "_internal/PySide6/swresample-7.dll",
-        "_internal/PySide6/swscale-10.dll"
-      ]
-    },
-    {
       "component": "Qt 6.12.0 plugin",
       "license": "LGPL-3.0-only",
       "status": "DECLARED",
@@ -186,8 +174,6 @@
         "_internal/PySide6/plugins/imageformats/qtiff.dll",
         "_internal/PySide6/plugins/imageformats/qwbmp.dll",
         "_internal/PySide6/plugins/imageformats/qwebp.dll",
-        "_internal/PySide6/plugins/multimedia/ffmpegmediaplugin.dll",
-        "_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll",
         "_internal/PySide6/plugins/networkinformation/qnetworklistmanager.dll",
         "_internal/PySide6/plugins/platforms/qdirect2d.dll",
         "_internal/PySide6/plugins/platforms/qminimal.dll",

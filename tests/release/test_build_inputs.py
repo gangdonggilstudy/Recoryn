@@ -142,10 +142,52 @@ def test_builder_rechecks_recorded_toc_destinations_and_sources() -> None:
                 "BINARY",
             ],
             ["PySide6/Qt6Pdf.dll", "C:/venv/Lib/site-packages/PySide6/Qt6Pdf.dll", "BINARY"],
+            # L01 D7: Qt's own FFmpeg and both media backends are excluded too.
+            [
+                "PySide6/plugins/multimedia/windowsmediaplugin.dll",
+                "C:/venv/Lib/site-packages/PySide6/plugins/multimedia/windowsmediaplugin.dll",
+                "BINARY",
+            ],
         ],
         "datas": [["notes/README", "C:/Users/av/README", "DATA"]],
     }
     assert module.excluded_toc_rows(toc) == [
         "PySide6/Qt6Pdf.dll <- C:/venv/Lib/site-packages/PySide6/Qt6Pdf.dll",
+        "PySide6/avcodec-63.dll <- C:/venv/Lib/site-packages/PySide6/avcodec-63.dll",
+        "PySide6/plugins/multimedia/windowsmediaplugin.dll <- "
+        "C:/venv/Lib/site-packages/PySide6/plugins/multimedia/windowsmediaplugin.dll",
         "vendor/avcodec-62.dll <- C:/venv/Lib/site-packages/av.libs/avcodec-62.dll",
     ]
+
+
+VERIFIED = {"status": "PCM_SINK_PLAYED_MUTED_FROM_EXACT_FRAME", "positions_ms": [2200, 2650]}
+
+
+@pytest.mark.parametrize(
+    ("result", "code"),
+    [
+        ({"status": "PASS", "playback": VERIFIED}, None),
+        ({"status": "PLAYBACK_NOT_VERIFIED", "playback": VERIFIED}, "FROZEN_SMOKE_FAILED"),
+        # L04-P01: the original counterexample, a NOT_RUN probe wrapped in a top PASS.
+        (
+            {"status": "PASS", "playback": {"status": "NO_AUDIO_OUTPUT_DEVICE_NOT_RUN"}},
+            "FROZEN_SMOKE_PLAYBACK_NOT_VERIFIED",
+        ),
+        ({"status": "PASS"}, "FROZEN_SMOKE_PLAYBACK_NOT_VERIFIED"),
+        (
+            {"status": "PASS", "playback": "PCM_SINK_PLAYED_MUTED_FROM_EXACT_FRAME"},
+            "FROZEN_SMOKE_PLAYBACK_NOT_VERIFIED",
+        ),
+        (
+            {"status": "PASS", "playback": {"status": "LOADED_SEEKED_PLAYED_MUTED_SILENCE"}},
+            "FROZEN_SMOKE_PLAYBACK_NOT_VERIFIED",
+        ),
+    ],
+)
+def test_builder_requires_verified_playback_in_smoke(result: dict[str, Any], code: str | None):
+    module = builder()
+    if code is None:
+        assert module.smoke_verdict(result) is None
+    else:
+        with pytest.raises(manager.ReleaseError, match=code):
+            module.smoke_verdict(result)

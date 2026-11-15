@@ -111,18 +111,26 @@ def test_spec_drops_license_excluded_components_and_keeps_required_ones(
         ),
         (r"codecs\h264.dll", r"C:\venv\Lib\site-packages\x\libopenh264-7.dll", "BINARY"),
         (r"tools\helper.dll", r"C:\elsewhere\bin\libx265-199.dll", "BINARY"),
+        # L01 D7: Qt's FFmpeg backend and libraries, by destination or by source.
+        (r"PySide6\avcodec-63.dll", "qt-ffmpeg.dll", "BINARY"),
+        (
+            r"PySide6\plugins\multimedia\ffmpegmediaplugin.dll",
+            r"C:\venv\Lib\site-packages\PySide6\plugins\multimedia\ffmpegmediaplugin.dll",
+            "BINARY",
+        ),
+        (r"media\scaler.dll", r"C:\venv\Lib\site-packages\PySide6\swscale-10.dll", "BINARY"),
+        # Recoryn plays PCM itself, so no Qt media decoder backend is shipped either.
+        (
+            r"PySide6\plugins\multimedia\windowsmediaplugin.dll",
+            r"C:\venv\Lib\site-packages\PySide6\plugins\multimedia\windowsmediaplugin.dll",
+            "BINARY",
+        ),
     ]
     kept = [
         (r"PySide6\Qt6Multimedia.dll", "m.dll", "BINARY"),
-        (r"PySide6\avcodec-63.dll", "qt-ffmpeg.dll", "BINARY"),
         (r"ctranslate2\libiomp5md.dll", "omp.dll", "BINARY"),
         (r"faster_whisper\assets\README", "readme", "DATA"),
-        # Qt's own FFmpeg stays; a profile directory named "av" must not matter.
-        (
-            r"PySide6\avcodec-63.dll",
-            r"C:\venv\Lib\site-packages\PySide6\avcodec-63.dll",
-            "BINARY",
-        ),
+        # A profile directory named "av" must not matter.
         (r"numpy\_core\x.pyd", r"C:\Users\av\venv\Lib\site-packages\numpy\_core\x.pyd", "BINARY"),
     ]
     seen = _run_spec(tmp_path, monkeypatch, excluded + kept)

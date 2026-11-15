@@ -349,10 +349,21 @@ LICENSE_EXCLUDED_PATHS = [
     "_internal/ctranslate2/nppc64_12.dll",
     "_internal/ctranslate2/nppig64_12.dll",
     "_internal/ctranslate2/npps64_12.dll",
+    # L01 D7: Qt Multimedia's FFmpeg backend and every FFmpeg library, wherever placed.
+    "_internal/PySide6/plugins/multimedia/ffmpegmediaplugin.dll",
+    "_internal/PySide6/avcodec-63.dll",
+    "_internal/PySide6/avformat-63.dll",
+    "_internal/PySide6/avutil-61.dll",
+    "_internal/PySide6/swresample-7.dll",
+    "_internal/PySide6/swscale-10.dll",
+    "_internal/vendor/ffmpeg/avdevice-61.dll",
+    "_internal/vendor/ffmpeg/avfilter-10.dll",
+    "_internal/vendor/ffmpeg/postproc-58.dll",
+    "_internal\\elsewhere\\AVCODEC-62.DLL",
+    # Recoryn plays PCM itself; no Qt media decoder backend is shipped either.
+    "_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll",
 ]
 LICENSE_ALLOWED_LOOKALIKES = [
-    "_internal/PySide6/avcodec-63.dll",
-    "_internal/PySide6/avutil-61.dll",
     "_internal/available/runtime.dll",
     "_internal/avx-1.0.dist-info/METADATA",
     "_internal/vendor/avatar/av.txt",
@@ -363,6 +374,14 @@ LICENSE_ALLOWED_LOOKALIKES = [
     "_internal/PySide6/plugins/imageformats/qjpeg.dll",
     "_internal/ctranslate2/libiomp5md.dll",
     "_internal/ctranslate2/ctranslate2.dll",
+    # L01 D7 keeps the Qt Multimedia module (QAudioSink) itself.
+    "_internal/PySide6/Qt6MultimediaWidgets.dll",
+    "_internal/PySide6/QtMultimedia.pyd",
+    # Directory names and near-miss basenames are not FFmpeg libraries.
+    "_internal/avcodecs/README",
+    "_internal/tools/swscale.txt",
+    "_internal/postprocessing/filters.dll",
+    "_internal/plugins/ffmpeg-notes.txt",
 ]
 
 

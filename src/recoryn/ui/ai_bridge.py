@@ -25,6 +25,7 @@ from recoryn.storage._coordination import root_mutex
 from recoryn.storage._safe import mkdir, open_file, safe_path
 from recoryn.storage.chunks import verify_bundle
 from recoryn.ui.content import ContentPanel
+from recoryn.ui.pcm_playback import PlaybackPcm, SinkPlayback, prepare_playback
 from recoryn.ui.tasks import Task
 
 
@@ -36,8 +37,8 @@ class DesktopAI:
         self.service: AIService | None = None
         self.local: LocalSTTProcess | None = None
         self.local_key: str | None = None
-        self.player: Any = None
-        self.output: Any = None
+        # L01 D7: Recoryn plays verified PCM itself; no Qt media decoder backend.
+        self.playback = SinkPlayback(window, on_error=self._report_playback)
         self._playback_generation = 0
         self.pool = QThreadPool(window)
         self.pool.setMaxThreadCount(1)
@@ -482,11 +483,7 @@ class DesktopAI:
 
     def stop_playback(self) -> None:
         self._playback_generation += 1
-        if self.player is not None:
-            self.player.stop()
-            from PySide6.QtCore import QUrl
-
-            self.player.setSource(QUrl())
+        self.playback.stop()
 
     def seek(self, track_id: str, position_ms: int, revision_id: str) -> None:
         revision = self.store.transcript(revision_id)
@@ -508,18 +505,22 @@ class DesktopAI:
             return
         generation = self._playback_generation
 
-        def play(path: Path) -> None:
+        def play(pcm: PlaybackPcm) -> None:
             if generation != self._playback_generation:
                 return
             self.window.library.get_session(revision["session_id"])
-            self._play(path, position_ms - target["offset_ms"])
+            self._play(pcm)
 
         self.operation(
-            lambda: self._verify_playback(revision["session_id"], target),
+            lambda: self._verify_playback(
+                revision["session_id"], target, position_ms - target["offset_ms"]
+            ),
             play,
         )
 
-    def _verify_playback(self, session_id: str, target: dict[str, Any]) -> Path:
+    def _verify_playback(
+        self, session_id: str, target: dict[str, Any], position_ms: int = 0
+    ) -> PlaybackPcm:
         service = self._service()
         job = service.jobs.create("playback_verification", uuid4().hex)
         service.jobs.bind_session(job.job_id, session_id)
@@ -527,8 +528,10 @@ class DesktopAI:
         service.jobs.reader_started(attempt)
         try:
             path = self._checked_playback_path(session_id, target)
+            # Still under the reader lease: the bytes that play are the verified ones.
+            pcm = prepare_playback(path, target["sha256"], position_ms)
             service.jobs.complete(job.job_id, attempt.attempt_id, attempt.fence, str(path))
-            return path
+            return pcm
         except Exception:
             service.jobs.fail(
                 job.job_id, attempt.attempt_id, attempt.fence, "PLAYBACK_SOURCE_INVALID"
@@ -571,17 +574,15 @@ class DesktopAI:
         library.get_session(session_id)
         return path
 
-    def _play(self, path: Path, position_ms: int) -> None:
-        from PySide6.QtCore import QUrl
-        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+    def _play(self, pcm: PlaybackPcm) -> None:
+        try:
+            self.playback.start(pcm)
+        except StateConflict as exc:
+            self._report_playback(str(exc))
 
-        if self.player is None:
-            self.output = QAudioOutput(self.window)
-            self.player = QMediaPlayer(self.window)
-            self.player.setAudioOutput(self.output)
-        self.player.setSource(QUrl.fromLocalFile(str(path)))
-        self.player.setPosition(position_ms)
-        self.player.play()
+    def _report_playback(self, code: str) -> None:
+        # Start failures and failures after starting (L04-D04) are both shown.
+        self.panel.status.setText("재생할 수 없습니다: " + code + " · 원본은 보존됩니다.")
 
     def tick(self) -> None:
         self.window.model_panel.request_attestation_check()

@@ -220,10 +220,23 @@ def build(output: Path, *, smoke: bool = False) -> Path:
                 timeout=180,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
-        result = json.loads((output / "smoke.stdout.json").read_text(encoding="utf-8"))
-        if result.get("status") != "PASS":
-            raise ReleaseError("FROZEN_SMOKE_FAILED")
+        smoke_verdict(json.loads((output / "smoke.stdout.json").read_text(encoding="utf-8")))
     return bundle
+
+
+# Written independently of release_smoke: the builder does not trust the smoke's own
+# summary alone (L04-P01). NOT_RUN playback is never a pass.
+PLAYBACK_VERIFIED = "PCM_SINK_PLAYED_MUTED_FROM_EXACT_FRAME"
+
+
+def smoke_verdict(result: dict[str, Any]) -> None:
+    from release_manager import ReleaseError
+
+    if result.get("status") != "PASS":
+        raise ReleaseError("FROZEN_SMOKE_FAILED")
+    playback = result.get("playback")
+    if not isinstance(playback, dict) or playback.get("status") != PLAYBACK_VERIFIED:
+        raise ReleaseError("FROZEN_SMOKE_PLAYBACK_NOT_VERIFIED")
 
 
 def main() -> int:

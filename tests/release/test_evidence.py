@@ -160,7 +160,7 @@ def l03_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path
         rows["pure"].append([name, str(site / name / "__init__.py"), "PYMODULE"])
     toc.write_text(json.dumps(rows))
     for relative in (
-        "_internal/PySide6/avcodec-63.dll",
+        "_internal/PySide6/Qt6Multimedia.dll",
         "_internal/PySide6/Qt6Core.dll",
         "_internal/ctranslate2/libiomp5md.dll",
         "_internal/vcruntime140.dll",
@@ -218,7 +218,7 @@ def test_l03_native_map_notice_and_gate_name_open_conditions(
     native = {
         row["path"]: row for row in manager.read_json(bundle / "native-origins.json")["files"]
     }
-    assert native["_internal/PySide6/avcodec-63.dll"]["license_status"] == "PATENT_REVIEW_REQUIRED"
+    assert native["_internal/PySide6/Qt6Multimedia.dll"]["license_status"] == "DECLARED"
     assert native["_internal/PySide6/Qt6Core.dll"]["license"] == "LGPL-3.0-only"
     assert native["_internal/ctranslate2/libiomp5md.dll"]["license_status"] == (
         "CONDITIONS_UNCONFIRMED"
@@ -233,13 +233,13 @@ def test_l03_native_map_notice_and_gate_name_open_conditions(
     provenance = manager.read_json(bundle / "build-provenance.json")
     assert provenance["gates"]["transitive_native_license_review"] == "UNMAPPED_NATIVE_FILES"
     notice = (bundle / "NOTICE.txt").read_text(encoding="utf-8")
-    ffmpeg_text = "licenses/FFmpeg-Qt-Multimedia/LGPL-2.1.txt"
-    assert (
-        ffmpeg_text in notice
-        and (bundle / ffmpeg_text).read_bytes() == (NOTICES / "LGPL-2.1.txt").read_bytes()
-    )
+    # L01 D7: no FFmpeg or media backend is shipped: no FFmpeg text, offer or patent row.
+    assert not (bundle / "licenses" / "FFmpeg-Qt-Multimedia").exists()
+    assert "LGPL-2.1" not in notice and "PATENT_REVIEW_REQUIRED" not in notice
     for required in (
-        "PATENT_REVIEW_REQUIRED: _internal/PySide6/avcodec-63.dll",
+        "Qt Multimedia's media backends",
+        "No FFmpeg code is distributed.",
+        "no media decoder is used.",
         "CONDITIONS_UNCONFIRMED: _internal/ctranslate2/libiomp5md.dll",
         "UNMAPPED: _internal/unattributed.dll",
         "PySide6_Essentials 6.12.0: LGPL-3.0-only",
@@ -252,12 +252,42 @@ def test_l03_native_map_notice_and_gate_name_open_conditions(
     ):
         assert required in notice, required
     gates = provenance["gates"]
+    assert gates["ffmpeg_build_flags_corresponding_source_and_notices"] == (
+        "NOT_DISTRIBUTED_L01_D1_D7"
+    )
     assert (
         gates["microsoft_runtime_conditions"]
         == gates["intel_runtime_conditions"]
         == ("REVIEW_REQUIRED")
     )
     assert manager.verify(bundle)["version"] == "0.2.0.dev2"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "_internal/PySide6/avcodec-63.dll",
+        "_internal/PySide6/plugins/multimedia/ffmpegmediaplugin.dll",
+        "_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll",
+    ],
+)
+def test_l04_reintroduced_qt_ffmpeg_is_unmapped_and_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative: str
+) -> None:
+    # Two independent stops: no license mapping (build gate) and the D7 policy (verify).
+    bundle, toc, source = l03_candidate(tmp_path, monkeypatch)
+    target = bundle / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"MZ-qt-ffmpeg")
+    evidence.generate(bundle, toc, source)
+    native = {
+        row["path"]: row for row in manager.read_json(bundle / "native-origins.json")["files"]
+    }
+    assert native[relative]["license_status"] == "UNMAPPED"
+    assert relative in evidence.license_gaps(bundle)
+    assert not (bundle / "licenses" / "FFmpeg-Qt-Multimedia").exists()
+    with pytest.raises(manager.ReleaseError, match="LICENSE_EXCLUDED_COMPONENT"):
+        manager.verify(bundle)
 
 
 @pytest.mark.parametrize("damage", ["missing", "tampered"])
@@ -295,7 +325,12 @@ NATIVE_TABLE = [
         "REDISTRIBUTABLE_PROPRIETARY",
     ),
     ("_internal/PySide6/MSVCP140_2.dll", "REDISTRIBUTABLE_PROPRIETARY"),
-    ("_internal/PySide6/swscale-10.dll", "PATENT_REVIEW_REQUIRED"),
+    # L01 D7: Qt's FFmpeg files are no longer reviewed components of the bundle.
+    ("_internal/PySide6/swscale-10.dll", "UNMAPPED"),
+    ("_internal/PySide6/avcodec-63.dll", "UNMAPPED"),
+    ("_internal/PySide6/plugins/multimedia/ffmpegmediaplugin.dll", "UNMAPPED"),
+    ("_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll", "UNMAPPED"),
+    ("_internal/PySide6/Qt6Multimedia.dll", "DECLARED"),
     ("_internal/PySide6/Qt6MultimediaWidgets.dll", "DECLARED"),
     ("_INTERNAL/PYSIDE6/QT6CORE.DLL", "DECLARED"),
     ("_internal\\PySide6\\plugins\\platforms\\qwindows.dll", "DECLARED"),
@@ -327,7 +362,13 @@ def test_l03_native_license_decision_table(path: str, status: str) -> None:
 def test_l03_reviewed_native_map_is_exact_and_valid() -> None:
     data = json.loads((NOTICES / "native-map.json").read_text(encoding="utf-8"))
     paths = [path for group in data["components"] for path in group["files"]]
-    assert len(paths) == len(set(paths)) == len(NATIVE_MAP) == 112
+    assert len(paths) == len(set(paths)) == len(NATIVE_MAP) == 105
+    # L01 D7: no FFmpeg group, no FFmpeg/backend path and no LGPL-2.1 text remain.
+    assert not any(group["component"].startswith("FFmpeg") for group in data["components"])
+    assert not any(manager.excluded_component(path) for path in paths)
+    sources = json.loads((NOTICES / "SOURCES.json").read_text(encoding="utf-8"))
+    assert "LGPL-2.1.txt" not in {row["file"] for row in sources["files"]}
+    assert not (NOTICES / "LGPL-2.1.txt").exists()
     assert not any("*" in path or path.endswith("/") for path in paths)
 
 

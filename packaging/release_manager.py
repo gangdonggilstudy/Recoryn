@@ -42,7 +42,7 @@ WEIGHTS = {
     ".mlmodel",
     ".weights",
 }
-# License policy L01 D1-D3 (docs/implementation/license-review.md). Matching is on
+# License policy L01 D1-D3 and D7 (docs/implementation/license-review.md). Matching is on
 # the lower-case POSIX path, case- and separator-insensitive. Directory rules match
 # ANY directory component (a hook may vendor a package below another directory,
 # L02-P01); basename prefixes cover native files wherever they are placed.
@@ -52,6 +52,7 @@ EXCLUDED_DIRECTORIES = (
 )
 EXCLUDED_DISTRIBUTIONS = (("av-", "PYAV_FFMPEG_GPL_CODECS"),)
 _NVIDIA = "NVIDIA_PROPRIETARY_NOT_REQUIRED"
+_FFMPEG = "QT_FFMPEG_BACKEND_REPLACED_BY_RECORYN_PCM_PLAYBACK"
 EXCLUDED_BASENAMES = (
     ("libx264", "GPL_ONLY_VIDEO_CODEC"),
     ("libx265", "GPL_OR_COMMERCIAL_VIDEO_CODEC"),
@@ -84,6 +85,20 @@ EXCLUDED_BASENAMES = (
     ("nppc", _NVIDIA),
     ("nppi", _NVIDIA),
     ("npps", _NVIDIA),
+    # D7 (L-P04): Recoryn plays its verified PCM clips itself through QAudioSink, so
+    # no Qt media decoder backend and no FFmpeg build is distributed at all: no
+    # LGPL-2.1 corresponding source and no codec patent exposure. Versioned FFmpeg
+    # library names are `<library>-<major>[...].dll` on Windows, wherever placed.
+    ("ffmpegmediaplugin", _FFMPEG),
+    ("windowsmediaplugin", "QT_MEDIA_BACKEND_UNUSED_RECORYN_PCM_PLAYBACK"),
+    ("avcodec-", _FFMPEG),
+    ("avformat-", _FFMPEG),
+    ("avutil-", _FFMPEG),
+    ("avdevice-", _FFMPEG),
+    ("avfilter-", _FFMPEG),
+    ("swresample-", _FFMPEG),
+    ("swscale-", _FFMPEG),
+    ("postproc-", _FFMPEG),
 )
 
 
