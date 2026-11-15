@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "note": "Reviewed native files of the pinned 0.2.0.dev2 bundle (L01 D5, L03-01). Exact paths only: any other EXE/DLL/PYD is UNMAPPED and fails the build until reviewed and added here. Qt Multimedia's media backend plugins and FFmpeg libraries are not distributed (L01 D7).",
-  "reviewed_from": "build/l03-1794719526 (112 native files) minus the seven L01 D7 files = 105",
+  "note": "Reviewed native files of the pinned 0.2.0.dev2 bundle (L01 D5, L03-01). Exact paths only: any other EXE/DLL/PYD is UNMAPPED and fails the build until reviewed and added here. Qt Multimedia's media backend plugins and FFmpeg libraries are not distributed (L01 D7). CTranslate2 is the CPU-only Recoryn build: no Intel or NVIDIA runtime (L01 D9).",
+  "reviewed_from": "build/l03-1794719526 (112 native files) minus the seven L01 D7 files = 105; L01 D9: minus libiomp5md.dll, plus ctranslate2/vcomp140.dll = 105",
   "components": [
     {
       "component": "CPython standard library extension",
@@ -36,19 +36,11 @@
       ]
     },
     {
-      "component": "CTranslate2 4.9.0 with statically linked Intel oneMKL 2025.3.0, oneDNN 3.1.1, NVIDIA CUDA 12.8 runtime and cuRAND device code, CCCL 2.7.0, spdlog 1.10.0/fmt 8.1.1, cpu_features 0.7.0 (packaging/notices/ct2-native.json)",
-      "license": "MIT AND Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND (NCSA OR MIT) AND BSD-3-Clause AND BSD-2-Clause AND BSL-1.0 AND Zlib AND LicenseRef-Intel-Simplified-Software-License AND LicenseRef-NVIDIA-CUDA-Toolkit-EULA AND LicenseRef-NVIDIA-Software-License-libcudacxx",
-      "status": "CONDITIONS_UNCONFIRMED",
+      "component": "CTranslate2 4.9.0+recoryn.cpu1, CPU-only build with statically linked oneDNN 3.1.1, cpu_features 0.7.0, spdlog 1.10.0/fmt 8.1.1, avx_mathfun, SIMD_Utils (packaging/notices/ct2-native.json)",
+      "license": "MIT AND Apache-2.0 AND BSD-3-Clause AND BSD-2-Clause AND Zlib",
+      "status": "DECLARED",
       "files": [
         "_internal/ctranslate2/ctranslate2.dll"
-      ]
-    },
-    {
-      "component": "Intel OpenMP runtime 2025.3.0 (oneAPI Base Toolkit 2025.3.0)",
-      "license": "LicenseRef-Intel-EULA-Developer-Tools",
-      "status": "CONDITIONS_UNCONFIRMED",
-      "files": [
-        "_internal/ctranslate2/libiomp5md.dll"
       ]
     },
     {
@@ -97,6 +89,7 @@
       "license": "LicenseRef-Microsoft-Redistributable",
       "status": "REDISTRIBUTABLE_PROPRIETARY",
       "files": [
+        "_internal/ctranslate2/vcomp140.dll",
         "_internal/msvcp140.dll",
         "_internal/numpy.libs/msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll",
         "_internal/PySide6/MSVCP140.dll",

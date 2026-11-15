@@ -119,6 +119,8 @@ def test_spec_drops_license_excluded_components_and_keeps_required_ones(
             "BINARY",
         ),
         (r"media\scaler.dll", r"C:\venv\Lib\site-packages\PySide6\swscale-10.dll", "BINARY"),
+        # L01 D9: the PyPI CTranslate2 wheel's Intel OpenMP runtime.
+        (r"ctranslate2\libiomp5md.dll", "omp.dll", "BINARY"),
         # Recoryn plays PCM itself, so no Qt media decoder backend is shipped either.
         (
             r"PySide6\plugins\multimedia\windowsmediaplugin.dll",
@@ -128,7 +130,7 @@ def test_spec_drops_license_excluded_components_and_keeps_required_ones(
     ]
     kept = [
         (r"PySide6\Qt6Multimedia.dll", "m.dll", "BINARY"),
-        (r"ctranslate2\libiomp5md.dll", "omp.dll", "BINARY"),
+        (r"ctranslate2\vcomp140.dll", "vcomp.dll", "BINARY"),  # L01 D9 CPU build
         (r"faster_whisper\assets\README", "readme", "DATA"),
         # A profile directory named "av" must not matter.
         (r"numpy\_core\x.pyd", r"C:\Users\av\venv\Lib\site-packages\numpy\_core\x.pyd", "BINARY"),

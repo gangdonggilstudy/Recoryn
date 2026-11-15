@@ -162,7 +162,7 @@ def l03_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path
     for relative in (
         "_internal/PySide6/Qt6Multimedia.dll",
         "_internal/PySide6/Qt6Core.dll",
-        "_internal/ctranslate2/libiomp5md.dll",
+        "_internal/ctranslate2/vcomp140.dll",
         "_internal/vcruntime140.dll",
     ):
         target = bundle / relative
@@ -220,8 +220,9 @@ def test_l03_native_map_notice_and_gate_name_open_conditions(
     }
     assert native["_internal/PySide6/Qt6Multimedia.dll"]["license_status"] == "DECLARED"
     assert native["_internal/PySide6/Qt6Core.dll"]["license"] == "LGPL-3.0-only"
-    assert native["_internal/ctranslate2/libiomp5md.dll"]["license_status"] == (
-        "CONDITIONS_UNCONFIRMED"
+    # L01 D9: the CPU-only CTranslate2 ships Microsoft's OpenMP, not Intel's.
+    assert native["_internal/ctranslate2/vcomp140.dll"]["license_status"] == (
+        "REDISTRIBUTABLE_PROPRIETARY"
     )
     assert native["_internal/vcruntime140.dll"]["license_status"] == "REDISTRIBUTABLE_PROPRIETARY"
     assert native["Recoryn.exe"]["component"].startswith("PyInstaller")
@@ -240,13 +241,13 @@ def test_l03_native_map_notice_and_gate_name_open_conditions(
         "Qt Multimedia's media backends",
         "No FFmpeg code is distributed.",
         "no media decoder is used.",
-        "CONDITIONS_UNCONFIRMED: _internal/ctranslate2/libiomp5md.dll",
+        "REDISTRIBUTABLE_PROPRIETARY: _internal/ctranslate2/vcomp140.dll",
         "UNMAPPED: _internal/unattributed.dll",
         "PySide6_Essentials 6.12.0: LGPL-3.0-only",
         "ctranslate2 4.9.0: MIT",
         "x264/x265/OpenH264",
         "not an authenticity signature",
-        # L03-04: Microsoft and Intel conditions are open, not implied approvals.
+        # L03-04: the Microsoft condition is open, not an implied approval.
         "release gate microsoft_runtime_conditions",
         "is not yet confirmed",
     ):
@@ -255,11 +256,8 @@ def test_l03_native_map_notice_and_gate_name_open_conditions(
     assert gates["ffmpeg_build_flags_corresponding_source_and_notices"] == (
         "NOT_DISTRIBUTED_L01_D1_D7"
     )
-    assert (
-        gates["microsoft_runtime_conditions"]
-        == gates["intel_runtime_conditions"]
-        == ("REVIEW_REQUIRED")
-    )
+    assert gates["microsoft_runtime_conditions"] == "REVIEW_REQUIRED"
+    assert gates["intel_runtime_conditions"] == "NOT_DISTRIBUTED_L01_D9"
     assert manager.verify(bundle)["version"] == "0.2.0.dev2"
 
 
@@ -336,7 +334,9 @@ NATIVE_TABLE = [
     ("_internal\\PySide6\\plugins\\platforms\\qwindows.dll", "DECLARED"),
     ("_internal/PySide6/QtCore.pyd", "DECLARED"),
     ("_internal/shiboken6/shiboken6.abi3.dll", "DECLARED"),
-    ("_internal/ctranslate2/ctranslate2.dll", "CONDITIONS_UNCONFIRMED"),
+    ("_internal/ctranslate2/ctranslate2.dll", "DECLARED"),  # CPU-only build (L01 D9)
+    ("_internal/ctranslate2/vcomp140.dll", "REDISTRIBUTABLE_PROPRIETARY"),
+    ("_internal/ctranslate2/libiomp5md.dll", "UNMAPPED"),  # Intel OpenMP never ships
     ("_internal/ctranslate2/_ext.cp313-win_amd64.pyd", "DECLARED"),
     ("_internal/ctranslate2/cudnn64_9.dll", "UNMAPPED"),
     ("_internal/av.libs/libx264-165.dll", "UNMAPPED"),
@@ -664,32 +664,42 @@ def test_l05_unreviewed_qt_records_are_refused(
 
 
 CT2 = json.loads((NOTICES / "ct2-native.json").read_text(encoding="utf-8"))
-DLL, OMP = "ctranslate2/ctranslate2.dll", "ctranslate2/libiomp5md.dll"
-# Hand-written from the CTranslate2 v4.9.0 build script and DLL string review (L-P05).
+DLL = "ctranslate2/ctranslate2.dll"
+# Hand-written from the CPU-only options of scripts/build_ctranslate2_cpu.py (L01 D9).
 CT2_EXPECTED = {
     "ctranslate2": ("MIT", DLL),
-    "onemkl": ("LicenseRef-Intel-Simplified-Software-License", DLL),
     "onednn": ("Apache-2.0", DLL),
     "onednn-xbyak": ("BSD-3-Clause", DLL),
-    "cuda-runtime": ("LicenseRef-NVIDIA-CUDA-Toolkit-EULA", DLL),
-    "curand-device": ("LicenseRef-NVIDIA-CUDA-Toolkit-EULA AND BSD-3-Clause", DLL),
-    "thrust": ("Apache-2.0 AND BSL-1.0 AND BSD-2-Clause", DLL),
-    "cub": ("BSD-3-Clause", DLL),
+    "onednn-ittnotify": ("BSD-3-Clause", DLL),
     "spdlog": ("MIT", DLL),
     "fmt": ("MIT", DLL),
     "cpu_features": ("Apache-2.0", DLL),
     "avx_mathfun": ("MIT AND Zlib", DLL),
-    "openmp": ("LicenseRef-Intel-EULA-Developer-Tools", OMP),
+    "avx512_mathfun": ("BSD-2-Clause", DLL),
 }
-# Not compiled into the Windows wheel (options BUILD_CLI/BUILD_TESTS/WITH_RUY/
-# WITH_FLASH_ATTN off; cuDNN is excluded from the bundle by L01 D3).
-CT2_ABSENT = {"cutlass", "cxxopts", "googletest", "ruy", "cudnn", "cublas"}
+# Not compiled into the CPU-only build: Intel/NVIDIA code (L01 D9) and the CUDA, CLI,
+# test and Ruy submodules.
+CT2_ABSENT = {
+    "onemkl",
+    "openmp",
+    "cuda-runtime",
+    "curand-device",
+    "thrust",
+    "cub",
+    "libcudacxx",
+    "cutlass",
+    "cxxopts",
+    "googletest",
+    "ruy",
+    "cudnn",
+    "cublas",
+}
 
 
 def test_l05_ctranslate2_native_table() -> None:
     entries = CT2["entries"]
     ids = [entry["id"] for entry in entries]
-    assert len(ids) == len(set(ids)) == 16
+    assert len(ids) == len(set(ids)) == 9
     pinned = {row["file"] for row in SOURCES["files"]}
     for entry in entries:
         assert evidence.spdx(entry["license"]) == entry["license"], entry["id"]
@@ -699,22 +709,19 @@ def test_l05_ctranslate2_native_table() -> None:
         assert (table[key]["license"], table[key]["shipped_in"]) == (license_id, shipped)
     assert not CT2_ABSENT & set(ids)
     dll = evidence.native_license("_internal/ctranslate2/ctranslate2.dll", NATIVE_MAP)
-    assert dll[2] == "CONDITIONS_UNCONFIRMED"
-    for part in (
-        "LicenseRef-NVIDIA-CUDA-Toolkit-EULA",
-        "LicenseRef-Intel-Simplified-Software-License",
-    ):
-        assert part in dll[1]
+    assert dll[2] == "DECLARED" and "LicenseRef" not in dll[1]
+    assert "recoryn.cpu1" in dll[0] and "Intel" not in dll[0] and "NVIDIA" not in dll[0]
 
 
-def test_l05_nvidia_header_source_is_not_redistributed() -> None:
-    # Only the license comments the cuRAND headers require are kept, never their code.
+def test_l06_no_intel_or_nvidia_text_or_record_remains() -> None:
+    # L01 D9: with the CPU-only build there is nothing of Intel's or NVIDIA's to notice.
+    for folder in ("intel", "nvidia", "cccl"):
+        assert not (NOTICES / "ct2" / folder).exists(), folder
     names = {path.name.lower() for path in NOTICES.rglob("*")}
     assert not names & {"curand_kernel.h", "curand_philox4x32_x.h", "curand_precalc.h"}
-    excerpt = (NOTICES / "ct2" / "nvidia" / "NVIDIA-cuRAND-notices.txt").read_bytes()
-    assert excerpt.startswith(b"/* Copyright 2010-2014 NVIDIA Corporation")
-    assert excerpt.rstrip().endswith(b"*/") and b"#" not in excerpt
-    assert b"U.S. Government End Users" in excerpt and b"D. E. Shaw Research" in excerpt
+    pinned = json.dumps(SOURCES) + json.dumps(CT2)
+    for marker in ("intel_openmp", "onemkl", "cuda_cudart", "libcurand", "NVIDIA/cccl"):
+        assert marker not in pinned, marker
 
 
 def test_l05_no_notice_text_trips_the_distribution_policy() -> None:
@@ -740,20 +747,19 @@ def test_l05_ctranslate2_native_notice_texts_and_sbom(
         for name in entry["files"]:
             copied = bundle / "licenses" / "ctranslate2-native" / name.removeprefix("ct2/")
             assert copied.read_bytes() == (NOTICES / name).read_bytes()
-    excerpt = (NOTICES / "ct2" / "nvidia" / "NVIDIA-cuRAND-notices.txt").read_text(encoding="utf-8")
-    assert excerpt.rstrip() in notice  # reproduced verbatim in the user documentation
     sbom = manager.read_json(bundle / "sbom.cdx.json")["components"]
     native = [row for row in sbom if row["name"].startswith("CTranslate2 native: ")]
-    assert len(native) == 16 and all(row["licenses"] for row in native)
+    assert len(native) == 9 and all(row["licenses"] for row in native)
     gates = manager.read_json(bundle / "build-provenance.json")["gates"]
     assert (
         gates["nvidia_runtime_conditions"]
         == gates["intel_runtime_conditions"]
-        == ("REVIEW_REQUIRED")
+        == ("NOT_DISTRIBUTED_L01_D9")
     )
-    assert "release gates nvidia_runtime_conditions and" in notice
-    # Only the separate NVIDIA DLLs are excluded; the static runtime is disclosed.
-    assert "NVIDIA CUDA/cuDNN runtime DLLs (the CUDA runtime statically linked inside" in notice
+    # L01 D9/D10: the PyPI wheel's Intel/NVIDIA code is named as not distributed.
+    assert "(L01 D9) the Intel oneMKL/OpenMP and NVIDIA CUDA/cuRAND code that the PyPI" in notice
+    assert "GPU acceleration needs the official runtime, which users obtain themselves." in notice
+    assert "cuRAND device headers" not in notice and "libiomp5md" not in notice
     assert manager.verify(bundle)["version"] == "0.2.0.dev2"
 
 

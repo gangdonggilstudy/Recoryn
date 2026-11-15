@@ -179,7 +179,11 @@ class DesktopAI:
                             check_cancel()
                             hasher.update(block)
                 digest = hasher.hexdigest()
-                _, gpus = probe_gpus() if policy != "CPU_ONLY" else ("UNAVAILABLE", ())
+                from recoryn.transcription import cuda_runtime_available
+
+                # L01 D9: without a CUDA-capable CTranslate2 no GPU is a candidate.
+                gpu_ready = policy != "CPU_ONLY" and cuda_runtime_available()
+                _, gpus = probe_gpus() if gpu_ready else ("UNAVAILABLE", ())
                 # Runtime adapter currently binds GPU zero; do not budget another GPU.
                 device, _ = ResourceScheduler().choose(
                     policy, 1024 * 2**20, tuple(gpu for gpu in gpus if gpu.index == 0)

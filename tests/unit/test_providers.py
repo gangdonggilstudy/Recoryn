@@ -974,3 +974,36 @@ def test_local_whisper_without_numpy_reports_dependency_missing(
     result = adapter.transcribe(STTRequest(audio))
     assert result.error_code == "DEPENDENCY_MISSING" and "numpy" in calls
     assert "CANARY" not in repr(result)
+
+
+def _ctranslate2(count: object) -> SimpleNamespace:
+    def get_cuda_device_count() -> object:
+        if isinstance(count, Exception):
+            raise count
+        return count
+
+    return SimpleNamespace(get_cuda_device_count=get_cuda_device_count)
+
+
+@pytest.mark.parametrize(
+    ("module", "expected"),
+    [
+        (_ctranslate2(0), False),  # the bundled CPU-only build (L01 D9)
+        (_ctranslate2(1), True),  # an official CUDA runtime installed by the user
+        (_ctranslate2(RuntimeError("driver too old")), False),
+        (ImportError("no ctranslate2"), False),
+    ],
+)
+def test_cuda_runtime_available_never_crashes(
+    monkeypatch: pytest.MonkeyPatch, module: object, expected: bool
+) -> None:
+    from recoryn.transcription import adapters, cuda_runtime_available
+
+    def load(name: str) -> object:
+        assert name == "ctranslate2"
+        if isinstance(module, Exception):
+            raise module
+        return module
+
+    monkeypatch.setattr(adapters.importlib, "import_module", load)
+    assert cuda_runtime_available() is expected

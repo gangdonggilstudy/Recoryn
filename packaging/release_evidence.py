@@ -214,12 +214,12 @@ def _ct2_text(name: str) -> str:
     return f"{CT2_TEXT_ROOT}/{name.removeprefix('ct2/')}"
 
 
-def _ct2_notice(entries: list[dict[str, Any]], curand_notice: str) -> list[str]:
+def _ct2_notice(entries: list[dict[str, Any]]) -> list[str]:
     lines = [
         "",
-        "Code inside CTranslate2's native files (ctranslate2/ctranslate2.dll statically",
-        "contains all but the last entry; ctranslate2/libiomp5md.dll is the last). Texts",
-        f"under {CT2_TEXT_ROOT}/; record packaging/notices/ct2-native.json:",
+        "Code inside ctranslate2/ctranslate2.dll, Recoryn's CPU-only build of CTranslate2",
+        "4.9.0 (scripts/build_ctranslate2_cpu.py). Texts under",
+        f"{CT2_TEXT_ROOT}/; record packaging/notices/ct2-native.json:",
     ]
     for entry in entries:
         version = f" {entry['version']}" if entry["version"] else ""
@@ -229,15 +229,8 @@ def _ct2_notice(entries: list[dict[str, Any]], curand_notice: str) -> list[str]:
             lines.append(f"    note: {entry['note']}")
         lines.append("    text: " + ", ".join(_ct2_text(name) for name in entry["files"]))
     lines += [
-        "",
-        "NVIDIA requires the following notice from the cuRAND device headers whose code",
-        "ctranslate2.dll contains to be included in user documentation (verbatim):",
-        "",
-        curand_notice.rstrip(),
-        "",
-        "Whether NVIDIA's and Intel's conditions for these exact files are met",
-        "is not yet confirmed (release gates nvidia_runtime_conditions and",
-        "intel_runtime_conditions).",
+        "  ctranslate2/vcomp140.dll is Microsoft's redistributable OpenMP runtime (see the",
+        "  Microsoft paragraph below).",
     ]
     return lines
 
@@ -256,7 +249,6 @@ def _notice(
     qt_entries: list[dict[str, Any]],
     archives: list[dict[str, Any]],
     ct2_entries: list[dict[str, Any]],
-    curand_notice: str,
 ) -> str:
     lines = [
         f"Recoryn {version} DEVELOPMENT CANDIDATE - not approved for public release.",
@@ -270,9 +262,10 @@ def _notice(
         "Not distributed by license policy L01 D1-D3 and D7: PyAV and its FFmpeg build",
         "with x264/x265/OpenH264, Qt Multimedia's media backends (FFmpeg and Windows",
         "Media Foundation plugins) and Qt's FFmpeg libraries, Qt Virtual Keyboard with",
-        "Qml/Quick, Qt PDF, the Mesa/LLVM software OpenGL fallback, and the separate",
-        "NVIDIA CUDA/cuDNN runtime DLLs (the CUDA runtime statically linked inside",
-        "ctranslate2.dll is listed in its own section below).",
+        "Qml/Quick, Qt PDF, the Mesa/LLVM software OpenGL fallback, NVIDIA CUDA/cuDNN, and",
+        "(L01 D9) the Intel oneMKL/OpenMP and NVIDIA CUDA/cuRAND code that the PyPI",
+        "CTranslate2 wheel contains: Recoryn ships a CPU-only build of the same source.",
+        "GPU acceleration needs the official runtime, which users obtain themselves.",
         "No FFmpeg code is distributed. Recoryn plays its own verified 16-bit PCM WAV",
         "clips through Qt Multimedia's audio output; no media decoder is used.",
         "",
@@ -319,7 +312,7 @@ def _notice(
     if qt_entries:
         lines += _qt_notice(qt_entries, archives)
     if ct2_entries:
-        lines += _ct2_notice(ct2_entries, curand_notice)
+        lines += _ct2_notice(ct2_entries)
     open_rows = [row for row in binaries if row["license_status"] != "DECLARED"]
     lines += ["", "Native files with open conditions (see native-origins.json):"]
     lines += [
@@ -530,17 +523,12 @@ def generate(bundle: Path, toc_path: Path, source_root: Path) -> dict[str, Any]:
             }
             for entry in qt_entries
         ]
-    # L01 D8: code statically inside CTranslate2's native files (Intel, NVIDIA, others).
+    # L01 D8/D9: code statically inside the CPU-only ctranslate2.dll.
     ct2_entries: list[dict[str, Any]] = []
-    curand_notice = ""
     if any(normalized(row["name"]) == "ctranslate2" for row in components):
         ct2_entries = _attributions(
             source_root, notice_texts, "ct2-native.json", "CT2_ATTRIBUTION_INVALID"
         )
-        notice_file = notice_texts.get("ct2/nvidia/NVIDIA-cuRAND-notices.txt")
-        if notice_file is None:
-            raise ReleaseError("CT2_ATTRIBUTION_INVALID")
-        curand_notice = notice_file.read_text(encoding="utf-8")
         for name in sorted({name for entry in ct2_entries for name in entry["files"]}):
             target = bundle / _ct2_text(name)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -624,8 +612,9 @@ def generate(bundle: Path, toc_path: Path, source_root: Path) -> dict[str, Any]:
         ),
         "physical_hardware": "NOT_RUN",
         # Classification is not confirmation (L03-04, L01-02).
-        "intel_runtime_conditions": "REVIEW_REQUIRED",
-        "nvidia_runtime_conditions": "REVIEW_REQUIRED",
+        # L01 D9: the CPU-only CTranslate2 build carries no Intel or NVIDIA runtime.
+        "intel_runtime_conditions": "NOT_DISTRIBUTED_L01_D9",
+        "nvidia_runtime_conditions": "NOT_DISTRIBUTED_L01_D9",
         "microsoft_runtime_conditions": "REVIEW_REQUIRED",
     }
     atomic_json(
@@ -653,7 +642,7 @@ def generate(bundle: Path, toc_path: Path, source_root: Path) -> dict[str, Any]:
         },
     )
     (bundle / "NOTICE.txt").write_text(
-        _notice(version, components, binaries, qt_entries, archives, ct2_entries, curand_notice),
+        _notice(version, components, binaries, qt_entries, archives, ct2_entries),
         encoding="utf-8",
     )
     manifest = {

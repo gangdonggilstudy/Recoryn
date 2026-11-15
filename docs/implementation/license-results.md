@@ -299,6 +299,145 @@ L-P05 stage tree `6422098e263437fd0c55c90efb90c8ad8b820979`(294파일)를 `%TEMP
 
 NOTICE와 SBOM은 최종 검토 후보 `build/l05d-1794738231`과 bytes가 같다. 이 결과 기록, 배정표 상태 갱신, 검토 문서 외에는 검증 tree와 commit tree가 같다.
 
+## L-P06 CTranslate2 CPU 전용 자체 빌드
+
+선행 L-P05 `15e70902d5ce1d6946c71a5328c4b27d7e5365eb`의 원격 CI [43704411295](https://github.com/gangdonggilstudy/Recoryn/actions/runs/43704411295)은 core 3.11·3.13과 optional-runtime 세 job success다(C00 GitHub API 확인). 사용자는 CTranslate2를 "직접 빌드(CPU 전용)"하기로 결정했다(D9). GPU 런타임은 "앱 안에서 받기"로 정했다(D10, L-P07).
+
+### 빌드와 고정
+
+`scripts/build_ctranslate2_cpu.py`를 깨끗한 폴더에서 한 번에 실행했다(`build/ct2-cpu-1794742636`, 보고서 SHA-256 `cf036b05…2418e`). 이 산출물을 `packaging/ctranslate2-cpu.json`에 고정했다.
+
+- **소스:** CTranslate2 `v4.9.0` `a22ba1c6…`, cpu_features `8a494eb1…`, spdlog `76fb40d9…`, oneDNN `v3.1.1` `64f6bcbc…`다. 모두 commit이 일치했다.
+- **도구체인(L06-02):** MSVC 14.42.34433, CMake 3.29.5-msvc4, Python 3.13.1로 고정한다. 셋 중 하나라도 다르면 TOOLCHAIN_MISMATCH로 거부한다. 실제 compiler 경로는 CMake 기록과 vcvars 환경에서 다시 읽어 같은 toolset인지 확인한다.
+- **옵션(L06-02):** CTranslate2 16개와 oneDNN 6개 옵션을 모두 명시한다. CTranslate2 옵션은 BUILD_CLI/TESTS OFF, WITH_MKL/CUDA/CUDNN/RUY/OPENBLAS/ACCELERATE/HIP/MPS/FLASH_ATTN/TENSOR_PARALLEL OFF, WITH_DNNL ON, ENABLE_CPU_DISPATCH ON, OPENMP_RUNTIME COMP 등이다. configure 뒤 CMakeCache에서 값을 다시 읽어, 어긋나면 CMAKE_OPTION_MISMATCH로 거부한다. 모든 컴파일에 `/utf-8`을 준다.
+- **`ctranslate2.dll`:** 26,077,696 bytes(SHA-256 `b4eeffbe…f5702`)다. PyPI판은 61.3 MB다. import는 Windows CRT·`msvcp140`·`vcruntime140(_1)`·`vcomp140`뿐이다.
+- **`vcomp140.dll`:** VS 2022 `VC\Redist\MSVC\14.42.34433\x64\Microsoft.VC143.OpenMP`의 고정 파일이다(SHA-256 `036b9b3f…27aa7c`). 다른 파일이면 거부한다.
+- **wheel:** `ctranslate2-4.9.0+recoryn.cpu1-cp313-cp313-win_amd64.whl`(SHA-256 `62149b88…60180`)이다. `_ext.cp313-win_amd64.pyd`는 `eff4ebf9…20e72`다. 빌드한 wheel 자체를 import해 버전과 CUDA 장치 0을 확인했다.
+- **재현성:** 같은 소스·옵션으로 다시 빌드한 DLL은 크기는 같았지만 hash가 달랐다(`c97c4049…` → `b4eeffbe…`). 비트 단위 재현은 하지 않는다. 그래서 하나의 산출물을 고정해 쓴다.
+- **pin 대조(L06-01):** 빌더는 PyInstaller를 실행하기 전에 설치된 패키지의 세 파일을 pin의 SHA-256과 대조한다. 결과 번들의 사본도 다시 대조한다. 이어서 import 표와 Intel·NVIDIA 표지를 검사한다. 표지는 대소문자를 무시하고 UTF-16도 본다. 하나라도 어긋나면 CTRANSLATE2_NOT_CPU_BUILD다. C00 확인 결과, PyPI DLL(vcomp 동봉)에서는 표지 위반 8개가 나왔고 고정 CPU DLL에서는 0이었다.
+- **실패와 수정:** 앞선 시도 일곱 번이 실패했다. 실패 기록은 지우지 않았다.
+  - 일시적인 PyPI 연결 재설정
+  - 빌드 의존성 packaging 누락
+  - setuptools의 MSVC 미탐지
+  - cp949 컴파일로 인한 import UnicodeDecodeError
+  - 단일 toolset에서 CMake `-T version=` 거부
+  - VS generator가 compiler를 캐시에 남기지 않아 생긴 오탐
+  - 시험 중단
+
+### 공식판과 비교
+
+`scripts/compare_ctranslate2_builds.py`로 비교했다. 모델은 내려받지 않고, seed 고정 무작위 가중치 Whisper 사양으로 만들었다. 입력은 2×80×3000이고, 인코딩과 greedy 생성을 실행했다. 크기는 두 가지다.
+
+- small: d_model 64, 2층
+- base: d_model 512, 6층, Whisper base급
+
+L06-I01 지적에 따라 비교 하네스를 고쳤다.
+
+- 결과마다 모델 파일 세 개와 입력 배열의 SHA-256, 차원, prompt를 담는다. 둘이 다르면 COMPARE_IDENTITY_MISMATCH로 거부한다.
+- 인코더 출력 전체를 npz로 저장하고 그 hash를 대조한다. shape는 [2, 1500, d_model]이어야 하고 값은 유한해야 한다.
+- 모든 원소를 비교한다(small 192,000, base 1,536,000).
+- 원 반례인 `encoded_shape=[1,1,1]`도 거부하도록 시험했다.
+
+환경은 세 가지이고, 같은 PC(AMD Family 25, AVX-512)에서 4스레드로 순서대로 실행했다(결과는 `build/ct2-compare2/`).
+
+- PyPI 공식판 venv: `build/ct2-pypi-env`, DLL `a9009ad6…`
+- 같은 venv에서 MKL 강제(`CT2_USE_MKL=1`)
+- 자체 빌드 venv
+
+- **PyPI 기본값과 비교:** 이 PC는 AMD CPU라 PyPI판도 기본값에서 MKL을 끄고 oneDNN(SGEMM·GEMM_S8 = DNNL)을 쓴다. CT2_VERBOSE로 확인했다. small과 base 모두 float32와 int8 인코더 출력 전체 배열이 bit 단위로 같았고(npz SHA-256 동일), 생성 토큰과 점수도 같았다. Intel CPU의 PyPI판은 기본값에서 MKL을 쓰므로 아래처럼 MKL을 강제한 비교를 따로 했다.
+- **MKL 강제와 비교:**
+
+| 모델 | 정밀도 | 최대 / 평균 절대 차이 (출력 최대값) | 생성 토큰 | 인코딩 중앙값 MKL / 자체 빌드 |
+| --- | --- | --- | --- | --- |
+| small | float32 | 2.26e-6 / 2.43e-7 (5.31) | 동일 | 0.051 / 0.049 s |
+| small | int8 | 0.0202 / 7.56e-5 (5.30) | 동일, 점수 차 ≤0.0021 | 0.060 / 0.046 s |
+| base | float32 | 6.26e-6 / 8.25e-7 (5.53) | 동일 | 1.12 / 0.842 s |
+| base | int8 | 0.0861 / 0.0127 (5.47) | 첫 시퀀스가 9번째 토큰부터 다름, 점수 차 0.0205·0.0044 | 1.822 / 0.756 s |
+
+- **해석(L06-I02·I03 반영):**
+  - Recoryn의 `FasterWhisperProvider`는 CPU에서 compute_type `int8`, CUDA에서 `float16`을 명시해 넘긴다. `int16`은 허용 목록에 없다. 따라서 CPU 실제 경로는 int8이다.
+  - Intel CPU에서는 이 경로가 PyPI판의 MKL int8에서 oneDNN int8로 바뀐다. AMD CPU에서는 PyPI판도 이미 oneDNN이라 이전과 같다.
+  - float32는 수치적으로 같다.
+  - int8은 MKL과 oneDNN의 양자화 GEMM 구현이 달라 출력에 차이가 있다. base 모델에서는 생성 토큰이 갈렸다. 그 인과 원인은 확정하지 않았다. 검토자의 측정에 따르면 무작위 모델의 단계별 logit 차이 여유는 0.0208~0.7455였다. 따라서 "logits가 평평해서"라는 처음 설명은 근거 없는 단정이라 철회한다.
+  - 이 차이는 품질 허용치로 판정한 것이 아니다. Intel CPU에서의 속도와 실제 Whisper 가중치·실제 음성의 전사 차이는 NOT_RUN이며, 남은 위험이다.
+  - 이 AMD PC에서는 자체 빌드가 MKL 강제보다 빠르거나 같았다.
+
+비교 결과 SHA-256은 다음과 같다.
+
+- npz: small `750da14f…112f0`(PyPI 기본·자체 빌드 동일), MKL `c533e074…5f161`; base `e796c988…de3f0`(동일), MKL `ea91cbfd…444db`
+
+### 장치 선택
+
+GPU가 있는 PC에서 GPU 정책을 고르면 CUDA가 없는 번들 CTranslate2로 모델 로드를 시도하게 된다. 이를 막기 위해 `cuda_runtime_available()`이 설치된 CTranslate2의 CUDA 장치 수를 확인한다. 0이거나 오류가 나면 GPU 후보를 비운다. 그 결과 CPU 폴백 정책은 CPU로 동작하고, GPU_ONLY는 RESOURCE_GPU_UNAVAILABLE로 알린다. 검토자는 정책 3 × 런타임 4 × GPU 5, 총 60 조합을 실제 `DesktopAI` 가짜 경로에서 확인했다.
+
+### 독립 검토
+
+- **[추론 검토](../reviews/l06-inference-review.md)(recoryn-ml, w5:p4):**
+  - 처음 발견은 OPEN 3건이었다.
+    - **L06-I01 S2:** 비교 하네스가 모델·입력 동일성과 shape를 확인하지 않았다. 그래서 `encoded_shape=[1,1,1]`인 가짜 결과도 차이 0으로 보고됐다.
+    - **L06-I02 S3:** "compute_type 미지정"이라는 서술이 사실과 달랐다.
+    - **L06-I03 S3:** 토큰이 갈린 원인을 근거 없이 단정했다.
+  - 세 건 모두 고친 뒤 재확인에서 RECHECKED로 판정했고, **OPEN 0**이다. 확인 내용은 다음과 같다.
+    - 새 시험 5개 통과
+    - 원 반례 거부, 표본 밖 원소의 변경 검출
+    - 실제 8개 결과의 전체 배열 재계산
+  - 검토자가 확인한 비교 스크립트는 작업본 `0c6ab61e…`(CRLF)다. 요청서에 적은 `2d0f…`는 서식 정리 전 hash였다. C00은 작업본을 LF로 바꾼 hash가 stage blob `252665b2…`와 같음을 확인했다. 즉 내용이 같다.
+- **[빌드 검토](../reviews/l06-build-review.md)(recoryn-arch, w5:p2):**
+  - 처음 발견은 OPEN 3건이었다.
+    - **L06-01 S2:** release gate가 버전 문자열과 일부 표지만 봐서, 빌드한 wheel과 암호학적으로 묶이지 않았다.
+    - **L06-02 S2:** 도구체인이 "최신 설치본"으로 떠다녔고, 일부 옵션이 소스 기본값에 의존했다.
+    - **L06-03 S3:** PE import·지연 import·대소문자·UTF-16·hash 변조를 다루는 부정 시험이 없었다.
+  - 다음 수정으로 세 건을 고쳤고, 재확인에서 모두 RECHECKED/CLOSED, **OPEN 0**이다.
+    - pin 파일, 설치 전·후 대조
+    - 도구체인·옵션 고정과 CMakeCache 재대조
+    - 결정표 시험 추가
+  - 검토자는 시험과 회귀를 다시 실행하지 않았다. C00 실행 결과는 작성자 증거로 구분했다.
+
+### 검증
+
+L-P06 stage tree `e84123ba83e8595410fef97d72fe9efd6be54412`(283파일)를 `%TEMP%/recoryn-l-p06b-tree-ny6altjt/tree`에 추출해 실행했다. 추출 bytes 불일치 0이고, import 출처는 추출 tree다. 앞선 tree `dd43aeea`는 비교 스크립트 서식 검사 1건이 실패해 검증 근거로 쓰지 않았다. 차이는 ruff format으로 줄 1개를 더한 것뿐이다. 이 서식 정리는 빌드 입력에 포함되지 않는 파일에만 해당한다.
+
+| 검사 | 결과 |
+| --- | --- |
+| 전체 pytest(`--runxfail`, ResourceWarning 오류화) | **7590 PASS / 198초**, 실패·오류·skip 0 |
+| 전체 line / branch | **8280/8844 = 93.62% / 2465/2828 = 87.16%**, 분리 예산 PASS, 측정 69파일 모두 추출 tree |
+| Ruff check·format / strict mypy | PASS / 80파일 PASS |
+
+같은 내용의 tree `dd43aeea`를 따로 추출해 frozen 후보 `build/l06-final-1794743251`을 만들었다. 이 tree는 빌드 입력 149파일이 `e84123ba`와 같다.
+
+- **입력:** 빌드 입력 149파일(pin 포함)이 tree bytes와 일치한다.
+- **pin:** 번들의 CTranslate2 세 파일이 pin hash와 일치한다.
+- **구성:** 1103파일, 266.9 MB다. 네이티브 105개 중 DECLARED 91, REDISTRIBUTABLE_PROPRIETARY 14이고 CONDITIONS_UNCONFIRMED와 UNMAPPED는 0이다. SBOM은 94개다.
+- **smoke:** PASS다. ctranslate2 `4.9.0+recoryn.cpu1`이고 재생 위치는 2208 → 2658 ms였다. stderr는 0 bytes다.
+
+| 후보 파일 | SHA-256 |
+| --- | --- |
+| Recoryn.exe | `81c84346ca27a2a800479248abd04137bc0cc77f098fe8d23d49058b92d6adb9` |
+| Recoryn-CLI.exe | `1375db5e951afb1da389aacbc4874bd0c3a21abe59d377b03c308bf0c4af9838` |
+| release-manifest.json | `55bd42349e15d931c3d80e9b6e506973afd45ad4ce854fc355c9ad6bb01fe9cc` |
+| NOTICE.txt | `2762f169fd8837e4370f706ea83435e540f5e7cb4f7627c852361b226b5d2794` |
+| sbom.cdx.json | `064e5e66eb3ebb1345f9bb11e0db0ce6b2de5cf4043b45265a07e9ca4a60ecd0` |
+| native-origins.json | `e55fb6c4aef0529ef928ccd6e2ce5e80634bb7703186167b5020c8ac500f62e8` |
+| build-provenance.json | `213a3ee4da54417f713b36741dcd549c9b2f5ae76761594e2280cf6465634ff7` |
+| smoke.stdout.json | `0090435d548bf66d0bb7b07af1eccda8a72f7906d485e2e3fbc9602d1c098fba` |
+
+이 결과 기록, 배정표 상태 갱신, 검토 문서 2개 외에는 검증 tree와 commit tree가 같다.
+
+### GPU 가능성 확인 (L-P07 준비)
+
+이 PC의 RTX 4070 Laptop(드라이버 576.57)에서 확인했다. PyPI 공식 CTranslate2 4.9.0과 NVIDIA `nvidia-cublas-cu12` 12.8.4.1 wheel만으로 무작위 가중치 base 모델이 GPU에서 실행됐다. cuDNN은 필요하지 않았다.
+
+| 장치·정밀도 | 인코딩 | CPU float32 대비 최대 차이 | 토큰 |
+| --- | --- | --- | --- |
+| CPU float32 | 0.73 s | 기준 | 기준 |
+| GPU float32 | 1.15 s(첫 실행 포함) | 1.3e-5 | 동일 |
+| GPU float16 | 0.14 s | 0.0126 | 동일 |
+
+받을 파일은 두 개, 합계 약 588 MB다.
+
+- `ctranslate2-4.9.0-cp313-cp313-win_amd64.whl`: 20,408,731 bytes, SHA-256 `d009840a…ef095`
+- `nvidia_cublas_cu12-12.8.4.1-py3-none-win_amd64.whl`: 567,544,208 bytes, SHA-256 `47e9b821…e35af`
+
 ## 미검증
 
 실제 음성·Whisper 추론 품질, GPU, 장시간 입력의 메모리 상한, clean VM, 서명, Qt corresponding source 배포, Intel·Microsoft 조건의 법률 확인은 NOT_RUN 또는 G4 OPEN이다. L-P04가 공개되면 FFmpeg corresponding source와 코덱 특허 항목은 배포물에서 사라진다. 실제 스피커 청취, 음질, 재생 중 장치 변경은 확인하지 않았다. 3채널 이상의 mono 평균은 스피커 배치를 고려한 downmix가 아니다.

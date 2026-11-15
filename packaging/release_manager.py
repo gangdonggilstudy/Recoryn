@@ -42,7 +42,7 @@ WEIGHTS = {
     ".mlmodel",
     ".weights",
 }
-# License policy L01 D1-D3 and D7 (docs/implementation/license-review.md). Matching is on
+# License policy L01 D1-D3, D7 and D9 (docs/implementation/license-review.md). Matching is on
 # the lower-case POSIX path, case- and separator-insensitive. Directory rules match
 # ANY directory component (a hook may vendor a package below another directory,
 # L02-P01); basename prefixes cover native files wherever they are placed.
@@ -99,6 +99,9 @@ EXCLUDED_BASENAMES = (
     ("swresample-", _FFMPEG),
     ("swscale-", _FFMPEG),
     ("postproc-", _FFMPEG),
+    # D9 (L-P06): the bundled CTranslate2 is a CPU-only build using MSVC OpenMP, so the
+    # Intel OpenMP runtime of the PyPI wheel must never ship (a stale wheel is refused).
+    ("libiomp5md", "INTEL_OPENMP_NOT_DISTRIBUTED_CPU_ONLY_CTRANSLATE2"),
 )
 
 

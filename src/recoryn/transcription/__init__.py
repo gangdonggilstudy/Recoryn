@@ -2,7 +2,12 @@
 
 from recoryn.providers import STTProvider, STTRequest, STTResult, TranscriptSegment
 
-from .adapters import FasterWhisperProvider, GeminiTranscriber, OpenAITranscriber
+from .adapters import (
+    FasterWhisperProvider,
+    GeminiTranscriber,
+    OpenAITranscriber,
+    cuda_runtime_available,
+)
 
 __all__ = [
     "FasterWhisperProvider",
@@ -12,4 +17,5 @@ __all__ = [
     "STTRequest",
     "STTResult",
     "TranscriptSegment",
+    "cuda_runtime_available",
 ]

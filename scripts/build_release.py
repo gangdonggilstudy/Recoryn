@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,6 +32,8 @@ def snapshot_inputs(root: Path, destination: Path) -> Path:
                 # Verbatim license texts and their pinned hashes, including the
                 # Qt/Intel/oneDNN subfolders (L01 D5, D8).
                 or source.is_relative_to(root / "packaging" / "notices")
+                # The reviewed CPU-only CTranslate2 artifact (L01 D9, L06-01).
+                or source == root / CT2_PIN
             ):
                 sources.append(source)
     sources.extend(path for path in root.glob("requirements*.txt") if path.is_file())
@@ -95,6 +99,100 @@ def native_import_closure(bundle: Path) -> list[str]:
     return sorted(unresolved)
 
 
+# L01 D9: markers of the Intel/NVIDIA runtimes inside the PyPI CTranslate2 wheel. Kept
+# independently of scripts/build_ctranslate2_cpu.py; compared case-insensitively and in
+# UTF-8 and UTF-16LE so a re-cased or wide string is not a bypass (L06-03).
+CT2_FORBIDDEN_IMPORTS = ("libiomp5md", "cudart", "cublas", "cudnn", "nvcuda", "mkl_")
+CT2_FORBIDDEN_STRINGS = (
+    "CUDA driver version is insufficient",
+    "cudaGetDeviceCount",
+    "nvcuda.dll",
+    "cublas64_",
+    "Intel(R) oneAPI Math Kernel Library",
+    "libiomp5md",
+)
+# The exact CPU-only artifact pinned by hash (L06-01); the marker checks are a second net.
+CT2_PIN = Path("packaging") / "ctranslate2-cpu.json"
+
+
+def ctranslate2_string_violations(data: bytes) -> list[str]:
+    lowered = data.lower()
+    return [
+        text
+        for text in CT2_FORBIDDEN_STRINGS
+        if text.lower().encode() in lowered or text.lower().encode("utf-16-le") in lowered
+    ]
+
+
+def ctranslate2_import_violations(imports: list[str]) -> list[str]:
+    names = [name.lower() for name in imports]
+    reasons = [f"import {name}" for name in names if name.startswith(CT2_FORBIDDEN_IMPORTS)]
+    if "vcomp140.dll" not in names:
+        reasons.append("no vcomp140.dll import")
+    return reasons
+
+
+def pe_imports(path: Path) -> list[str]:
+    """Imported and delay-imported DLL names of a PE file."""
+    import importlib
+
+    pefile: Any = importlib.import_module("pefile")
+    image = pefile.PE(str(path), fast_load=True)
+    try:
+        image.parse_data_directories(
+            directories=[
+                pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
+                pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"],
+            ]
+        )
+        entries = list(getattr(image, "DIRECTORY_ENTRY_IMPORT", [])) + list(
+            getattr(image, "DIRECTORY_ENTRY_DELAY_IMPORT", [])
+        )
+        return [entry.dll.decode("ascii") for entry in entries]
+    finally:
+        image.close()
+
+
+def ctranslate2_pin(root: Path) -> dict[str, Any]:
+    from release_manager import ReleaseError, read_json
+
+    pin: dict[str, Any] = read_json(root / CT2_PIN)
+    files = pin.get("files", {})
+    if (
+        pin.get("schema_version") != 1
+        or set(files) != {"ctranslate2.dll", "vcomp140.dll", "_ext.cp313-win_amd64.pyd"}
+        or any(not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in files.values())
+    ):
+        raise ReleaseError("CTRANSLATE2_PIN_INVALID")
+    return pin
+
+
+def ctranslate2_pin_violations(package: Path, pin: dict[str, Any]) -> list[str]:
+    """Pinned files whose bytes differ from the reviewed CPU-only build (or are absent)."""
+    import hashlib
+
+    reasons = []
+    for name, digest in sorted(pin["files"].items()):
+        path = package / name
+        if not path.is_file():
+            reasons.append(f"missing {name}")
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            reasons.append(f"hash {name}")
+    return reasons
+
+
+def ctranslate2_cpu_violations(package: Path, pin: dict[str, Any]) -> list[str]:
+    """Reasons the CTranslate2 package is not the pinned CPU-only build (empty when it is)."""
+    dll = package / "ctranslate2.dll"
+    if not dll.is_file():
+        return ["missing ctranslate2.dll"]
+    return (
+        ctranslate2_pin_violations(package, pin)
+        + ctranslate2_import_violations(pe_imports(dll))
+        + ctranslate2_string_violations(dll.read_bytes())
+    )
+
+
 def excluded_toc_rows(toc: dict[str, Any]) -> list[str]:
     """Recorded Analysis rows that still carry a license-excluded destination/source.
 
@@ -144,7 +242,8 @@ def build(output: Path, *, smoke: bool = False) -> Path:
         ("PySide6-Essentials", "6.12.0"),
         ("PySide6-Addons", "6.12.0"),
         ("faster-whisper", "1.2.1"),
-        ("ctranslate2", "4.9.0"),
+        # L01 D9: the CPU-only build of scripts/build_ctranslate2_cpu.py, never PyPI's.
+        ("ctranslate2", "4.9.0+recoryn.cpu1"),
         ("onnxruntime", "1.32.0"),
         ("numpy", "2.3.5"),
         ("tokenizers", "0.23.3"),
@@ -155,6 +254,15 @@ def build(output: Path, *, smoke: bool = False) -> Path:
     ):
         if version(package) != expected:
             raise ReleaseError("BUILD_DEPENDENCY_VERSION_MISMATCH")
+    # L01 D9 / L06-01: the installed CTranslate2 must be the reviewed CPU-only artifact,
+    # byte for byte, before PyInstaller collects it (checked again in the bundle).
+    pin = ctranslate2_pin(root)
+    if pin.get("version") != version("ctranslate2"):
+        raise ReleaseError("CTRANSLATE2_NOT_CPU_BUILD")
+    installed = importlib.util.find_spec("ctranslate2")
+    locations = list(installed.submodule_search_locations or []) if installed else []
+    if len(locations) != 1 or ctranslate2_cpu_violations(Path(locations[0]), pin):
+        raise ReleaseError("CTRANSLATE2_NOT_CPU_BUILD")
     output = safe(output)
     if output.is_relative_to(root) and not any(
         output.is_relative_to(root / directory) for directory in ("build", "dist")
@@ -204,6 +312,8 @@ def build(output: Path, *, smoke: bool = False) -> Path:
     verify(bundle)
     if native_import_closure(bundle):
         raise ReleaseError("NATIVE_IMPORT_UNRESOLVED")
+    if ctranslate2_cpu_violations(bundle / "_internal" / "ctranslate2", pin):
+        raise ReleaseError("CTRANSLATE2_NOT_CPU_BUILD")
     if license_gaps(bundle):
         raise ReleaseError("NATIVE_LICENSE_UNMAPPED")
     if smoke:

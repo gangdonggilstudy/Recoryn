@@ -60,6 +60,20 @@ def gemini_text(response: dict[str, Any]) -> str:
         raise ProviderError("RESULT_INVALID") from None
 
 
+def cuda_runtime_available() -> bool:
+    """Whether the installed CTranslate2 can run on CUDA (L01 D9).
+
+    The bundled CTranslate2 is a CPU-only build; GPU acceleration needs the official
+    runtime the user installs. Without it, a GPU must not be chosen even when one is
+    present, so the CPU fallback policy applies instead of a failed model load.
+    """
+    try:
+        ctranslate2 = importlib.import_module("ctranslate2")
+        return int(ctranslate2.get_cuda_device_count()) > 0
+    except Exception:  # missing package or runtime: no CUDA, never a crash here
+        return False
+
+
 class FasterWhisperProvider:
     def __init__(
         self,

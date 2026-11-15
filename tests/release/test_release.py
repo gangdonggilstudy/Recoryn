@@ -362,6 +362,9 @@ LICENSE_EXCLUDED_PATHS = [
     "_internal\\elsewhere\\AVCODEC-62.DLL",
     # Recoryn plays PCM itself; no Qt media decoder backend is shipped either.
     "_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll",
+    # L01 D9: the Intel OpenMP runtime of the PyPI CTranslate2 wheel.
+    "_internal/ctranslate2/libiomp5md.dll",
+    "_internal/vendor/LIBIOMP5MD.DLL",
 ]
 LICENSE_ALLOWED_LOOKALIKES = [
     "_internal/available/runtime.dll",
@@ -372,7 +375,7 @@ LICENSE_ALLOWED_LOOKALIKES = [
     "_internal/PySide6/Qt6Multimedia.dll",
     "_internal/PySide6/Qt6Svg.dll",
     "_internal/PySide6/plugins/imageformats/qjpeg.dll",
-    "_internal/ctranslate2/libiomp5md.dll",
+    "_internal/ctranslate2/vcomp140.dll",  # L01 D9: Microsoft OpenMP stays
     "_internal/ctranslate2/ctranslate2.dll",
     # L01 D7 keeps the Qt Multimedia module (QAudioSink) itself.
     "_internal/PySide6/Qt6MultimediaWidgets.dll",

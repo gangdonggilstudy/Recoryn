@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib
 import importlib.util
+import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -202,3 +206,157 @@ def test_builder_requires_verified_playback_in_smoke(result: dict[str, Any], cod
     else:
         with pytest.raises(manager.ReleaseError, match=code):
             module.smoke_verdict(result)
+
+
+# L01 D9: markers of the PyPI CTranslate2 wheel's Intel/NVIDIA runtimes, by hand.
+PYPI_MARKERS = [
+    b"CUDA driver version is insufficient for CUDA runtime version",
+    b"cudaGetDeviceCount",
+    b"nvcuda.dll",
+    b"cublas64_12.dll",
+    b"Intel(R) oneAPI Math Kernel Library Version 2025.3",
+    b"libiomp5md.dll",
+]
+
+
+@pytest.mark.parametrize("marker", PYPI_MARKERS)
+def test_builder_finds_each_intel_or_nvidia_marker(marker: bytes) -> None:
+    clean = b"MZ" + b"\x00" * 64 + b"dnnl_sgemm spdlog cpu_features vcomp140.dll"
+    assert builder().ctranslate2_string_violations(clean) == []
+    assert builder().ctranslate2_string_violations(clean + marker)
+
+
+def test_builder_requires_the_cpu_build_files(tmp_path: Path) -> None:
+    package = tmp_path / "ctranslate2"
+    package.mkdir()
+    assert builder().ctranslate2_cpu_violations(package, {"files": {}}) == [
+        "missing ctranslate2.dll"
+    ]
+
+
+def test_builder_pins_the_cpu_only_ctranslate2_build() -> None:
+    source = (Path(__file__).resolve().parents[2] / "scripts" / "build_release.py").read_text(
+        encoding="utf-8"
+    )
+    assert '("ctranslate2", "4.9.0+recoryn.cpu1")' in source
+    assert '("ctranslate2", "4.9.0")' not in source
+
+
+# --- L06-01/03: the CPU-only CTranslate2 gate, with hand-written oracles. ---
+
+
+@pytest.mark.parametrize(
+    ("imports", "expected"),
+    [
+        (["KERNEL32.dll", "MSVCP140.dll", "VCOMP140.DLL"], []),
+        (["KERNEL32.dll", "VCOMP140.DLL", "LIBIOMP5MD.DLL"], ["import libiomp5md.dll"]),
+        (["vcomp140.dll", "cudart64_12.dll"], ["import cudart64_12.dll"]),
+        (["vcomp140.dll", "nvcuda.dll"], ["import nvcuda.dll"]),
+        (["vcomp140.dll", "cublasLt64_12.dll"], ["import cublaslt64_12.dll"]),
+        (["vcomp140.dll", "cudnn64_9.dll"], ["import cudnn64_9.dll"]),
+        (["vcomp140.dll", "mkl_rt.2.dll"], ["import mkl_rt.2.dll"]),
+        (["KERNEL32.dll"], ["no vcomp140.dll import"]),  # not the MSVC OpenMP build
+    ],
+)
+def test_ctranslate2_import_table(imports: list[str], expected: list[str]) -> None:
+    assert builder().ctranslate2_import_violations(imports) == expected
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"..CUDAGETDEVICECOUNT..",  # re-cased
+        b"..Intel(r) ONEAPI Math Kernel LIBRARY..",
+        "libiomp5md".encode("utf-16-le"),  # wide string
+        "nvcuda.DLL".encode("utf-16-le"),
+    ],
+)
+def test_ctranslate2_markers_are_not_bypassed_by_case_or_encoding(data: bytes) -> None:
+    assert builder().ctranslate2_string_violations(b"MZ" + data)
+
+
+def test_pe_imports_combine_regular_and_delay_imports(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = builder()
+    parsed: list[object] = []
+
+    class Image:
+        DIRECTORY_ENTRY_IMPORT = [SimpleNamespace(dll=b"KERNEL32.dll")]
+        DIRECTORY_ENTRY_DELAY_IMPORT = [SimpleNamespace(dll=b"cudart64_12.dll")]
+
+        def __init__(self, path: str, fast_load: bool) -> None:
+            assert fast_load
+
+        def parse_data_directories(self, directories: list[object]) -> None:
+            parsed.extend(directories)
+
+        def close(self) -> None:
+            parsed.append("closed")
+
+    fake = SimpleNamespace(
+        PE=Image,
+        DIRECTORY_ENTRY={
+            "IMAGE_DIRECTORY_ENTRY_IMPORT": 1,
+            "IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT": 13,
+        },
+    )
+    real_import = importlib.import_module
+    monkeypatch.setattr(
+        importlib, "import_module", lambda name: fake if name == "pefile" else real_import(name)
+    )
+    assert module.pe_imports(Path("ctranslate2.dll")) == ["KERNEL32.dll", "cudart64_12.dll"]
+    assert parsed == [1, 13, "closed"]  # delay imports are parsed, the image is released
+
+
+PINNED_FILES = ("ctranslate2.dll", "vcomp140.dll", "_ext.cp313-win_amd64.pyd")
+
+
+def _package(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
+    package = tmp_path / "ctranslate2"
+    package.mkdir()
+    files = {}
+    for index, name in enumerate(PINNED_FILES):
+        (package / name).write_bytes(b"MZ-pinned-" + bytes([index]))
+        files[name] = hashlib.sha256((package / name).read_bytes()).hexdigest()
+    return package, {"schema_version": 1, "files": files}
+
+
+def test_ctranslate2_pin_accepts_exact_bytes_and_names_each_drift(tmp_path: Path) -> None:
+    module = builder()
+    package, pin = _package(tmp_path)
+    assert module.ctranslate2_pin_violations(package, pin) == []
+    (package / "vcomp140.dll").write_bytes(b"MZ-other-openmp")  # same name, other bytes
+    (package / "_ext.cp313-win_amd64.pyd").unlink()
+    assert module.ctranslate2_pin_violations(package, pin) == [
+        "missing _ext.cp313-win_amd64.pyd",
+        "hash vcomp140.dll",
+    ]
+
+
+@pytest.mark.parametrize("damage", ["schema", "file_set", "short_hash"])
+def test_ctranslate2_pin_record_is_validated(tmp_path: Path, damage: str) -> None:
+    _, pin = _package(tmp_path)
+    if damage == "schema":
+        pin["schema_version"] = 2
+    elif damage == "file_set":
+        pin["files"]["libiomp5md.dll"] = "0" * 64
+    else:
+        pin["files"]["ctranslate2.dll"] = "0" * 63
+    (tmp_path / "packaging").mkdir()
+    (tmp_path / "packaging" / "ctranslate2-cpu.json").write_text(json.dumps(pin), encoding="utf-8")
+    with pytest.raises(manager.ReleaseError, match="CTRANSLATE2_PIN_INVALID"):
+        builder().ctranslate2_pin(tmp_path)
+
+
+def test_committed_pin_matches_the_build_script_and_release_pins() -> None:
+    root = Path(__file__).resolve().parents[2]
+    pin = builder().ctranslate2_pin(root)
+    spec = importlib.util.spec_from_file_location(
+        "recoryn_ct2_build_test", root / "scripts" / "build_ctranslate2_cpu.py"
+    )
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    assert pin["version"] == script.LOCAL_VERSION == "4.9.0+recoryn.cpu1"
+    assert pin["files"]["vcomp140.dll"] == script.VCOMP_SHA256
+    assert pin["toolchain"] == script.TOOLCHAIN
+    assert pin["sources"]["ctranslate2"]["commit"] == script.CT2_COMMIT

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "note": "The reviewed CPU-only CTranslate2 artifact Recoryn bundles (L01 D9). Rebuilding is not bit-for-bit reproducible (PE timestamps), so this record pins the one built wheel; the release builder refuses any installed or bundled CTranslate2 whose files differ.",
+  "version": "4.9.0+recoryn.cpu1",
+  "built_by": "scripts/build_ctranslate2_cpu.py",
+  "build_report_sha256": "cf036b056c6fef28e498c6f57d69832c2071d0b5784813f9a90a3e674622418e",
+  "sources": {
+    "ctranslate2": {
+      "tag": "v4.9.0",
+      "commit": "a22ba1c63ee35d1a0d25db149aa2a66d36a6a732",
+      "submodules": {
+        "third_party/cpu_features": "8a494eb1e158ec2050e5f699a504fbc9b896a43b",
+        "third_party/spdlog": "76fb40d95455f249bd70824ecfcae7a8f0930fa3"
+      }
+    },
+    "onednn": {
+      "tag": "v3.1.1",
+      "commit": "64f6bcbcbab628e96f33a62c3e975f8535a7bde4"
+    }
+  },
+  "toolchain": {
+    "msvc": "14.42.34433",
+    "cmake": "3.29.5-msvc4",
+    "python": "3.13.1"
+  },
+  "options": {
+    "ctranslate2": {
+      "BUILD_CLI": "OFF",
+      "BUILD_TESTS": "OFF",
+      "BUILD_SHARED_LIBS": "ON",
+      "WITH_MKL": "OFF",
+      "WITH_DNNL": "ON",
+      "WITH_CUDA": "OFF",
+      "WITH_CUDNN": "OFF",
+      "WITH_RUY": "OFF",
+      "WITH_OPENBLAS": "OFF",
+      "WITH_ACCELERATE": "OFF",
+      "WITH_HIP": "OFF",
+      "WITH_MPS": "OFF",
+      "WITH_FLASH_ATTN": "OFF",
+      "WITH_TENSOR_PARALLEL": "OFF",
+      "ENABLE_CPU_DISPATCH": "ON",
+      "OPENMP_RUNTIME": "COMP",
+      "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.42.34433/bin/Hostx64/x64/cl.exe"
+    },
+    "onednn": {
+      "ONEDNN_LIBRARY_TYPE": "STATIC",
+      "ONEDNN_CPU_RUNTIME": "OMP",
+      "ONEDNN_BUILD_EXAMPLES": "OFF",
+      "ONEDNN_BUILD_TESTS": "OFF",
+      "ONEDNN_ENABLE_WORKLOAD": "INFERENCE",
+      "ONEDNN_BUILD_GRAPH": "OFF",
+      "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.42.34433/bin/Hostx64/x64/cl.exe"
+    }
+  },
+  "compile_flags": "CL=/utf-8",
+  "wheel": {
+    "name": "ctranslate2-4.9.0+recoryn.cpu1-cp313-cp313-win_amd64.whl",
+    "sha256": "62149b888648d1c9aab856070f6240f542bb7612674b254e7116e9583dc60180"
+  },
+  "files": {
+    "ctranslate2.dll": "b4eeffbe029d40f8977f79525847ef74eda416dc0512eb5b684c45f109cd5702",
+    "vcomp140.dll": "036b9b3f7ece8dfd48aeccd77113721c5305043aaa9c64d1e72812252727aa7c",
+    "_ext.cp313-win_amd64.pyd": "eff4ebf9bf2f1d899505f390e8cf885df3e0a0f7c627353ea20eb420b5f20e72"
+  }
+}
