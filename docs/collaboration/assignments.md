@@ -2,6 +2,18 @@
 
 현재 단계: 사용자 지시에 따라 설계 v1.0의 구현 완료까지 개발한다. 아래 D/P 배정은 완료 이력이며 B 배정이 현재 활성 범위다. 배정 없는 신규 세션은 온보딩 후 대기한다. 오케스트레이터만 이 표를 수정한다. pane ID는 조회 시점의 식별자이며 재접속 후 재조회한다.
 
+## 2026-11-15 L: 배포물 라이선스 검토와 개선
+
+사용자는 오픈소스 중 무료로 쓸 수 없는 라이선스의 전수 검토, 개선 계획과 작업 진행을 지시했다. 기준 commit은 H-P01 `0cf9cdd730eae4fccb9e67446f58ffa1ebb61439`이며 원격 CI 43675045600 세 job PASS를 C00이 확인했다. 판정·결정·push 단위는 [라이선스 검토 L01](../implementation/license-review.md)이 정본이다. C00이 작성하며 아래 검토자가 독립 검토한다. 이 표의 C00 쓰기 범위는 해당 배정 동안 기존 B13/B23 소유권보다 우선한다.
+
+| 배정 / push | 작성 쓰기 범위 | 독립 검토자와 검토 쓰기 범위 | 상태 |
+| --- | --- | --- | --- |
+| L01 / L-P01 | docs/implementation/license-review.md, 이 표, docs/collaboration/push-units.md | recoryn-security(w5:p5): docs/reviews/license-plan-review.md만 | VERIFIED — L01-01~03 RECHECKED, C00 CLOSED |
+| L02 / L-P02 | src/recoryn/transcription/audio_input.py(신규), src/recoryn/transcription/adapters.py, packaging/recoryn.spec, packaging/release_manager.py, packaging/release_smoke.py, packaging/rthook_no_av.py(신규), scripts/build_release.py, tests/unit/test_stt_audio_input.py(신규), tests/unit/test_providers.py, tests/release/test_spec.py, tests/release/test_release.py, docs/testing/l02-stt-input-cases.md(신규), docs/implementation/license-results.md(신규) | recoryn-ml(w5:p4): docs/reviews/l02-stt-input-review.md·tests/integration/test_stt_input_independent.py만. recoryn-arch(w5:p2): docs/reviews/l02-packaging-review.md만 | WORKING |
+| L03 / L-P03 | packaging/release_evidence.py, packaging/notices/*(신규), scripts/build_release.py, tests/release/test_evidence.py, tests/release/test_build_inputs.py, docs/implementation/license-results.md | recoryn-security(w5:p5): docs/reviews/license-notice-review.md만 | PLANNED |
+
+검토자는 대상 제품·시험·설정과 Git을 수정하지 않는다. 발견은 원 반례와 함께 자기 리뷰 문서에 남기고 C00이 수정한 뒤 같은 검토자가 재확인한다. 실음성·모델 weights·GPU·네트워크 서비스·유료 호출·추가 위임·승인 UI 대리 입력은 금지한다. worker는 ONBOARDING_READY로 범위와 미검증을 보고한 뒤 시작한다.
+
 ## 2026-11-15 오케스트레이터 인수인계 H01 / C00
 
 사용자가 Recoryn 영역의 Claude 세션으로 오케스트레이터 업무 전체를 이전하도록 명시했다. 조회한 후임은 **w5:t3/w5:p6 Claude**, cwd `D:/project/Recoryn`이다. 상세 권한·현재 정본·작업자·남은 게이트와 인수 절차는 [오케스트레이터 인계서](orchestrator-handoff.md)를 따른다. 기존 Codex root/w5:p1은 H-P01 인계 문서 단위를 마감한 뒤 읽기 전용으로 전환하고, 후임의 `ORCHESTRATOR_ACCEPTED` 회신으로 단일 오케스트레이터 권한을 전환한다. 그전에는 후임이 Git/제품/공유 문서를 쓰지 않는다. 전환 후 C00/Claude가 요구사항·설계·배정·리뷰 종결·최종 검증·commit/push·CI와 사용자 보고를 전담한다. 기존 문서의 root/Q00/B10은 과거 작성자 또는 오케스트레이터 역할이며 영구적인 Codex 전용 권한이 아니다. **계속 활성인 B10의 WORKING 상태와 root 소유 app/ui/models/cli/packaging/CI/협업 문서 범위도 C00/w5:p6이 승계하며, 아래 표의 기존 w5:p1 표기는 이력이다.** worker의 별도 소유 파일은 새 명시 배정 없이 덮어쓰지 않는다.
