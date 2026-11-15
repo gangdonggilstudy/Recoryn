@@ -69,6 +69,20 @@ NATIVE_STATUSES = {
 }
 UNMAPPED = ("UNMAPPED", "NOASSERTION", "UNMAPPED")
 NativeMap = dict[str, tuple[str, str, str]]
+# L01 D8: third-party code inside the shipped Qt libraries and plugins.
+QT_PACKAGES = {"pyside6", "pyside6-essentials", "pyside6-addons", "shiboken6"}
+QT_TEXT_ROOT = "licenses/Qt-third-party"
+CT2_TEXT_ROOT = "licenses/ctranslate2-native"
+PLACEHOLDERS = {"", "none", "null", "n/a", "-", "unknown", "noassertion"}
+CT2_ATTRIBUTION_BASIS = "CTRANSLATE2_NATIVE_REVIEW_L05"
+# FTL section "Credits": the year of the FreeType version in use (2.14.3, 1996-2026).
+FREETYPE_CREDIT = (
+    "Portions of this software are copyright (C) 2026 The FreeType Project "
+    "(www.freetype.org). All rights reserved."
+)
+IJG_CREDIT = "This software is based in part on the work of the Independent JPEG Group."
+QT_ATTRIBUTION_BASIS = "QT_ATTRIBUTION_JSON_V6_12_0"
+VS_REDISTRIBUTION = "https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution"
 
 
 def normalized(name: str) -> str:
@@ -132,6 +146,102 @@ def _notice_texts(source_root: Path) -> dict[str, Path]:
     return texts
 
 
+def _attributions(
+    source_root: Path, texts: dict[str, Path], name: str, code: str
+) -> list[dict[str, Any]]:
+    """Reviewed attribution entries; every text must be pinned (L01 D8)."""
+    data = read_json(source_root / "packaging" / "notices" / name)
+    entries: list[dict[str, Any]] = data["entries"]
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        key = (entry.get("repo", ""), entry["id"])
+        if (
+            key in seen
+            or not entry["copyright"]
+            # A placeholder is not a copyright notice (L05-04).
+            or any(line.strip().lower() in PLACEHOLDERS for line in entry["copyright"])
+            or spdx(entry["license"]) != entry["license"]
+            or not entry["files"]
+            or any(name not in texts for name in entry["files"])
+        ):
+            raise ReleaseError(code)
+        seen.add(key)
+    return entries
+
+
+def _corresponding_sources(source_root: Path) -> list[dict[str, Any]]:
+    data = read_json(source_root / "packaging" / "notices" / "corresponding-sources.json")
+    archives: list[dict[str, Any]] = data["archives"]
+    if not archives or any(
+        not row["url"].startswith("https://download.qt.io/")
+        or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
+        for row in archives
+    ):
+        raise ReleaseError("CORRESPONDING_SOURCES_INVALID")
+    return archives
+
+
+def _qt_text(name: str) -> str:
+    return f"{QT_TEXT_ROOT}/{name.removeprefix('qt/')}"
+
+
+def _qt_notice(entries: list[dict[str, Any]], archives: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "",
+        "Third-party code inside the shipped Qt 6.12.0 libraries and plugins (from Qt's",
+        f"qt_attribution.json at v6.12.0; texts under {QT_TEXT_ROOT}/):",
+    ]
+    for entry in entries:
+        version = f" {entry['version']}" if entry["version"] else ""
+        lines.append(f"  {entry['name']}{version} ({entry['license']}) in {entry['shipped_in']}")
+        lines += [f"    {line}" for line in entry["copyright"]]
+        lines.append("    text: " + ", ".join(_qt_text(name) for name in entry["files"]))
+    ids = {entry["id"] for entry in entries}
+    if "freetype" in ids:
+        lines += ["", FREETYPE_CREDIT]
+    if "libjpeg" in ids:
+        lines += ["", IJG_CREDIT]
+    lines += ["", "Exact upstream sources of the LGPL-3.0 Qt and PySide6 code shipped here:"]
+    lines += [f"  {row['component']}: {row['url']} (SHA-256 {row['sha256']})" for row in archives]
+    lines += [
+        "  Whether these sources are also hosted with a public release is an open release",
+        "  gate (build-provenance.json).",
+    ]
+    return lines
+
+
+def _ct2_text(name: str) -> str:
+    return f"{CT2_TEXT_ROOT}/{name.removeprefix('ct2/')}"
+
+
+def _ct2_notice(entries: list[dict[str, Any]], curand_notice: str) -> list[str]:
+    lines = [
+        "",
+        "Code inside CTranslate2's native files (ctranslate2/ctranslate2.dll statically",
+        "contains all but the last entry; ctranslate2/libiomp5md.dll is the last). Texts",
+        f"under {CT2_TEXT_ROOT}/; record packaging/notices/ct2-native.json:",
+    ]
+    for entry in entries:
+        version = f" {entry['version']}" if entry["version"] else ""
+        lines.append(f"  {entry['name']}{version} ({entry['license']}) in {entry['shipped_in']}")
+        lines += [f"    {line}" for line in entry["copyright"]]
+        if entry["note"]:
+            lines.append(f"    note: {entry['note']}")
+        lines.append("    text: " + ", ".join(_ct2_text(name) for name in entry["files"]))
+    lines += [
+        "",
+        "NVIDIA requires the following notice from the cuRAND device headers whose code",
+        "ctranslate2.dll contains to be included in user documentation (verbatim):",
+        "",
+        curand_notice.rstrip(),
+        "",
+        "Whether NVIDIA's and Intel's conditions for these exact files are met",
+        "is not yet confirmed (release gates nvidia_runtime_conditions and",
+        "intel_runtime_conditions).",
+    ]
+    return lines
+
+
 def _property(component: dict[str, Any], key: str, default: str = "") -> str:
     for item in component.get("properties", []):
         if item["name"] == key:
@@ -143,6 +253,10 @@ def _notice(
     version: str,
     components: list[dict[str, Any]],
     binaries: list[dict[str, Any]],
+    qt_entries: list[dict[str, Any]],
+    archives: list[dict[str, Any]],
+    ct2_entries: list[dict[str, Any]],
+    curand_notice: str,
 ) -> str:
     lines = [
         f"Recoryn {version} DEVELOPMENT CANDIDATE - not approved for public release.",
@@ -156,7 +270,9 @@ def _notice(
         "Not distributed by license policy L01 D1-D3 and D7: PyAV and its FFmpeg build",
         "with x264/x265/OpenH264, Qt Multimedia's media backends (FFmpeg and Windows",
         "Media Foundation plugins) and Qt's FFmpeg libraries, Qt Virtual Keyboard with",
-        "Qml/Quick, Qt PDF, the Mesa/LLVM software OpenGL fallback, NVIDIA CUDA/cuDNN.",
+        "Qml/Quick, Qt PDF, the Mesa/LLVM software OpenGL fallback, and the separate",
+        "NVIDIA CUDA/cuDNN runtime DLLs (the CUDA runtime statically linked inside",
+        "ctranslate2.dll is listed in its own section below).",
         "No FFmpeg code is distributed. Recoryn plays its own verified 16-bit PCM WAV",
         "clips through Qt Multimedia's audio output; no media decoder is used.",
         "",
@@ -165,16 +281,16 @@ def _notice(
         "  Qt 6.12.0, PySide6 6.12.0, shiboken6 6.12.0: LGPL-3.0-only",
         "    texts licenses/<package>/LGPL-3.0.txt and GPL-3.0.txt;",
         "    files _internal/PySide6/ and _internal/shiboken6/.",
-        "  Sources: https://download.qt.io/official_releases/qt/6.12/6.12.0/ and",
-        "  https://download.qt.io/official_releases/QtForPython/. Publishing the exact",
-        "  corresponding sources with a public release is an open release gate",
-        "  (build-provenance.json).",
+        "  Exact upstream sources are listed after the Qt third-party section below.",
         "",
         "Components (distributed license; notice files under licenses/):",
     ]
     for component in sorted(components, key=lambda row: row["name"].lower()):
-        if component["type"] != "library":
-            continue
+        if component["type"] != "library" or _property(component, "recoryn:license-basis") in (
+            QT_ATTRIBUTION_BASIS,
+            CT2_ATTRIBUTION_BASIS,
+        ):
+            continue  # Code inside Qt/CTranslate2 binaries has its own sections below.
         notices = json.loads(_property(component, "recoryn:notice-files", "[]"))
         lines.append(
             f"  {component['name']} {component['version']}: "
@@ -186,12 +302,24 @@ def _notice(
         for component in components
         if normalized(component["name"]) in MPL_SOURCES
     ]
-    if mpl:
+    # MPL-2.0 data compiled into Qt (Public Suffix List in Qt6Network) is listed too.
+    qt_mpl = [entry for entry in qt_entries if "MPL-2.0" in entry["license"]]
+    if mpl or qt_mpl:
         lines += ["", "MPL-2.0 files are distributed unmodified; Source Code Form:"]
         lines += [
             f"  {name} {version}: " + MPL_SOURCES[normalized(name)].format(version=version)
             for name, version in sorted(mpl)
         ]
+        lines += [
+            f"  {entry['name']} {entry['version']} in {entry['shipped_in']}: "
+            f"https://code.qt.io/cgit/qt/{entry['repo']}.git/tree/"
+            f"{entry['attribution'].rsplit('/', 1)[0]}?h=v6.12.0"
+            for entry in qt_mpl
+        ]
+    if qt_entries:
+        lines += _qt_notice(qt_entries, archives)
+    if ct2_entries:
+        lines += _ct2_notice(ct2_entries, curand_notice)
     open_rows = [row for row in binaries if row["license_status"] != "DECLARED"]
     lines += ["", "Native files with open conditions (see native-origins.json):"]
     lines += [
@@ -200,13 +328,11 @@ def _notice(
     ] or ["  none"]
     lines += [
         "",
-        "Intel OpenMP runtime and Intel MKL (inside CTranslate2): Copyright Intel",
-        "Corporation, redistributed under Intel's terms for these runtimes. The governing",
-        "text for these exact files is not yet confirmed; see",
-        "https://www.intel.com/content/www/us/en/developer/articles/license/end-user-license-agreement.html",
-        "Microsoft Visual C++ runtime files are redistributed under Microsoft's",
-        "redistribution terms for these runtimes; the exact conditions for these files",
-        "are not yet confirmed (release gate microsoft_runtime_conditions).",
+        "Microsoft Visual C++ runtime files (msvcp140*.dll, vcruntime140*.dll) are Visual",
+        f"Studio Distributable Code ({VS_REDISTRIBUTION}). Microsoft",
+        "limits their redistribution to licensed Visual Studio users under its license",
+        "terms; whether the publisher of a release meets that condition",
+        "is not yet confirmed (release gate microsoft_runtime_conditions).",
         "",
         "No model weights are bundled. No signing, clean VM or hardware approval is claimed.",
         "The manifest detects changes relative to itself; it is not an authenticity signature.",
@@ -371,6 +497,71 @@ def generate(bundle: Path, toc_path: Path, source_root: Path) -> dict[str, Any]:
             "licenses": [{"license": {"id": "PSF-2.0"}}],
         }
     )
+    # L01 D8: Qt's own third-party code is attributed when the Qt runtime ships.
+    qt_entries: list[dict[str, Any]] = []
+    archives: list[dict[str, Any]] = []
+    if any(normalized(row["name"]) in QT_PACKAGES for row in components):
+        qt_entries = _attributions(
+            source_root, notice_texts, "qt-third-party.json", "QT_ATTRIBUTION_INVALID"
+        )
+        archives = _corresponding_sources(source_root)
+        for name in sorted({name for entry in qt_entries for name in entry["files"]}):
+            target = bundle / _qt_text(name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(notice_texts[name], target)
+        components += [
+            {
+                "type": "library",
+                "name": f"Qt 6.12.0 third-party: {entry['name']}",
+                "version": entry["version"] or "unversioned",
+                "licenses": cyclonedx_licenses(entry["license"]),
+                "properties": [
+                    {"name": "recoryn:license-basis", "value": QT_ATTRIBUTION_BASIS},
+                    {"name": "recoryn:shipped-in", "value": entry["shipped_in"]},
+                    {
+                        "name": "recoryn:qt-attribution",
+                        "value": f"{entry['repo']}/{entry['attribution']}#{entry['id']}",
+                    },
+                    {
+                        "name": "recoryn:notice-files",
+                        "value": json.dumps([_qt_text(name) for name in entry["files"]]),
+                    },
+                ],
+            }
+            for entry in qt_entries
+        ]
+    # L01 D8: code statically inside CTranslate2's native files (Intel, NVIDIA, others).
+    ct2_entries: list[dict[str, Any]] = []
+    curand_notice = ""
+    if any(normalized(row["name"]) == "ctranslate2" for row in components):
+        ct2_entries = _attributions(
+            source_root, notice_texts, "ct2-native.json", "CT2_ATTRIBUTION_INVALID"
+        )
+        notice_file = notice_texts.get("ct2/nvidia/NVIDIA-cuRAND-notices.txt")
+        if notice_file is None:
+            raise ReleaseError("CT2_ATTRIBUTION_INVALID")
+        curand_notice = notice_file.read_text(encoding="utf-8")
+        for name in sorted({name for entry in ct2_entries for name in entry["files"]}):
+            target = bundle / _ct2_text(name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(notice_texts[name], target)
+        components += [
+            {
+                "type": "library",
+                "name": f"CTranslate2 native: {entry['name']}",
+                "version": entry["version"] or "unversioned",
+                "licenses": cyclonedx_licenses(entry["license"]),
+                "properties": [
+                    {"name": "recoryn:license-basis", "value": CT2_ATTRIBUTION_BASIS},
+                    {"name": "recoryn:shipped-in", "value": entry["shipped_in"]},
+                    {
+                        "name": "recoryn:notice-files",
+                        "value": json.dumps([_ct2_text(name) for name in entry["files"]]),
+                    },
+                ],
+            }
+            for entry in ct2_entries
+        ]
     atomic_json(
         bundle / "sbom.cdx.json",
         {
@@ -418,7 +609,9 @@ def generate(bundle: Path, toc_path: Path, source_root: Path) -> dict[str, Any]:
         "clean_windows_vm": "NOT_RUN",
         # Texts and replaceable shared libraries are provided; publishing the
         # corresponding source for a public release is still a G4 decision.
-        "qt_corresponding_source_and_notices": "LGPL_TEXTS_INCLUDED_SOURCE_OFFER_REVIEW_REQUIRED",
+        "qt_corresponding_source_and_notices": (
+            "TEXTS_INCLUDED_UPSTREAM_SOURCES_RECORDED_HOSTING_DECISION_REQUIRED"
+        ),
         # L01 D1 and D7: verify() refuses any PyAV or Qt FFmpeg file, so no FFmpeg
         # source offer or codec patent question remains for this distribution.
         "ffmpeg_build_flags_corresponding_source_and_notices": "NOT_DISTRIBUTED_L01_D1_D7",
@@ -432,6 +625,7 @@ def generate(bundle: Path, toc_path: Path, source_root: Path) -> dict[str, Any]:
         "physical_hardware": "NOT_RUN",
         # Classification is not confirmation (L03-04, L01-02).
         "intel_runtime_conditions": "REVIEW_REQUIRED",
+        "nvidia_runtime_conditions": "REVIEW_REQUIRED",
         "microsoft_runtime_conditions": "REVIEW_REQUIRED",
     }
     atomic_json(
@@ -458,7 +652,10 @@ def generate(bundle: Path, toc_path: Path, source_root: Path) -> dict[str, Any]:
             "unattributed_native_components": "REVIEW_REQUIRED",
         },
     )
-    (bundle / "NOTICE.txt").write_text(_notice(version, components, binaries), encoding="utf-8")
+    (bundle / "NOTICE.txt").write_text(
+        _notice(version, components, binaries, qt_entries, archives, ct2_entries, curand_notice),
+        encoding="utf-8",
+    )
     manifest = {
         "schema_version": 1,
         "app_id": APP_ID,

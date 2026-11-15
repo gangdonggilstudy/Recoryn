@@ -474,3 +474,297 @@ def test_l03_mpl_source_location_and_prose_declarations_are_normalized(
     assert sbom["tqdm"]["licenses"] == [{"expression": "MPL-2.0 AND MIT"}]
     notice = (bundle / "NOTICE.txt").read_text(encoding="utf-8")
     assert "tqdm 4.70.1: https://pypi.org/project/tqdm/4.70.1/#files" in notice
+
+
+# --- L-P05 / L01 D8: notice completeness (case space docs/testing/l05-notice-cases.md) ---
+
+SOURCES = json.loads((NOTICES / "SOURCES.json").read_text(encoding="utf-8"))
+QT = json.loads((NOTICES / "qt-third-party.json").read_text(encoding="utf-8"))
+MANIFESTS = {
+    "SOURCES.json",
+    "native-map.json",
+    "qt-third-party.json",
+    "corresponding-sources.json",
+    "ct2-native.json",
+}
+
+
+def test_l05_every_notice_text_is_pinned_and_every_pin_matches() -> None:
+    pinned = {row["file"]: row for row in SOURCES["files"]}
+    on_disk = {
+        path.relative_to(NOTICES).as_posix()
+        for path in NOTICES.rglob("*")
+        if path.is_file() and path.name not in MANIFESTS
+    }
+    assert on_disk == set(pinned)  # no unpinned text, no pin without a file
+    for name, row in pinned.items():
+        data = (NOTICES / name).read_bytes()
+        assert (len(data), hashlib.sha256(data).hexdigest()) == (row["bytes"], row["sha256"])
+        assert row["url"].startswith("https://")
+
+
+# Hand-written expectations from the Qt 6.12.0 qt_attribution.json review (L-P05).
+QT_EXPECTED = {
+    ("qtbase", "zlib"): ("Zlib", "Qt6Core.dll"),
+    ("qtbase", "pcre2"): (
+        "LicenseRef-BSD-3-Clause-with-PCRE2-Binary-Like-Packages-Exception",
+        "Qt6Core.dll",
+    ),
+    ("qtbase", "freetype"): ("FTL OR GPL-2.0-only", "Qt6Gui.dll"),
+    ("qtbase", "harfbuzz-ng"): ("MIT", "Qt6Gui.dll"),
+    ("qtbase", "libpng"): ("Libpng AND libpng-2.0", "Qt6Gui.dll"),
+    # L05-01: libtiff's JPEG support puts libjpeg-turbo into qtiff.dll as well.
+    ("qtbase", "libjpeg"): (
+        "IJG AND BSD-3-Clause",
+        "plugins/imageformats/qjpeg.dll and plugins/imageformats/qtiff.dll",
+    ),
+    ("qtbase", "psl-data"): ("MPL-2.0", "Qt6Network.dll"),
+    ("qtbase", "wintab"): ("LicenseRef-Lcs-Telegraphics", "plugins/platforms/qwindows.dll"),
+    ("qtimageformats", "libtiff"): ("libtiff", "plugins/imageformats/qtiff.dll"),
+    ("qtimageformats", "libwebp"): ("BSD-3-Clause", "plugins/imageformats/qwebp.dll"),
+    ("qtmultimedia", "dr_libs"): ("Unlicense OR MIT-0", "Qt6Multimedia.dll"),
+    ("qtmultimedia", "tlsf"): ("BSD-3-Clause", "Qt6Multimedia.dll"),
+    ("qtsvg", "qtsvg-xsvg"): ("HPND-sell-variant", "Qt6Svg.dll"),
+}
+# Not shipped: other platforms, unshipped modules, and the excluded FFmpeg plugin.
+QT_ABSENT = {
+    "ffmpeg",
+    "ffmpeg-libjpeg",
+    "ffmpeg-zlib",
+    "signalsmith-stretch",
+    "pffft",
+    "eigen",
+    "resonance-audio",
+    "opengl-es2-headers",  # L05-02: desktop OpenGL build, no ES2 headers compiled
+    "sqlite",
+    "forkfd",
+    "pixman",
+    "libdbus-1-headers",
+}
+
+
+def test_l05_qt_attribution_table() -> None:
+    entries = QT["entries"]
+    keys = [(entry["repo"], entry["id"]) for entry in entries]
+    assert len(keys) == len(set(keys)) == 47
+    pinned = {row["file"] for row in SOURCES["files"]}
+    for entry in entries:
+        assert evidence.spdx(entry["license"]) == entry["license"], entry["id"]
+        assert entry["copyright"] and all(
+            line.strip().lower() not in {"", "none", "null", "n/a", "-"}
+            for line in entry["copyright"]
+        )
+        assert entry["files"] and set(entry["files"]) <= pinned
+    table = {(entry["repo"], entry["id"]): entry for entry in entries}
+    for key, (license_id, shipped) in QT_EXPECTED.items():
+        assert table[key]["license"] == license_id
+        assert table[key]["shipped_in"].split(" (")[0] == shipped  # notes follow in brackets
+    assert not QT_ABSENT & {entry["id"] for entry in entries}
+    # L05-04: libjpeg's notices come from its pinned COPYRIGHT.txt, not a placeholder.
+    libjpeg = table[("qtbase", "libjpeg")]["copyright"]
+    assert libjpeg[0] == "Copyright (C) 2009-2026 D. R. Commander" and len(libjpeg) == 15
+
+
+def test_l05_qt_third_party_notice_sbom_and_texts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle, toc, source = l03_candidate(tmp_path, monkeypatch)
+    evidence.generate(bundle, toc, source)
+    notice = (bundle / "NOTICE.txt").read_text(encoding="utf-8")
+    for entry in QT["entries"]:
+        version = f" {entry['version']}" if entry["version"] else ""
+        assert f"  {entry['name']}{version} ({entry['license']}) in {entry['shipped_in']}" in notice
+        for line in entry["copyright"]:
+            assert f"    {line}" in notice
+        for name in entry["files"]:
+            copied = bundle / "licenses" / "Qt-third-party" / name.removeprefix("qt/")
+            assert copied.read_bytes() == (NOTICES / name).read_bytes()
+    for required in (
+        "Portions of this software are copyright (C) 2026 The FreeType Project",
+        "This software is based in part on the work of the Independent JPEG Group.",
+        "The Public Suffix List 2026-05-14_08-35-31_UTC in Qt6Network.dll: ",  # MPL-2.0
+        "https://code.qt.io/cgit/qt/qtbase.git/tree/src/3rdparty/libpsl?h=v6.12.0",
+        "learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution",
+        "licensed Visual Studio users",
+    ):
+        assert required in notice, required
+    archives = json.loads((NOTICES / "corresponding-sources.json").read_text(encoding="utf-8"))
+    for row in archives["archives"]:
+        assert f"{row['url']} (SHA-256 {row['sha256']})" in notice
+    sbom = manager.read_json(bundle / "sbom.cdx.json")["components"]
+    qt_rows = [row for row in sbom if row["name"].startswith("Qt 6.12.0 third-party: ")]
+    assert len(qt_rows) == 47 and all(row["licenses"] for row in qt_rows)
+    listed = notice.split("Components (distributed license", 1)[1].split("\n\n", 1)[0]
+    assert "Qt 6.12.0 third-party" not in listed  # not duplicated as NOASSERTION rows
+    gates = manager.read_json(bundle / "build-provenance.json")["gates"]
+    assert gates["qt_corresponding_source_and_notices"] == (
+        "TEXTS_INCLUDED_UPSTREAM_SOURCES_RECORDED_HOSTING_DECISION_REQUIRED"
+    )
+    assert manager.verify(bundle)["version"] == "0.2.0.dev2"
+
+
+def test_l05_no_qt_runtime_means_no_qt_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle, toc, source = prepared(tmp_path, monkeypatch)
+    evidence.generate(bundle, toc, source)
+    notice = (bundle / "NOTICE.txt").read_text(encoding="utf-8")
+    assert not (bundle / "licenses" / "Qt-third-party").exists()
+    assert "Third-party code inside the shipped Qt" not in notice
+
+
+def _damage_qt(source: Path, damage: str) -> str:
+    notices = source / "packaging" / "notices"
+    qt = json.loads((notices / "qt-third-party.json").read_text(encoding="utf-8"))
+    archives = json.loads((notices / "corresponding-sources.json").read_text(encoding="utf-8"))
+    entry = qt["entries"][0]
+    if damage == "unpinned_text":
+        entry["files"].append("qt/qtbase/NOT-PINNED.txt")
+    elif damage == "invalid_spdx":
+        entry["license"] = "MIT AND AND"
+    elif damage == "empty_copyright":
+        entry["copyright"] = []
+    elif damage == "placeholder_copyright":
+        entry["copyright"] = ["None"]  # L05-04: the original libjpeg row
+    elif damage == "duplicate":
+        qt["entries"].append(dict(entry))
+    elif damage == "foreign_source_url":
+        archives["archives"][0]["url"] = "https://example.invalid/qtbase.tar.xz"
+    else:
+        archives["archives"][0]["sha256"] = "0" * 63
+    (notices / "qt-third-party.json").write_text(json.dumps(qt), encoding="utf-8")
+    (notices / "corresponding-sources.json").write_text(json.dumps(archives), encoding="utf-8")
+    return (
+        "CORRESPONDING_SOURCES_INVALID"
+        if "source" in damage or "sha" in damage
+        else ("QT_ATTRIBUTION_INVALID")
+    )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "unpinned_text",
+        "invalid_spdx",
+        "empty_copyright",
+        "placeholder_copyright",
+        "duplicate",
+        "foreign_source_url",
+        "short_sha",
+    ],
+)
+def test_l05_unreviewed_qt_records_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    bundle, toc, source = l03_candidate(tmp_path, monkeypatch)
+    code = _damage_qt(source, damage)
+    with pytest.raises(manager.ReleaseError, match=code):
+        evidence.generate(bundle, toc, source)
+    assert not (bundle / manager.MANIFEST).exists()
+
+
+CT2 = json.loads((NOTICES / "ct2-native.json").read_text(encoding="utf-8"))
+DLL, OMP = "ctranslate2/ctranslate2.dll", "ctranslate2/libiomp5md.dll"
+# Hand-written from the CTranslate2 v4.9.0 build script and DLL string review (L-P05).
+CT2_EXPECTED = {
+    "ctranslate2": ("MIT", DLL),
+    "onemkl": ("LicenseRef-Intel-Simplified-Software-License", DLL),
+    "onednn": ("Apache-2.0", DLL),
+    "onednn-xbyak": ("BSD-3-Clause", DLL),
+    "cuda-runtime": ("LicenseRef-NVIDIA-CUDA-Toolkit-EULA", DLL),
+    "curand-device": ("LicenseRef-NVIDIA-CUDA-Toolkit-EULA AND BSD-3-Clause", DLL),
+    "thrust": ("Apache-2.0 AND BSL-1.0 AND BSD-2-Clause", DLL),
+    "cub": ("BSD-3-Clause", DLL),
+    "spdlog": ("MIT", DLL),
+    "fmt": ("MIT", DLL),
+    "cpu_features": ("Apache-2.0", DLL),
+    "avx_mathfun": ("MIT AND Zlib", DLL),
+    "openmp": ("LicenseRef-Intel-EULA-Developer-Tools", OMP),
+}
+# Not compiled into the Windows wheel (options BUILD_CLI/BUILD_TESTS/WITH_RUY/
+# WITH_FLASH_ATTN off; cuDNN is excluded from the bundle by L01 D3).
+CT2_ABSENT = {"cutlass", "cxxopts", "googletest", "ruy", "cudnn", "cublas"}
+
+
+def test_l05_ctranslate2_native_table() -> None:
+    entries = CT2["entries"]
+    ids = [entry["id"] for entry in entries]
+    assert len(ids) == len(set(ids)) == 16
+    pinned = {row["file"] for row in SOURCES["files"]}
+    for entry in entries:
+        assert evidence.spdx(entry["license"]) == entry["license"], entry["id"]
+        assert entry["copyright"] and set(entry["files"]) <= pinned
+    table = {entry["id"]: entry for entry in entries}
+    for key, (license_id, shipped) in CT2_EXPECTED.items():
+        assert (table[key]["license"], table[key]["shipped_in"]) == (license_id, shipped)
+    assert not CT2_ABSENT & set(ids)
+    dll = evidence.native_license("_internal/ctranslate2/ctranslate2.dll", NATIVE_MAP)
+    assert dll[2] == "CONDITIONS_UNCONFIRMED"
+    for part in (
+        "LicenseRef-NVIDIA-CUDA-Toolkit-EULA",
+        "LicenseRef-Intel-Simplified-Software-License",
+    ):
+        assert part in dll[1]
+
+
+def test_l05_nvidia_header_source_is_not_redistributed() -> None:
+    # Only the license comments the cuRAND headers require are kept, never their code.
+    names = {path.name.lower() for path in NOTICES.rglob("*")}
+    assert not names & {"curand_kernel.h", "curand_philox4x32_x.h", "curand_precalc.h"}
+    excerpt = (NOTICES / "ct2" / "nvidia" / "NVIDIA-cuRAND-notices.txt").read_bytes()
+    assert excerpt.startswith(b"/* Copyright 2010-2014 NVIDIA Corporation")
+    assert excerpt.rstrip().endswith(b"*/") and b"#" not in excerpt
+    assert b"U.S. Government End Users" in excerpt and b"D. E. Shaw Research" in excerpt
+
+
+def test_l05_no_notice_text_trips_the_distribution_policy() -> None:
+    # A copied text named like an excluded runtime (e.g. "curand...") would block a release.
+    for path in NOTICES.rglob("*"):
+        if path.is_file():
+            relative = path.relative_to(NOTICES).as_posix()
+            for root in ("licenses/Qt-third-party/", "licenses/ctranslate2-native/"):
+                assert manager.excluded_component("_internal/../" + root + relative) is None
+
+
+def test_l05_ctranslate2_native_notice_texts_and_sbom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle, toc, source = l03_candidate(tmp_path, monkeypatch)
+    evidence.generate(bundle, toc, source)
+    notice = (bundle / "NOTICE.txt").read_text(encoding="utf-8")
+    for entry in CT2["entries"]:
+        version = f" {entry['version']}" if entry["version"] else ""
+        assert f"  {entry['name']}{version} ({entry['license']}) in {entry['shipped_in']}" in notice
+        for line in entry["copyright"]:
+            assert f"    {line}" in notice
+        for name in entry["files"]:
+            copied = bundle / "licenses" / "ctranslate2-native" / name.removeprefix("ct2/")
+            assert copied.read_bytes() == (NOTICES / name).read_bytes()
+    excerpt = (NOTICES / "ct2" / "nvidia" / "NVIDIA-cuRAND-notices.txt").read_text(encoding="utf-8")
+    assert excerpt.rstrip() in notice  # reproduced verbatim in the user documentation
+    sbom = manager.read_json(bundle / "sbom.cdx.json")["components"]
+    native = [row for row in sbom if row["name"].startswith("CTranslate2 native: ")]
+    assert len(native) == 16 and all(row["licenses"] for row in native)
+    gates = manager.read_json(bundle / "build-provenance.json")["gates"]
+    assert (
+        gates["nvidia_runtime_conditions"]
+        == gates["intel_runtime_conditions"]
+        == ("REVIEW_REQUIRED")
+    )
+    assert "release gates nvidia_runtime_conditions and" in notice
+    # Only the separate NVIDIA DLLs are excluded; the static runtime is disclosed.
+    assert "NVIDIA CUDA/cuDNN runtime DLLs (the CUDA runtime statically linked inside" in notice
+    assert manager.verify(bundle)["version"] == "0.2.0.dev2"
+
+
+def test_l05_unpinned_ctranslate2_record_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle, toc, source = l03_candidate(tmp_path, monkeypatch)
+    path = source / "packaging" / "notices" / "ct2-native.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["entries"][0]["files"].append("ct2/NOT-PINNED.txt")
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(manager.ReleaseError, match="CT2_ATTRIBUTION_INVALID"):
+        evidence.generate(bundle, toc, source)
+    assert not (bundle / manager.MANIFEST).exists()

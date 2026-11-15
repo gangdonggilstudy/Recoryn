@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "note": "Verbatim upstream license texts fixed for release notices (L01 D5). Text presence is not a legal clearance.",
+  "note": "Verbatim upstream license texts fixed for release notices (L01 D5, D8). Text presence is not a legal clearance.",
   "files": [
     {
       "file": "LGPL-3.0.txt",
@@ -53,6 +53,770 @@
       "bytes": 11358,
       "applies_to": [
         "sherpa-onnx-core 2.0.1 (wheel ships no license file)"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/onemkl/LICENSE.txt",
+      "url": "https://files.pythonhosted.org/packages/75/0e/b863a60889643e21d5d8d6b619f913703257878979b1df22d344a56276d0/mkl-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "mkl-2025.3.0.dist-info/LICENSE.txt",
+      "wheel_sha256": "2dbf81b016150c2ce418d80707dcce11d0e3c56f20e1d54813174e7665405561",
+      "sha256": "7721633d0ddff43fae25ebfd405f8166a0ce730cbcec44f2f3ad9d5eb8ac9a6f",
+      "bytes": 4105,
+      "applies_to": [
+        "Intel oneMKL 2025.3.0 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/onemkl/third-party-programs-IntelMPI.txt",
+      "url": "https://files.pythonhosted.org/packages/0e/8e/98ad8181e4af2ea7a6c7827ef6d24c73b6ee96a2890eacf46103f596195d/onemkl_license-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "onemkl_license-2025.3.0.data/data/share/doc/mkl/licensing/third-party-programs-IntelMPI.txt",
+      "wheel_sha256": "35a179620bcadbcc3d17d74f7f72cab75889f3736b89685f6a68158325b65e91",
+      "sha256": "82fa46762c37662a52ab9df58781813c1dc6c268ae2b6f9cf2d83183e706aa09",
+      "bytes": 77510,
+      "applies_to": [
+        "Intel oneMKL 2025.3.0 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/onemkl/third-party-programs-benchmarks.txt",
+      "url": "https://files.pythonhosted.org/packages/0e/8e/98ad8181e4af2ea7a6c7827ef6d24c73b6ee96a2890eacf46103f596195d/onemkl_license-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "onemkl_license-2025.3.0.data/data/share/doc/mkl/licensing/third-party-programs-benchmarks.txt",
+      "wheel_sha256": "35a179620bcadbcc3d17d74f7f72cab75889f3736b89685f6a68158325b65e91",
+      "sha256": "1f1224af12a7d3e51150ce6f762e32472076a31f6e44db41d3b651a7fa20f2f5",
+      "bytes": 5234,
+      "applies_to": [
+        "Intel oneMKL 2025.3.0 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/onemkl/third-party-programs-level-zero.txt",
+      "url": "https://files.pythonhosted.org/packages/0e/8e/98ad8181e4af2ea7a6c7827ef6d24c73b6ee96a2890eacf46103f596195d/onemkl_license-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "onemkl_license-2025.3.0.data/data/share/doc/mkl/licensing/third-party-programs-level-zero.txt",
+      "wheel_sha256": "35a179620bcadbcc3d17d74f7f72cab75889f3736b89685f6a68158325b65e91",
+      "sha256": "cfe7d2ba4b4cd53271c7f91937e906256c0f14ea62ba33ffb556664b8d39aa59",
+      "bytes": 1124,
+      "applies_to": [
+        "Intel oneMKL 2025.3.0 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/onemkl/third-party-programs-oneMath.txt",
+      "url": "https://files.pythonhosted.org/packages/0e/8e/98ad8181e4af2ea7a6c7827ef6d24c73b6ee96a2890eacf46103f596195d/onemkl_license-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "onemkl_license-2025.3.0.data/data/share/doc/mkl/licensing/third-party-programs-oneMath.txt",
+      "wheel_sha256": "35a179620bcadbcc3d17d74f7f72cab75889f3736b89685f6a68158325b65e91",
+      "sha256": "2ba4e9858c253331691370f4e8e3899ca6a5baa20907f189f5970635870b860d",
+      "bytes": 6777,
+      "applies_to": [
+        "Intel oneMKL 2025.3.0 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/onemkl/third-party-programs-oneTBB.txt",
+      "url": "https://files.pythonhosted.org/packages/0e/8e/98ad8181e4af2ea7a6c7827ef6d24c73b6ee96a2890eacf46103f596195d/onemkl_license-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "onemkl_license-2025.3.0.data/data/share/doc/mkl/licensing/third-party-programs-oneTBB.txt",
+      "wheel_sha256": "35a179620bcadbcc3d17d74f7f72cab75889f3736b89685f6a68158325b65e91",
+      "sha256": "d507da4fffae647ebc1bbb7e12cc5cca8087d36b0d78cc75caa96cae37688cb1",
+      "bytes": 19504,
+      "applies_to": [
+        "Intel oneMKL 2025.3.0 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/onemkl/third-party-programs-openmp.txt",
+      "url": "https://files.pythonhosted.org/packages/0e/8e/98ad8181e4af2ea7a6c7827ef6d24c73b6ee96a2890eacf46103f596195d/onemkl_license-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "onemkl_license-2025.3.0.data/data/share/doc/mkl/licensing/third-party-programs-openmp.txt",
+      "wheel_sha256": "35a179620bcadbcc3d17d74f7f72cab75889f3736b89685f6a68158325b65e91",
+      "sha256": "8fdfbbdfed13bca3641da35182e7ee1bb92a99f302ce8b0deb981ac1f18adee2",
+      "bytes": 31028,
+      "applies_to": [
+        "Intel oneMKL 2025.3.0 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/onemkl/third-party-programs-safestring.txt",
+      "url": "https://files.pythonhosted.org/packages/0e/8e/98ad8181e4af2ea7a6c7827ef6d24c73b6ee96a2890eacf46103f596195d/onemkl_license-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "onemkl_license-2025.3.0.data/data/share/doc/mkl/licensing/third-party-programs-safestring.txt",
+      "wheel_sha256": "35a179620bcadbcc3d17d74f7f72cab75889f3736b89685f6a68158325b65e91",
+      "sha256": "415000d1887939ffc6826e0ed3f099cebcab6aaeda2da0acb017110a456b3d42",
+      "bytes": 2448,
+      "applies_to": [
+        "Intel oneMKL 2025.3.0 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/onemkl/third-party-programs.txt",
+      "url": "https://files.pythonhosted.org/packages/0e/8e/98ad8181e4af2ea7a6c7827ef6d24c73b6ee96a2890eacf46103f596195d/onemkl_license-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "onemkl_license-2025.3.0.data/data/share/doc/mkl/licensing/third-party-programs.txt",
+      "wheel_sha256": "35a179620bcadbcc3d17d74f7f72cab75889f3736b89685f6a68158325b65e91",
+      "sha256": "6fb57367c2107b8b3347e0e9db10d368c7b9ea898a08132b2f841b24b86f076f",
+      "bytes": 65770,
+      "applies_to": [
+        "Intel oneMKL 2025.3.0 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/openmp/LICENSE.txt",
+      "url": "https://files.pythonhosted.org/packages/79/69/05addedd727061b61a85b4fd989754edb628b5be1cd5d161727f98cf4d86/intel_openmp-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "intel_openmp-2025.3.0.dist-info/LICENSE.txt",
+      "wheel_sha256": "8ff899d01a41b92ffe0e618b221ea633127d16df726086082d381c431c31339d",
+      "sha256": "febfb69a5b058f55892dc7f341108a9ca29d50e9fe85723a57eebbb826436958",
+      "bytes": 25224,
+      "applies_to": [
+        "Intel OpenMP runtime 2025.3.0 (libiomp5md.dll)"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/intel/openmp/third-party-programs.txt",
+      "url": "https://files.pythonhosted.org/packages/79/69/05addedd727061b61a85b4fd989754edb628b5be1cd5d161727f98cf4d86/intel_openmp-2025.3.0-py2.py3-none-win_amd64.whl",
+      "member": "intel_openmp-2025.3.0.data/data/share/doc/compiler/licensing/openmp/third-party-programs.txt",
+      "wheel_sha256": "8ff899d01a41b92ffe0e618b221ea633127d16df726086082d381c431c31339d",
+      "sha256": "f8ce918fe7311ce279e68380a2e233f8a42b1cd3dda8f4c48d6de97a0255c1d7",
+      "bytes": 31578,
+      "applies_to": [
+        "Intel OpenMP runtime 2025.3.0 (libiomp5md.dll)"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/onednn/LICENSE",
+      "url": "https://raw.githubusercontent.com/oneapi-src/oneDNN/v3.1.1/LICENSE",
+      "sha256": "dd12452e1ae11e3282271aa5895d8175296b83e936a027209f9399d26a407d0f",
+      "bytes": 11521,
+      "applies_to": [
+        "oneDNN 3.1.1 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/onednn/THIRD-PARTY-PROGRAMS",
+      "url": "https://raw.githubusercontent.com/oneapi-src/oneDNN/v3.1.1/THIRD-PARTY-PROGRAMS",
+      "sha256": "9117585dfc6b5cd0fafc063312f28a86ec82eb97bf68316dcefcaaa7fc11428e",
+      "bytes": 29825,
+      "applies_to": [
+        "oneDNN 3.1.1 statically linked in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/LICENSES/Apache-2.0.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/LICENSES/Apache-2.0.txt",
+      "sha256": "e3ba223bb1423f0aad8c3dfce0fe3148db48926d41e6fbc3afbbf5ff9e1c89cb",
+      "bytes": 10398,
+      "applies_to": [
+        "Qt 6.12.0 qtbase tika-mimetypes",
+        "Qt 6.12.0 qtbase emoji-segmenter"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/LICENSES/CC0-1.0.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/LICENSES/CC0-1.0.txt",
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+      "bytes": 7048,
+      "applies_to": [
+        "Qt 6.12.0 qtbase md4",
+        "Qt 6.12.0 qtbase md5",
+        "Qt 6.12.0 qtbase siphash",
+        "Qt 6.12.0 qtbase tlexpected"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/LICENSES/LicenseRef-Lcs-Telegraphics.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/LICENSES/LicenseRef-Lcs-Telegraphics.txt",
+      "sha256": "c10225ebbd5191bfdd761b0d7752c785f2453ab665d6c454473fb12d254668aa",
+      "bytes": 139,
+      "applies_to": [
+        "Qt 6.12.0 qtbase wintab"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/LICENSES/LicenseRef-SHA1-Public-Domain.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/LICENSES/LicenseRef-SHA1-Public-Domain.txt",
+      "sha256": "65d86b8ec6b1cd8b8f6e64fd8710274ba00d6a3c520e00dfdcd1c3d2071f3305",
+      "bytes": 144,
+      "applies_to": [
+        "Qt 6.12.0 qtbase sha1"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/LICENSES/Unicode-3.0.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/LICENSES/Unicode-3.0.txt",
+      "sha256": "80bb6294022d8764adb36a9d65ebb6bd94efb1865918a71e31e6c247607d7634",
+      "bytes": 1995,
+      "applies_to": [
+        "Qt 6.12.0 qtbase unicode-character-database",
+        "Qt 6.12.0 qtbase unicode-cldr"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/D3D12MemoryAllocator/LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/D3D12MemoryAllocator/LICENSE.txt",
+      "sha256": "5478a2f36b736e13dd3250b9c71a4ab521bc327fb9d112a92c647bf3e69ddb68",
+      "bytes": 1099,
+      "applies_to": [
+        "Qt 6.12.0 qtbase d3d12memoryallocator"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/VulkanMemoryAllocator/LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/VulkanMemoryAllocator/LICENSE.txt",
+      "sha256": "846d97c8b74ccaa92b9ad031140a04363b3b3985f318094552f297b8bda1c68e",
+      "bytes": 1099,
+      "applies_to": [
+        "Qt 6.12.0 qtbase vulkanmemoryallocator"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/blake2/COPYING",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/blake2/COPYING",
+      "sha256": "4103f471877ed0bae500752c5fcd7ecca409d4a4a8dc2ad40437daba60f1a2bc",
+      "bytes": 17914,
+      "applies_to": [
+        "Qt 6.12.0 qtbase blake2"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/double-conversion/LICENSE",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/double-conversion/LICENSE",
+      "sha256": "4af93c12062c58058378de2397dc1c92bbff9ddfb1d583a01c84127557ce97ca",
+      "bytes": 1527,
+      "applies_to": [
+        "Qt 6.12.0 qtbase doubleconversion"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/easing/LICENSE",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/easing/LICENSE",
+      "sha256": "92fac99458f1754b73edf50f9c9983e0efaa06ad96e2afd5e538c79f45b4b191",
+      "bytes": 1505,
+      "applies_to": [
+        "Qt 6.12.0 qtbase easing"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/freetype/BDF-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/freetype/BDF-LICENSE.txt",
+      "sha256": "e4e792f29e66750f2e410fd7b50a567652c180f6ee15e1a4dfa0bb5cde524537",
+      "bytes": 2305,
+      "applies_to": [
+        "Qt 6.12.0 qtbase freetype-bdf"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/freetype/LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/freetype/LICENSE.txt",
+      "sha256": "bf543cdda11864477b8d2ca2aa9afc2aaa8f9133461b4d962ed6ec73646256a1",
+      "bytes": 26234,
+      "applies_to": [
+        "Qt 6.12.0 qtbase freetype",
+        "Qt 6.12.0 qtbase grayraster"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/freetype/PCF-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/freetype/PCF-LICENSE.txt",
+      "sha256": "6938597bfdeca0db191a8f9ede52eaf2482c2c71a0094c084747a1235f9958fe",
+      "bytes": 2218,
+      "applies_to": [
+        "Qt 6.12.0 qtbase freetype-pcf"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/freetype/ZLIB-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/freetype/ZLIB-LICENSE.txt",
+      "sha256": "2b1f5d615382a151af3eb71462ad17d89e2efee8fa7664058d35d3d9237ebb19",
+      "bytes": 962,
+      "applies_to": [
+        "Qt 6.12.0 qtbase freetype-zlib"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/freetype/docs/FTL.TXT",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/freetype/docs/FTL.TXT",
+      "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f",
+      "bytes": 6743,
+      "applies_to": [
+        "Qt 6.12.0 qtbase freetype"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/freetype/docs/GPLv2.TXT",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/freetype/docs/GPLv2.TXT",
+      "sha256": "c4120c6752c910c299e3bd9cb3a46ff262c268303ca2069b61f92f10a5656c18",
+      "bytes": 17994,
+      "applies_to": [
+        "Qt 6.12.0 qtbase freetype"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/harfbuzz-ng/COPYING",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/harfbuzz-ng/COPYING",
+      "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+      "bytes": 1971,
+      "applies_to": [
+        "Qt 6.12.0 qtbase harfbuzz-ng"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/icc/LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/icc/LICENSE.txt",
+      "sha256": "9e34ff47b3a44814e183342e7e198d127a6740e29d20e8381fba7688dafc79dd",
+      "bytes": 463,
+      "applies_to": [
+        "Qt 6.12.0 qtbase icc-srgb-color-profile"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/libjpeg/COPYRIGHT.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/libjpeg/COPYRIGHT.txt",
+      "sha256": "e5b349c6a98d997a8d0f5fcfe5cc900b1f76bbc32743674c52a70981498748c0",
+      "bytes": 606,
+      "applies_to": [
+        "Qt 6.12.0 qtbase libjpeg"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/libjpeg/LICENSE",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/libjpeg/LICENSE",
+      "sha256": "ba6bceebcba0fdd35488477c2cca8c4632ce82c74dbfbc87d886ce6fc4433579",
+      "bytes": 6077,
+      "applies_to": [
+        "Qt 6.12.0 qtbase libjpeg"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/libjpeg/ijg-license.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/libjpeg/ijg-license.txt",
+      "sha256": "1cb448f5e2e6d3aca60943f4eee1a04675628dc0266a074a42bc1560ebc28d61",
+      "bytes": 1815,
+      "applies_to": [
+        "Qt 6.12.0 qtbase libjpeg"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/libpng/LICENSE",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/libpng/LICENSE",
+      "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526",
+      "bytes": 5345,
+      "applies_to": [
+        "Qt 6.12.0 qtbase libpng"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/libpsl/PSL-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/libpsl/PSL-LICENSE.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+      "bytes": 16726,
+      "applies_to": [
+        "Qt 6.12.0 qtbase psl-data"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/libpsl/src/LICENSE.chromium",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/libpsl/src/LICENSE.chromium",
+      "sha256": "1d7f52747a9169751cdf2641a8299c0098e9ecdf9429296ffd55bdb14c9ed5b3",
+      "bytes": 1664,
+      "applies_to": [
+        "Qt 6.12.0 qtbase libpsl"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/md4c/LICENSE.md",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/md4c/LICENSE.md",
+      "sha256": "d30937367d5413e7eaa218b1640b8946ff76fd34d97152f6979fd96169d5d0fc",
+      "bytes": 1096,
+      "applies_to": [
+        "Qt 6.12.0 qtbase md4c"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/pcre2/LICENCE.md",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/pcre2/LICENCE.md",
+      "sha256": "197d8a73ffee0d6b09adba2f9c677b5f5aede24edf89258a68e48248d010d811",
+      "bytes": 4011,
+      "applies_to": [
+        "Qt 6.12.0 qtbase pcre2"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/pcre2/LICENSE-SLJIT",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/pcre2/LICENSE-SLJIT",
+      "sha256": "5f216505c0f6ea3273caec89e766eef93cdeb7bbb0c429f9360116d7c938feeb",
+      "bytes": 1444,
+      "applies_to": [
+        "Qt 6.12.0 qtbase pcre2-sljit"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/rfc6234/LICENSE",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/rfc6234/LICENSE",
+      "sha256": "7ccebd514aaabc86192f957d773cebf06577c12fe9f25ecd419c6cac5da7a14c",
+      "bytes": 1568,
+      "applies_to": [
+        "Qt 6.12.0 qtbase rfc6234"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/sha3/BRG_ENDIAN_LICENSE",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/sha3/BRG_ENDIAN_LICENSE",
+      "sha256": "2fed6f252ca4a7e813811de3cd3cd08183edd4138bdee909410ef6eee394e82c",
+      "bytes": 645,
+      "applies_to": [
+        "Qt 6.12.0 qtbase sha3_endian"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/sha3/CC0_LICENSE",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/sha3/CC0_LICENSE",
+      "sha256": "1f2786e2c5befeb4dcba6638db6528bf96ef5d2cf24bc85ab5a81ef00abef59d",
+      "bytes": 7013,
+      "applies_to": [
+        "Qt 6.12.0 qtbase sha3_keccak"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/tinycbor/LICENSE",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/tinycbor/LICENSE",
+      "sha256": "3c6ba0b5bfa7830505301ffb336a17b0748e0d61c4d34216e9dc98f10e40395e",
+      "bytes": 1074,
+      "applies_to": [
+        "Qt 6.12.0 qtbase tinycbor"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/3rdparty/zlib/LICENSE",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/3rdparty/zlib/LICENSE",
+      "sha256": "d7e3139972874dc8abdbbfce27ec1e6f942b28279dd7d27453630a8b4610e080",
+      "bytes": 1465,
+      "applies_to": [
+        "Qt 6.12.0 qtbase zlib"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/gui/opengl/LICENSE.KHRONOS.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/gui/opengl/LICENSE.KHRONOS.txt",
+      "sha256": "2e484f3c26ff5008c704a3ca9dd809d43f24a004a1abb6c202660fbff0d19715",
+      "bytes": 1084,
+      "applies_to": [
+        "Qt 6.12.0 qtbase opengl-headers",
+        "Qt 6.12.0 qtbase opengl-es2-headers"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/gui/painting/LICENSE.QIMAGETRANSFORM.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/gui/painting/LICENSE.QIMAGETRANSFORM.txt",
+      "sha256": "46b3cbfa2f2946b93291506351e9be1dd0a28d2a53260f5aa488abd36fbeca9d",
+      "bytes": 3004,
+      "applies_to": [
+        "Qt 6.12.0 qtbase smooth-scaling-algorithm"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/gui/painting/LICENSE.XCONSORTIUM.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/gui/painting/LICENSE.XCONSORTIUM.txt",
+      "sha256": "a216b01291eb38fc1af93cfccf1fc67b48d9923612e517c2a695e95b3f03c22c",
+      "bytes": 2294,
+      "applies_to": [
+        "Qt 6.12.0 qtbase xserverhelper"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/gui/rhi/LICENSE.MiniEngine.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/gui/rhi/LICENSE.MiniEngine.txt",
+      "sha256": "cf248820bf1178370bb4f1670a59f8748d46bc96d0f64080cd631511c6046409",
+      "bytes": 1077,
+      "applies_to": [
+        "Qt 6.12.0 qtbase rhi-miniengine-d3d12-mipmap"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/gui/text/LICENSE.AGLFN.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/gui/text/LICENSE.AGLFN.txt",
+      "sha256": "40818155548ff41c67d3a40edf355e9658992b292c227f4c1147425cedc746c6",
+      "bytes": 1425,
+      "applies_to": [
+        "Qt 6.12.0 qtbase aglfn"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/gui/util/LICENSE.XSVG.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/gui/util/LICENSE.XSVG.txt",
+      "sha256": "3a946598a9f674d44df764279ca0b85b5d6faba08f3bc75d8e0fcf6cd729a9bd",
+      "bytes": 1185,
+      "applies_to": [
+        "Qt 6.12.0 qtbase xsvg"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/src/gui/vulkan/LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/src/gui/vulkan/LICENSE.txt",
+      "sha256": "5f618873b0cdd1e84c611c5529212c2524bfc887bdfd7d1f3b568bad3c649612",
+      "bytes": 11473,
+      "applies_to": [
+        "Qt 6.12.0 qtbase vulkan-xml-spec"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtbase/util/gradientgen/LICENSE.WEBGRADIENTS.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtbase/v6.12.0/util/gradientgen/LICENSE.WEBGRADIENTS.txt",
+      "sha256": "9be732e45b638c74f9c0e5248541dd54dc7e8e9a5545df96b5c4b7c9ac0c68ba",
+      "bytes": 1062,
+      "applies_to": [
+        "Qt 6.12.0 qtbase webgradients"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtimageformats/src/3rdparty/libtiff/COPYRIGHT",
+      "url": "https://raw.githubusercontent.com/qt/qtimageformats/v6.12.0/src/3rdparty/libtiff/COPYRIGHT",
+      "sha256": "fbd6fed7938541d2c809c0826225fc85e551fdbfa8732b10f0c87e0847acafd7",
+      "bytes": 1146,
+      "applies_to": [
+        "Qt 6.12.0 qtimageformats libtiff"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtimageformats/src/3rdparty/libwebp/COPYING",
+      "url": "https://raw.githubusercontent.com/qt/qtimageformats/v6.12.0/src/3rdparty/libwebp/COPYING",
+      "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf",
+      "bytes": 1496,
+      "applies_to": [
+        "Qt 6.12.0 qtimageformats libwebp"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtimageformats/src/3rdparty/libwebp/PATENTS",
+      "url": "https://raw.githubusercontent.com/qt/qtimageformats/v6.12.0/src/3rdparty/libwebp/PATENTS",
+      "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c",
+      "bytes": 1436,
+      "applies_to": [
+        "Qt 6.12.0 qtimageformats libwebp"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtmultimedia/LICENSES/BSD-3-Clause.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtmultimedia/v6.12.0/LICENSES/BSD-3-Clause.txt",
+      "sha256": "9f0490f18656c6f2435bd14f603ef0c96434d1825615363dce43abb42ed1dcce",
+      "bytes": 1469,
+      "applies_to": [
+        "Qt 6.12.0 qtmultimedia tlsf"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtmultimedia/src/3rdparty/dr_libs/LICENSE",
+      "url": "https://raw.githubusercontent.com/qt/qtmultimedia/v6.12.0/src/3rdparty/dr_libs/LICENSE",
+      "sha256": "dd1c647e6f767f8ff4b2dfae0fed314726600a01e0cf1ef556afddd5fa96ff15",
+      "bytes": 2598,
+      "applies_to": [
+        "Qt 6.12.0 qtmultimedia dr_libs"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtmultimedia/src/3rdparty/tlsf/tlsf.h",
+      "url": "https://raw.githubusercontent.com/qt/qtmultimedia/v6.12.0/src/3rdparty/tlsf/tlsf.h",
+      "sha256": "cfb8744f3be370b8b8c57c3ceb9cdce43e76a64dc24ee67e6912f483f61365b1",
+      "bytes": 3474,
+      "applies_to": [
+        "Qt 6.12.0 qtmultimedia tlsf"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "qt/qtsvg/LICENSES/HPND-sell-variant.txt",
+      "url": "https://raw.githubusercontent.com/qt/qtsvg/v6.12.0/LICENSES/HPND-sell-variant.txt",
+      "sha256": "3a946598a9f674d44df764279ca0b85b5d6faba08f3bc75d8e0fcf6cd729a9bd",
+      "bytes": 1185,
+      "applies_to": [
+        "Qt 6.12.0 qtsvg qsvghandler (REUSE.toml)"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/cccl/LICENSE",
+      "url": "https://raw.githubusercontent.com/NVIDIA/cccl/v2.7.0/LICENSE",
+      "sha256": "01b767dcd7d36f42efb608076741cf83f154a995e198028cb698aadc3a43b63b",
+      "bytes": 33838,
+      "applies_to": [
+        "CCCL 2.7.0 (Thrust, CUB, libcu++) compiled into ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/cccl/thrust/LICENSE",
+      "url": "https://raw.githubusercontent.com/NVIDIA/cccl/v2.7.0/thrust/LICENSE",
+      "sha256": "9e42656b2b02223cee05e2344fee5673d9d5b731ac686ad1e3e543ace6ea6b95",
+      "bytes": 13968,
+      "applies_to": [
+        "CCCL 2.7.0 (Thrust, CUB, libcu++) compiled into ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/cccl/cub/LICENSE.TXT",
+      "url": "https://raw.githubusercontent.com/NVIDIA/cccl/v2.7.0/cub/LICENSE.TXT",
+      "sha256": "2e15eba2e130f3e80d9e91724c7dce3781ce99316324681ff54b00c1fc9759b3",
+      "bytes": 1578,
+      "applies_to": [
+        "CCCL 2.7.0 (Thrust, CUB, libcu++) compiled into ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/cccl/libcudacxx/LICENSE.TXT",
+      "url": "https://raw.githubusercontent.com/NVIDIA/cccl/v2.7.0/libcudacxx/LICENSE.TXT",
+      "sha256": "f2905be651fc32d33ad754a74e318e0a19eae7a134a23b1b1a4eb7496bfc1d93",
+      "bytes": 28080,
+      "applies_to": [
+        "CCCL 2.7.0 (Thrust, CUB, libcu++) compiled into ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/spdlog/LICENSE",
+      "url": "https://raw.githubusercontent.com/gabime/spdlog/76fb40d95455f249bd70824ecfcae7a8f0930fa3/LICENSE",
+      "sha256": "a7241a379cb98d37788f82c2fc2e484c3ae85dae881fd3406f0637644850926f",
+      "bytes": 1348,
+      "applies_to": [
+        "spdlog 1.10.0 compiled into ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/spdlog/fmt.license.rst",
+      "url": "https://raw.githubusercontent.com/gabime/spdlog/76fb40d95455f249bd70824ecfcae7a8f0930fa3/include/spdlog/fmt/bundled/fmt.license.rst",
+      "sha256": "825c9324e70f8c839c8ba910543dd4a7daee243b86ef960594c11381a19980b8",
+      "bytes": 1408,
+      "applies_to": [
+        "fmt 8.1.1 bundled in spdlog 1.10.0, compiled into ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/cpu_features/LICENSE",
+      "url": "https://raw.githubusercontent.com/google/cpu_features/8a494eb1e158ec2050e5f699a504fbc9b896a43b/LICENSE",
+      "sha256": "af272c1b4dd08dd61d43e001d3134119d03ca7a2b057a64f7355fdf27fbea3dd",
+      "bytes": 12876,
+      "applies_to": [
+        "cpu_features 0.7.0 compiled into ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/ctranslate2/avx_mathfun.h",
+      "url": "https://raw.githubusercontent.com/OpenNMT/CTranslate2/v4.9.0/third_party/avx_mathfun.h",
+      "sha256": "0420c25e0a8f87d9e1827c006913c2455f694cc966d2163acd0c058d7321016f",
+      "bytes": 25183,
+      "applies_to": [
+        "CTranslate2 4.9.0 vendored avx_mathfun.h (license text in the file header)"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/simd_utils/LICENSE",
+      "url": "https://raw.githubusercontent.com/JishinMaster/simd_utils/master/LICENSE",
+      "note": "Fetched from upstream master; the header carries no license text of its own.",
+      "sha256": "dfaa54b4188ffa0e6298ce7ea27c865d12edcf73d742e2200ce9812db6268c0f",
+      "bytes": 1322,
+      "applies_to": [
+        "SIMD_Utils (avx512_mathfun.h in CTranslate2 4.9.0; header names BSD-2, version 0.2.5)"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/onednn/src/common/ittnotify/LICENSE.BSD",
+      "url": "https://raw.githubusercontent.com/oneapi-src/oneDNN/v3.1.1/src/common/ittnotify/LICENSE.BSD",
+      "sha256": "51e80f0261cdc1962e9b9a1c80f9aa6a7adf0b05f0f217caf59141f59b2ad1c1",
+      "bytes": 1503,
+      "applies_to": [
+        "oneDNN 3.1.1 sub-component compiled into ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/onednn/src/cpu/x64/xbyak/COPYRIGHT",
+      "url": "https://raw.githubusercontent.com/oneapi-src/oneDNN/v3.1.1/src/cpu/x64/xbyak/COPYRIGHT",
+      "sha256": "f8ddc1b38c2ba3d472abe83d66bd5bad6206e9fe50ac33ea3872069056beb8e2",
+      "bytes": 3399,
+      "applies_to": [
+        "oneDNN 3.1.1 sub-component compiled into ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/nvidia/CUDA-EULA.txt",
+      "url": "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.8.90-archive.zip",
+      "member": "cuda_cudart-windows-x86_64-12.8.90-archive/LICENSE",
+      "sha256": "e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07",
+      "bytes": 63021,
+      "applies_to": [
+        "NVIDIA CUDA 12.8 runtime (cudart_static) and cuRAND device code in ctranslate2.dll"
+      ],
+      "retrieved": "2026-11-15"
+    },
+    {
+      "file": "ct2/nvidia/NVIDIA-cuRAND-notices.txt",
+      "url": "https://developer.download.nvidia.com/compute/cuda/redist/libcurand/windows-x86_64/libcurand-windows-x86_64-10.3.9.90-archive.zip",
+      "member": "libcurand-windows-x86_64-10.3.9.90-archive/include/curand_philox4x32_x.h",
+      "excerpt": "lines 1-78: the NVIDIA notice the header requires in user documentation and the D. E. Shaw Research BSD notice; the header source itself is not redistributed",
+      "header_sha256": "84a5dd9ff4fbdb5b782b6b1aecb052dcb258ee4efe23cb250e08aa939eee106d",
+      "sha256": "d5be08d3fdb4e64460f0a594debc560eb9522fd1191cd1d2d15cfb1079c6f3af",
+      "bytes": 4128,
+      "applies_to": [
+        "cuRAND 10.3.9.90 device code (Philox, XORWOW precalc) compiled into ctranslate2.dll"
       ],
       "retrieved": "2026-11-15"
     }

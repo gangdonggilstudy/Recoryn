@@ -191,6 +191,114 @@ L-P04 stage tree `a6ad2c79e73ff6e261c94196bde1150323b7774c`(216파일)를 `%TEMP
 
 NOTICE와 SBOM은 검토 후보 `build/l04b-1794734467`과 bytes가 같다. 이 결과 기록, 배정표 상태 갱신, 재생 검토 문서 외에는 검증 tree와 commit tree가 같다.
 
+## L-P05 고지 완전성
+
+선행 L-P04 `5e10becb61b6e11304c6013f7cca7940010b9ab7`의 원격 CI [43700323467](https://github.com/gangdonggilstudy/Recoryn/actions/runs/43700323467)은 core 3.11·3.13과 optional-runtime 세 job success다(C00 GitHub API 확인).
+
+### 조사
+
+배정된 조사 하위 에이전트가 upstream 원문과 출처를 수집했다. 각 파일은 tag의 git blob과 대조했고, 로컬 DLL은 문자열과 import 표로 확인했다. C00은 그중 zlib·FreeType·tlsf.h·oneDNN LICENSE를 다시 내려받고 qtbase 소스의 SHA-256 sidecar도 다시 받아 같은 hash임을 확인했다.
+
+- **Qt:** qtbase·qtsvg·qtimageformats·qtmultimedia v6.12.0 tag의 qt_attribution.json(88개 파일, 103개 고유 행)을 조사했다. 동봉 파일 기준으로 47행을 골랐고, 이후 L05-02 판정으로 ES2 헤더 1행을 빼 46행을 포함했다. 그 밖에 다른 플랫폼·미배포 모듈·제외한 FFmpeg 플러그인·빌드와 시험 전용 항목은 제외했다. 판정 근거는 다음과 같다.
+  - Qt6Core: zlib 1.3.2, PCRE2 10.48
+  - Qt6Gui: FreeType, HarfBuzz, libpng 1.6.58, md4c
+  - 플러그인: qjpeg의 libjpeg-turbo 3.2.0, qwindows의 wintab
+  - Qt6Multimedia: dr_wav, tlsf
+  - 이 라이브러리들은 외부 DLL로 import되지 않아, 모두 Qt DLL 안에 정적으로 들어 있다.
+  - qtsvg는 attribution 파일이 없다. REUSE.toml이 명시한 XSVG 파생 코드(HPND-sell-variant)를 따로 넣었다.
+  - Qt 공식 "Licenses Used in Qt 6.12" 페이지와 대조하면, XSVG 항목이 그 페이지에 없는 것 말고는 이름과 버전이 같다.
+- **Intel:** 동봉한 `libiomp5md.dll`은 intel-openmp 2025.3.0 wheel의 파일과 bytes가 같다. CTranslate2 v4.9.0의 Windows 빌드 스크립트는 oneAPI Base Toolkit 2025.3.0을 설치한다. 라이선스는 다음과 같다.
+  - OpenMP: Intel End User License Agreement for Developer Tools(August 2024)
+  - oneMKL: Intel Simplified Software License(October 2022)
+  - EULA가 말하는 재배포 목록(redist.txt)은 wheel에서도 공식 페이지에서도 찾지 못했다.
+- **oneDNN:** `ctranslate2.dll`에 oneDNN 3.1.1이 정적으로 들어 있다(`-DONEDNN_LIBRARY_TYPE=STATIC`, `oneDNN-3.1.1` 경로 문자열). 기존 native 대응표는 이를 적지 않았다.
+- **Microsoft:** VS 2022 Distributable Code 페이지는 `VC
+edist` 아래 파일의 재배포를 허락한다. 단 "Distribution ... is limited to licensed Visual Studio users"라는 조건이 붙는다.
+- **corresponding source:** download.qt.io가 게시한 SHA-256 sidecar로 Qt 6.12.0 submodule archive 4개와 pyside-setup 6.12.0 archive의 정확한 위치를 확인했다. PyPI에는 PySide6 6.12.0 sdist가 없다.
+
+- **CTranslate2 내부(추가 조사):** CTranslate2 v4.9.0 Windows 빌드 스크립트 57행의 옵션은 WITH_DNNL=ON, WITH_CUDA=ON, CUDA_DYNAMIC_LOADING=ON, BUILD_CLI=OFF다. 스크립트는 CUDA 12.8.1을 설치한다. `ctranslate2.dll`에는 다음이 정적으로 들어 있다.
+  - **NVIDIA CUDA runtime:** cudart 12.8.90이다. cudart DLL을 import하지 않고, "CUDA driver version is insufficient" 문자열이 있으며, NVCC 기본값이 static이다. CUDA EULA Attachment A가 `cudart_static.lib`를 재배포 가능으로 명시한다.
+  - **cuRAND 장치 코드:** Philox, XORWOW precalc다. 이 헤더들은 "PROPRIETARY" 표시가 있고 Attachment A에 없다. **재배포 가능 여부는 미확인**이다.
+  - **CCCL 2.7.0:** Thrust(Apache-2.0·Boost·BSD-2), CUB(BSD-3), libcu++(Apache-2.0 WITH LLVM-exception, NCSA 또는 MIT, 일부 NVIDIA Software License)다.
+  - **기타 오픈소스:** spdlog 1.10.0과 fmt 8.1.1(MIT), cpu_features 0.7.0(Apache-2.0), avx_mathfun(MIT·Zlib), avx512_mathfun(SIMD_Utils, BSD-2)이다.
+  - **oneDNN 3.1.1:** 내부에 Xbyak(BSD-3)와 ittnotify(BSD-3)가 있다. oneDNN과 CCCL에는 NOTICE 파일이 없다.
+  - **번들에 없는 것:** cutlass·cxxopts·googletest·ruy는 빌드 옵션상 컴파일되지 않는다. cuDNN·cuBLAS DLL은 번들에 없다(D3).
+
+### 구현
+
+- **고정 원문:** 원문 73개를 새로 고정해 `packaging/notices`는 83개 파일이 되었다.
+  - `qt/<repo>/<upstream 경로>` 47개
+  - `ct2/` 아래 26개: Intel·oneDNN·CCCL·spdlog·cpu_features·SIMD_Utils·NVIDIA EULA와 cuRAND 주석 발췌
+  - 모두 SOURCES.json에 URL·SHA-256·bytes를 적는다. wheel이나 archive 안의 파일은 member 경로와 wheel SHA-256도 함께 적는다.
+  - `qt/**`·`ct2/**`는 `-text`로 줄바꿈 변환을 막는다.
+  - 빌더 snapshot은 notices 하위 폴더 전체를 포함한다.
+- **귀속표:** 세 파일을 둔다.
+  - `qt-third-party.json`: Qt 47행(attribution 46 + XSVG 1)
+  - `ct2-native.json`: CTranslate2 내부 16행
+  - `corresponding-sources.json`: Qt submodule 4개와 pyside-setup archive의 URL·SHA-256
+  - 생성기는 각 행의 SPDX·저작권·고정 원문을 검증한다. 문제가 있으면 QT_ATTRIBUTION_INVALID, CT2_ATTRIBUTION_INVALID, CORRESPONDING_SOURCES_INVALID로 거부한다.
+- **NOTICE·SBOM:**
+  - Qt 절과 CTranslate2 절은 행마다 머리줄·저작권·원문 경로를 적는다.
+  - FreeType 크레딧, IJG 문장, cuRAND 헤더가 요구하는 NVIDIA 고지 원문을 넣는다.
+  - PSL MPL-2.0 Source Code Form 위치, 정확한 upstream 소스 archive, Microsoft 재배포 조건과 공식 페이지를 넣는다.
+  - SBOM에 Qt 47개와 CTranslate2 내부 16개 구성요소를 각자의 라이선스 식과 함께 추가했다.
+- **native 대응표:**
+  - `ctranslate2.dll`: 위 구성요소를 모두 적었다. 라이선스 식에 NVIDIA EULA·Intel ISSL 등이 들어가고, 상태는 CONDITIONS_UNCONFIRMED다.
+  - `libiomp5md.dll`: Intel OpenMP 2025.3.0(Intel EULA for Developer Tools)이다.
+  - 새 gate는 `nvidia_runtime_conditions`이고, Qt 소스 gate 값은 `TEXTS_INCLUDED_UPSTREAM_SOURCES_RECORDED_HOSTING_DECISION_REQUIRED`다.
+- **이름 충돌:** 처음 붙인 이름 `curand-notices.txt`가 NVIDIA 런타임 제외 규칙에 걸려 후보가 거부됐다. 이름을 바꾸고 모든 고지 파일을 정책과 대조하는 시험을 추가했다.
+- **NVIDIA 문구:** 배포하지 않는 목록에 "NVIDIA CUDA/cuDNN"만 적으면, `ctranslate2.dll` 안의 정적 CUDA runtime까지 배포하지 않는 것처럼 읽혔다. 그래서 "별도 CUDA/cuDNN runtime DLL"이라고 범위를 좁혀 적었다.
+
+### 독립 검토
+
+[고지 검토](../reviews/l05-notice-review.md)(recoryn-security, w5:p5)는 다음을 독립 확인했다.
+
+- SOURCES 78개와 실제 원문 집합이 같고 bytes·SHA가 모두 일치한다.
+- 공개 원문 6개를 고정 URL에서 다시 받아 bytes가 같았다.
+- Qt·CTranslate2 귀속의 머리줄·저작권·사본이 후보와 일치한다.
+- 실제 DLL의 문자열·import로 정적 포함 근거를 확인했다.
+- NVIDIA 헤더는 발췌만 있고 코드는 없다.
+- 미확인 조건이 승인처럼 표현되지 않았다.
+
+발견과 수정은 다음과 같다.
+
+- **L05-01:** libjpeg가 `qtiff.dll`에도 들어 있었다. 위치 두 곳을 기록했다.
+- **L05-02:** 보수적으로 넣은 ES2 행의 미확인 상태가 NOTICE에 드러나지 않았다. LibGL 판정으로 이 행을 제외했다. 처음 적은 근거 문구 "동적 OpenGL 미지원"은 틀렸다. "Windows는 EGL·OpenGL ES 미지원"으로 정정했다.
+- **L05-03:** 파일 수와 행 수가 섞여 있었다. 88개 파일, 103행에서 포함 46행, 제외 57행, REUSE 1행을 더해 47행으로 정리했다. JSON 매니페스트는 5종이다.
+- **L05-04(재확인 중 발견):** libjpeg 저작권이 placeholder `None`이었다. 고정한 COPYRIGHT.txt의 15줄로 바꾸고, validator가 placeholder를 거부하게 했다.
+
+네 건 모두 RECHECKED이고 **OPEN 0**이다.
+
+### 검증
+
+L-P05 stage tree `6422098e263437fd0c55c90efb90c8ad8b820979`(294파일)를 `%TEMP%/recoryn-l-p05b-tree-gli5fema/tree`에 추출해 실행했다. 추출 bytes 불일치 0이고, import 출처는 추출 tree다. 직전 tree `cd2189f`(7550 PASS)는 L05-02/04 수정 전이라 검증 근거로 쓰지 않았다.
+
+| 검사 | 결과 |
+| --- | --- |
+| 전체 pytest(`--runxfail`, ResourceWarning 오류화) | **7551 PASS / 205초**, 실패·오류·skip 0 |
+| 전체 line / branch | **8274/8836 = 93.64% / 2465/2828 = 87.16%**, 분리 예산 PASS, 측정 69파일 모두 추출 tree |
+| Ruff check·format / strict mypy | PASS / 78파일 PASS |
+
+같은 tree를 따로 추출해 frozen 후보 `build/l05-final-1794738362`를 만들었다.
+
+- **입력:** 빌드 입력 165파일(고지 원문 78개와 매니페스트 포함)이 모두 tree bytes와 일치한다.
+- **구성:** 1120파일, 303.9 MB다. 네이티브 105개가 모두 명시 귀속됐다(DECLARED 90, REDISTRIBUTABLE_PROPRIETARY 13, CONDITIONS_UNCONFIRMED 2, UNMAPPED 0).
+- **SBOM:** 101개 구성요소다(기존 38 + Qt 내부 47 + CTranslate2 내부 16).
+- **smoke:** PASS다. 위치가 2198 → 2648 ms로 진행했고 stderr는 0 bytes다.
+
+| 후보 파일 | SHA-256 |
+| --- | --- |
+| Recoryn.exe | `dbe741d07600d8ae663a55354e689ab3cccf6019da60ad0884f7b0a0f9b05fac` |
+| Recoryn-CLI.exe | `cadd91f5f9299ff9050991800f2e3a578b32a3d1d9d754a86863f5a3a74921bc` |
+| release-manifest.json | `6bfa01690733418d8b1a1ec6453181b2c246c6d50374e7fa0010c878043cb0fd` |
+| NOTICE.txt | `f5634bef77502b84c65f3498fb3413b681f32b7e478a75dabfaed1769f1e1461` |
+| sbom.cdx.json | `e734a897831c92bc6c5048cad8f11151c07bb4179af65ddf53a5bcec68d52dee` |
+| native-origins.json | `553fadac6de3ab0b822d036b737a9cf17ef3bf53d69901a1da8685d169e2d5f2` |
+| build-provenance.json | `378837727ef1305e41dae41cea57fc2ad1099155b97a473b68a9ffb1fc983a43` |
+| smoke.stdout.json | `487285ef672cdcf71fa76e6114459370992b1955d3c7e93aebd9fa984707053a` |
+
+NOTICE와 SBOM은 최종 검토 후보 `build/l05d-1794738231`과 bytes가 같다. 이 결과 기록, 배정표 상태 갱신, 검토 문서 외에는 검증 tree와 commit tree가 같다.
+
 ## 미검증
 
 실제 음성·Whisper 추론 품질, GPU, 장시간 입력의 메모리 상한, clean VM, 서명, Qt corresponding source 배포, Intel·Microsoft 조건의 법률 확인은 NOT_RUN 또는 G4 OPEN이다. L-P04가 공개되면 FFmpeg corresponding source와 코덱 특허 항목은 배포물에서 사라진다. 실제 스피커 청취, 음질, 재생 중 장치 변경은 확인하지 않았다. 3채널 이상의 mono 평균은 스피커 배치를 고려한 downmix가 아니다.

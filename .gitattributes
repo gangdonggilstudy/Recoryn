@@ -1,2 +1,4 @@
 # Verbatim upstream license texts: keep exact bytes (SHA-256 in SOURCES.json).
 packaging/notices/*.txt -text
+packaging/notices/qt/** -text
+packaging/notices/ct2/** -text

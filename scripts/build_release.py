@@ -27,8 +27,9 @@ def snapshot_inputs(root: Path, destination: Path) -> Path:
             if source.is_file() and (
                 source.suffix in {".py", ".pyi", ".spec"}
                 or source.name == "py.typed"
-                # Verbatim license texts and their pinned hashes (L01 D5).
-                or source.parent == root / "packaging" / "notices"
+                # Verbatim license texts and their pinned hashes, including the
+                # Qt/Intel/oneDNN subfolders (L01 D5, D8).
+                or source.is_relative_to(root / "packaging" / "notices")
             ):
                 sources.append(source)
     sources.extend(path for path in root.glob("requirements*.txt") if path.is_file())

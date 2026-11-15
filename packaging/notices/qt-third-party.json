@@ -1,0 +1,862 @@
+{
+  "schema_version": 1,
+  "qt_version": "6.12.0",
+  "note": "Third-party code compiled into the Qt 6.12.0 libraries and plugins Recoryn ships, from qt_attribution.json at tag v6.12.0 (L01 D8). Entries for other platforms, modules or plugins that are not shipped are excluded. opengl-es2-headers is excluded: the shipped Qt is a desktop OpenGL build (QOpenGLContext.openGLModuleType() == LibGL), and Qt 6 supports neither EGL nor OpenGL ES on Windows (only a dynamically chosen desktop OpenGL implementation), so the opengles2 feature and qopengles2ext.h are not compiled; the same Khronos text stays with opengl-headers (L05-02).",
+  "tags": {
+    "qtbase": "025bdad181de241e81bf853c8a2d7bf3d19261a9",
+    "qtsvg": "883a58532078d003cefef0a549bfe9f885ce41f5",
+    "qtimageformats": "dc13f2fbff1d579cfb2eb2d9092e3563b4d05b8e",
+    "qtmultimedia": "6ca885f084a3984749d53bb50a0e08bdc60e86cc"
+  },
+  "entries": [
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/blake2/qt_attribution.json",
+      "id": "blake2",
+      "name": "BLAKE2 (reference implementation)",
+      "version": "ed1974ea83433eba7b2d95c5dcd9ac33cb847913",
+      "license": "CC0-1.0 OR Apache-2.0",
+      "copyright": [
+        "Copyright 2012, Samuel Neves <sneves@dei.uc.pt>"
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/blake2/COPYING"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/double-conversion/qt_attribution.json",
+      "id": "doubleconversion",
+      "name": "Efficient Binary-Decimal and Decimal-Binary Conversion Routines for IEEE Doubles",
+      "version": "3.4.0",
+      "license": "BSD-3-Clause",
+      "copyright": [
+        "Copyright 2006-2012, the V8 project authors"
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/double-conversion/LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/easing/qt_attribution.json",
+      "id": "easing",
+      "name": "Easing Equations by Robert Penner",
+      "version": "",
+      "license": "BSD-3-Clause",
+      "copyright": [
+        "Copyright (c) 2001 Robert Penner"
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/easing/LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/md4/qt_attribution.json",
+      "id": "md4",
+      "name": "MD4",
+      "version": "",
+      "license": "CC0-1.0",
+      "copyright": [
+        "Written by Alexander Peslyak - better known as Solar Designer <solar@openwall.com> - in 2001, and placed in the public domain. There's absolutely no warranty."
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/LICENSES/CC0-1.0.txt"
+      ],
+      "note": "no LicenseFile in JSON; LicenseId CC0-1.0"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/md5/qt_attribution.json",
+      "id": "md5",
+      "name": "MD5",
+      "version": "",
+      "license": "CC0-1.0",
+      "copyright": [
+        "Written by Colin Plumb in 1993, no copyright is claimed. Ian Jackson <ian@chiark.greenend.org.uk>."
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/LICENSES/CC0-1.0.txt"
+      ],
+      "note": "no LicenseFile in JSON; LicenseId CC0-1.0"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/pcre2/qt_attribution.json",
+      "id": "pcre2",
+      "name": "PCRE2",
+      "version": "10.48",
+      "license": "LicenseRef-BSD-3-Clause-with-PCRE2-Binary-Like-Packages-Exception",
+      "copyright": [
+        "Copyright (c) 1997-2007 University of Cambridge",
+        "Copyright (c) 2007-2024 Philip Hazel",
+        "Copyright (c) 2010-2024 Zoltan Herczeg"
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/pcre2/LICENCE.md"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/pcre2/qt_attribution.json",
+      "id": "pcre2-sljit",
+      "name": "PCRE2 - Stack-less Just-In-Time Compiler",
+      "version": "10.48",
+      "license": "BSD-2-Clause",
+      "copyright": [
+        "Copyright Zoltan Herczeg"
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/pcre2/LICENSE-SLJIT"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/rfc6234/qt_attribution.json",
+      "id": "rfc6234",
+      "name": "Secure Hash Algorithms SHA-384 and SHA-512",
+      "version": "",
+      "license": "BSD-3-Clause",
+      "copyright": [
+        "Copyright (c) 2011 IETF Trust and the persons identified as authors of the code."
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/rfc6234/LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/sha1/qt_attribution.json",
+      "id": "sha1",
+      "name": "Secure Hash Algorithm SHA-1",
+      "version": "",
+      "license": "LicenseRef-SHA1-Public-Domain",
+      "copyright": [
+        "Copyright (C) Dominik Reichl <dominik.reichl@t-online.de>",
+        "Copyright (C) 2016 The Qt Company Ltd"
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/LICENSES/LicenseRef-SHA1-Public-Domain.txt"
+      ],
+      "note": "no LicenseFile in JSON"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/sha3/qt_attribution.json",
+      "id": "sha3_endian",
+      "name": "Secure Hash Algorithm SHA-3 - brg_endian",
+      "version": "1.0.0",
+      "license": "BSD-2-Clause",
+      "copyright": [
+        "Copyright (c) 1998-2013, Brian Gladman, Worcester, UK. All rights reserved."
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/sha3/BRG_ENDIAN_LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/sha3/qt_attribution.json",
+      "id": "sha3_keccak",
+      "name": "Secure Hash Algorithm SHA-3 - Keccak",
+      "version": "3.2",
+      "license": "CC0-1.0",
+      "copyright": [
+        "Guido Bertoni, Joan Daemen, Michaël Peeters and Gilles Van Assche.\nTo the extent possible under law, the implementers have waived all copyright\nand related or neighboring rights to the source code in this file."
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/sha3/CC0_LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/siphash/qt_attribution.json",
+      "id": "siphash",
+      "name": "SipHash Algorithm",
+      "version": "",
+      "license": "CC0-1.0",
+      "copyright": [
+        "Copyright (C) 2012-2014 Jean-Philippe Aumasson",
+        "Copyright (C) 2012-2014 Daniel J. Bernstein <djb@cr.yp.to>",
+        "Copyright (C) 2016 Intel Corporation"
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/LICENSES/CC0-1.0.txt"
+      ],
+      "note": "no LicenseFile in JSON"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/tinycbor/qt_attribution.json",
+      "id": "tinycbor",
+      "name": "TinyCBOR",
+      "version": "7.0",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (C) 2015-2025 Intel Corporation"
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/tinycbor/LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/zlib/qt_attribution.json",
+      "id": "zlib",
+      "name": "Data Compression Library (zlib)",
+      "version": "1.3.2",
+      "license": "Zlib",
+      "copyright": [
+        "(C) 1995-2026 Jean-loup Gailly and Mark Adler"
+      ],
+      "shipped_in": "Qt6Core.dll (exports z_* used by Qt6Gui, image plugins)",
+      "files": [
+        "qt/qtbase/src/3rdparty/zlib/LICENSE"
+      ],
+      "note": "LICENSE has no copyright line; use JSON Copyright"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/corelib/global/qt_attribution.json",
+      "id": "tlexpected",
+      "name": "tl::expected",
+      "version": "41d3e1f48d682992a2230b2a715bca38b848b269",
+      "license": "CC0-1.0",
+      "copyright": [
+        "To the extent possible under law, Sy Brand has waived all copyright and related or neighboring rights to the expected library. This work is published from: United Kingdom."
+      ],
+      "shipped_in": "Qt6Core.dll and other modules (header-only private type)",
+      "files": [
+        "qt/qtbase/LICENSES/CC0-1.0.txt"
+      ],
+      "note": "no LicenseFile in JSON"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/corelib/mimetypes/3rdparty/qt_attribution.json",
+      "id": "tika-mimetypes",
+      "name": "Apache Tika MimeType Definitions",
+      "version": "c29724782854bb5a319f4a1940d0828a58ace3f9",
+      "license": "Apache-2.0",
+      "copyright": [
+        "Copyright 2026 The Apache Software Foundation"
+      ],
+      "shipped_in": "Qt6Core.dll (embedded MIME DB resource)",
+      "files": [
+        "qt/qtbase/LICENSES/Apache-2.0.txt"
+      ],
+      "note": "no LicenseFile in JSON"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/corelib/text/qt_attribution.json",
+      "id": "unicode-character-database",
+      "name": "Unicode Character Database (UCD)",
+      "version": "36",
+      "license": "Unicode-3.0",
+      "copyright": [
+        "Copyright (C) 1991-2025 Unicode, Inc."
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/LICENSES/Unicode-3.0.txt"
+      ],
+      "note": "no LicenseFile; JSON License name says 2016 agreement but LicenseId Unicode-3.0"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/corelib/text/qt_attribution.json",
+      "id": "unicode-cldr",
+      "name": "Unicode Common Locale Data Repository (CLDR)",
+      "version": "v48.2",
+      "license": "Unicode-3.0",
+      "copyright": [
+        "Copyright (C) 2004-2025 Unicode, Inc."
+      ],
+      "shipped_in": "Qt6Core.dll",
+      "files": [
+        "qt/qtbase/LICENSES/Unicode-3.0.txt"
+      ],
+      "note": "no LicenseFile in JSON"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/D3D12MemoryAllocator/qt_attribution.json",
+      "id": "d3d12memoryallocator",
+      "name": "D3D12 Memory Allocator",
+      "version": "v3.1.0",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2019-2026 Advanced Micro Devices, Inc. All rights reserved."
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/D3D12MemoryAllocator/LICENSE.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/VulkanMemoryAllocator/qt_attribution.json",
+      "id": "vulkanmemoryallocator",
+      "name": "Vulkan Memory Allocator",
+      "version": "3.3.0",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2017-2025 Advanced Micro Devices, Inc. All rights reserved."
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/VulkanMemoryAllocator/LICENSE.txt"
+      ],
+      "note": "vulkan feature confirmed on (QRhiVulkan strings in Qt6Gui.dll)"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/emoji-segmenter/qt_attribution.json",
+      "id": "emoji-segmenter",
+      "name": "Emoji Segmenter",
+      "version": "0.4.0",
+      "license": "Apache-2.0",
+      "copyright": [
+        "Copyright 2019 Google LLC"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/LICENSES/Apache-2.0.txt"
+      ],
+      "note": "no LicenseFile in JSON"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/freetype/qt_attribution.json",
+      "id": "freetype",
+      "name": "Freetype 2",
+      "version": "2.14.3",
+      "license": "FTL OR GPL-2.0-only",
+      "copyright": [
+        "Copyright (c) 2007-2014 Adobe Systems Incorporated",
+        "Copyright (c) 2004-2026 Albert Chin-A-Young",
+        "Copyright (c) 2018-2026 Armin Hasitzka, David Turner, Robert Wilhelm, and Werner Lemberg",
+        "Copyright (c) 2000 Computing Research Labs, New Mexico State University",
+        "Copyright (c) 1996-2026 David Turner, Robert Wilhelm, Dominik Röttsches, and Werner Lemberg",
+        "Copyright (c) 2004-2026 David Turner, Robert Wilhelm, Werner Lemberg and George Williams",
+        "Copyright (c) 2022-2026 David Turner, Robert Wilhelm, Werner Lemberg, and Moazin Khatti",
+        "Copyright (c) 2008-2026 David Turner, Robert Wilhelm, Werner Lemberg, and suzuki toshiya",
+        "Copyright (c) 2003-2026 David Turner, Robert Wilhelm, and Werner Lemberg",
+        "Copyright (c) 2005-2026 David Turner",
+        "Copyright (c) 2007-2026 Derek Clegg and Michael Toftdal",
+        "Copyright (c) 2007 Dmitry Timoshkov for Codeweavers",
+        "Copyright (c) 2001-2015 Francesco Zappa Nardelli",
+        "Copyright (c) 2005, 2007, 2008, 2013 George Williams",
+        "Copyright (c) 2013-2026 Google, Inc. Google Author(s) Behdad Esfahbod and Stuart Gill",
+        "Copyright (c) 2013-2022 Google, Inc.",
+        "Copyright (c) 2003 Huw D M Davies for Codeweavers",
+        "Copyright (c) 2010-2026 Joel Klinghed",
+        "Copyright (c) 1996-2026 Just van Rossum, David Turner, Robert Wilhelm, and Werner Lemberg",
+        "Copyright (c) 2003-2026 Masatake YAMATO and Redhat K.K.",
+        "Copyright (c) 2004-2026 Masatake YAMATO, Redhat K.K, David Turner, Robert Wilhelm, and Werner Lemberg",
+        "Copyright (c) 2019-2026 Nikhil Ramakrishnan, David Turner, Robert Wilhelm, and Werner Lemberg",
+        "Copyright (c) 2009-2026 Oran Agra and Mickey Gabel",
+        "Copyright (c) 2007-2026 Rahul Bhalerao <rahul.bhalerao@redhat.com>",
+        "Copyright (c) 2002-2026 Roberto Alameda",
+        "Copyright (c) 2015-2026 Werner Lemberg",
+        "Copyright (c) 2004-2026 suzuki toshiya, Masatake YAMATO, Red Hat K.K., David Turner, Robert Wilhelm, and Werner Lemberg",
+        "Copyright (c) 2019 nyorain",
+        "Copyright (c) 2022-2026 David Turner, Robert Wilhelm, Werner Lemberg, George Williams, and Dominik Röttsches",
+        "Copyright (C) 2009, 2023  Red Hat, Inc."
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/freetype/LICENSE.txt",
+        "qt/qtbase/src/3rdparty/freetype/docs/FTL.TXT",
+        "qt/qtbase/src/3rdparty/freetype/docs/GPLv2.TXT"
+      ],
+      "note": "LICENSE.txt refers to docs/FTL.TXT and docs/GPLv2.TXT (choice of one)"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/freetype/qt_attribution.json",
+      "id": "freetype-zlib",
+      "name": "Freetype 2 - zlib",
+      "version": "",
+      "license": "Zlib",
+      "copyright": [
+        "Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/freetype/ZLIB-LICENSE.txt"
+      ],
+      "note": "FT_CONFIG_OPTION_SYSTEM_ZLIB not defined -> FreeType src/gzip zlib copy compiled"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/freetype/qt_attribution.json",
+      "id": "freetype-bdf",
+      "name": "Freetype 2 - Bitmap Distribution Format (BDF) support",
+      "version": "",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2000 Computing Research Labs, New Mexico State University",
+        "Copyright (c) 2001-2014 Francesco Zappa Nardelli"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/freetype/BDF-LICENSE.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/freetype/qt_attribution.json",
+      "id": "freetype-pcf",
+      "name": "Freetype 2 - Portable Compiled Format (PCF) support",
+      "version": "",
+      "license": "MIT AND MIT-open-group",
+      "copyright": [
+        "Copyright (c) 2001, 2012 David Turner, Robert Wilhelm, and Werner Lemberg",
+        "Copyright (c) 2000-2014 Francesco Zappa Nardelli",
+        "Copyright (c) 1990, 1994, 1998 The Open Group"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/freetype/PCF-LICENSE.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/harfbuzz-ng/qt_attribution.json",
+      "id": "harfbuzz-ng",
+      "name": "HarfBuzz-NG",
+      "version": "14.5.0",
+      "license": "MIT",
+      "copyright": [
+        "Copyright © 2010-2022  Google, Inc.",
+        "Copyright © 2015-2020  Ebrahim Byagowi",
+        "Copyright © 2019,2020  Facebook, Inc.",
+        "Copyright © 2012,2015  Mozilla Foundation",
+        "Copyright © 2011  Codethink Limited",
+        "Copyright © 2008,2010  Nokia Corporation and/or its subsidiary(-ies)",
+        "Copyright © 2009  Keith Stribley",
+        "Copyright © 2011  Martin Hosken and SIL International",
+        "Copyright © 2007  Chris Wilson",
+        "Copyright © 2005,2006,2020,2021,2022,2023  Behdad Esfahbod",
+        "Copyright © 2004,2007,2008,2009,2010,2013,2021,2022,2023  Red Hat, Inc.",
+        "Copyright © 1998-2005  David Turner and Werner Lemberg",
+        "Copyright © 2016  Igalia S.L.",
+        "Copyright © 2022  Matthias Clasen",
+        "Copyright © 2018,2021  Khaled Hosny",
+        "Copyright © 2018,2019,2020  Adobe, Inc",
+        "Copyright © 2013-2015  Alexei Podtelezhnikov"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/harfbuzz-ng/COPYING"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/icc/qt_attribution.json",
+      "id": "icc-srgb-color-profile",
+      "name": "sRGB color profile icc file",
+      "version": "",
+      "license": "LicenseRef-ICC-License",
+      "copyright": [
+        "Copyright International Color Consortium, 2015"
+      ],
+      "shipped_in": "Qt6Gui.dll (resource)",
+      "files": [
+        "qt/qtbase/src/3rdparty/icc/LICENSE.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/libjpeg/qt_attribution.json",
+      "id": "libjpeg",
+      "name": "LibJPEG-turbo",
+      "version": "3.2.0",
+      "license": "IJG AND BSD-3-Clause",
+      "copyright": [
+        "Copyright (C) 2009-2026 D. R. Commander",
+        "Copyright (C) 1991-1998 Thomas G. Lane",
+        "Copyright (C) 2009 Pierre Ossman for Cendio AB",
+        "Copyright (C) 1999-2006 MIYASAKA Masaru",
+        "Copyright (C) 1999 Ken Murchison",
+        "Copyright (C) 2015-2016, 2018, 2022 Matthieu Darbois",
+        "Copyright (C) 2018 Matthias Räncker",
+        "Copyright (C) 2019-2020 Arm Limited",
+        "Copyright (C) 2022 Felix Hanau",
+        "Copyright (C) 1997-1998 Thomas G. Lane, Todd Newman",
+        "Copyright (C) 2021 Alex Richardson",
+        "Copyright (C) 2015, 2020 Google, Inc.",
+        "Copyright (C) 2013 Linaro Limited",
+        "Copyright (C) 2014 Olle Liljenzin",
+        "Copyright (C) 1991-2020 Thomas G. Lane, Guido Vollbeding"
+      ],
+      "shipped_in": "plugins/imageformats/qjpeg.dll and plugins/imageformats/qtiff.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/libjpeg/LICENSE",
+        "qt/qtbase/src/3rdparty/libjpeg/ijg-license.txt",
+        "qt/qtbase/src/3rdparty/libjpeg/COPYRIGHT.txt"
+      ],
+      "note": "LicenseFiles + CopyrightFile. Both plugins contain 'libjpeg-turbo version 3.2.0' and import no JPEG DLL (libtiff's JPEG compression in qtiff; L05-01). Copyright lines are those of the pinned COPYRIGHT.txt (its CopyrightFile; L05-04)."
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/libpng/qt_attribution.json",
+      "id": "libpng",
+      "name": "LibPNG",
+      "version": "1.6.58",
+      "license": "Libpng AND libpng-2.0",
+      "copyright": [
+        "Copyright (c) 1995-2026 The PNG Reference Library Authors",
+        "Copyright (c) 2000-2026 Cosmin Truta",
+        "Copyright (c) 1998-2018 Glenn Randers-Pehrson",
+        "Copyright (c) 1996-1997 Andreas Dilger",
+        "Copyright (c) 1995-1996 Guy Eric Schalnat, Group 42, Inc.",
+        "Copyright (c) 2000-2017 Simon-Pierre Cadieux",
+        "Copyright (c) 2000-2017 Eric S. Raymond",
+        "Copyright (c) 2000-2017 Mans Rullgard",
+        "Copyright (c) 2000-2017 Gilles Vollant",
+        "Copyright (c) 2000-2017 James Yu",
+        "Copyright (c) 2000-2017 Mandar Sahastrabuddhe",
+        "Copyright (c) 1998-2000 Tom Lane",
+        "Copyright (c) 1998-2000 Willem van Schaik",
+        "Copyright (c) 1996-1997 John Bowler",
+        "Copyright (c) 1996-1997 Kevin Bracey",
+        "Copyright (c) 1996-1997 Sam Bushell",
+        "Copyright (c) 1996-1997 Magnus Holmgren",
+        "Copyright (c) 1996-1997 Greg Roelofs",
+        "Copyright (c) 1996-1997 Tom Tanner",
+        "Copyright (c) 1995-1996 Dave Martindale",
+        "Copyright (c) 1995-1996 Paul Schmidt",
+        "Copyright (c) 1995-1996 Tim Wegner"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/libpng/LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/md4c/qt_attribution.json",
+      "id": "md4c",
+      "name": "MD4C",
+      "version": "0.5.3",
+      "license": "MIT",
+      "copyright": [
+        "Copyright © 2016-2024 Martin Mitáš"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/md4c/LICENSE.md"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/gui/opengl/qt_attribution.json",
+      "id": "opengl-headers",
+      "name": "OpenGL Headers",
+      "version": "Revision 27684",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2013-2014 The Khronos Group Inc."
+      ],
+      "shipped_in": "Qt6Gui.dll (headers)",
+      "files": [
+        "qt/qtbase/src/gui/opengl/LICENSE.KHRONOS.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/gui/painting/qt_attribution.json",
+      "id": "grayraster",
+      "name": "Anti-aliasing rasterizer from FreeType 2",
+      "version": "",
+      "license": "FTL OR GPL-2.0-only",
+      "copyright": [
+        "Copyright 2000-2016 by David Turner, Robert Wilhelm, and Werner Lemberg."
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/freetype/LICENSE.txt"
+      ],
+      "note": "JSON LicenseFile ../../3rdparty/freetype/LICENSE.txt (see also docs/FTL.TXT)"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/gui/painting/qt_attribution.json",
+      "id": "smooth-scaling-algorithm",
+      "name": "Smooth Scaling Algorithm",
+      "version": "",
+      "license": "BSD-2-Clause AND Imlib2",
+      "copyright": [
+        "Copyright (C) 2004, 2005 Daniel M. Duley.",
+        "(C) Carsten Haitzler and various contributors.",
+        "(C) Willem Monsuwe <willem@stack.nl>"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/gui/painting/LICENSE.QIMAGETRANSFORM.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/gui/painting/qt_attribution.json",
+      "id": "xserverhelper",
+      "name": "X Server helper",
+      "version": "",
+      "license": "X11 AND HPND",
+      "copyright": [
+        "Copyright (c) 1987, 1988 X Consortium",
+        "Copyright 1987, 1988 by Digital Equipment Corporation, Maynard, Massachusetts."
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/gui/painting/LICENSE.XCONSORTIUM.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/gui/rhi/qt_attribution.json",
+      "id": "rhi-miniengine-d3d12-mipmap",
+      "name": "Mipmap generator for D3D12",
+      "version": "0aa79bad78992da0b6a8279ddb9002c1753cb849",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2015 Microsoft"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/gui/rhi/LICENSE.MiniEngine.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/gui/text/qt_attribution.json",
+      "id": "aglfn",
+      "name": "Adobe Glyph List For New Fonts",
+      "version": "1.7",
+      "license": "BSD-3-Clause",
+      "copyright": [
+        "Copyright 2002, 2003, 2005, 2006, 2008, 2010, 2015 Adobe Systems"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/src/gui/text/LICENSE.AGLFN.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/gui/util/qt_attribution.json",
+      "id": "xsvg",
+      "name": "XSVG",
+      "version": "",
+      "license": "HPND-sell-variant",
+      "copyright": [
+        "Copyright 2002 USC/Information Sciences Institute"
+      ],
+      "shipped_in": "Qt6Gui.dll (util/qguisvg.cpp)",
+      "files": [
+        "qt/qtbase/src/gui/util/LICENSE.XSVG.txt"
+      ],
+      "note": "QDocModule qtsvg; absent from doc.qt.io 6.12 licenses page"
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/gui/vulkan/qt_attribution.json",
+      "id": "vulkan-xml-spec",
+      "name": "Vulkan API Registry",
+      "version": "1.4.308",
+      "license": "Apache-2.0 OR MIT",
+      "copyright": [
+        "Copyright (c) 2015-2025 The Khronos Group Inc."
+      ],
+      "shipped_in": "Qt6Gui.dll (generated QVulkanFunctions)",
+      "files": [
+        "qt/qtbase/src/gui/vulkan/LICENSE.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "util/gradientgen/qt_attribution.json",
+      "id": "webgradients",
+      "name": "WebGradients",
+      "version": "",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2017 itmeo"
+      ],
+      "shipped_in": "Qt6Gui.dll",
+      "files": [
+        "qt/qtbase/util/gradientgen/LICENSE.WEBGRADIENTS.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/libpsl/qt_attribution.json",
+      "id": "psl-data",
+      "name": "The Public Suffix List",
+      "version": "2026-05-14_08-35-31_UTC",
+      "license": "MPL-2.0",
+      "copyright": [
+        "The list was originally provided by Jo Hermans <jo.hermans@gmail.com>.\nIt is now maintained on github (https://github.com/publicsuffix/list)."
+      ],
+      "shipped_in": "Qt6Network.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/libpsl/PSL-LICENSE.txt"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/libpsl/qt_attribution.json",
+      "id": "libpsl",
+      "name": "libpsl - C library to handle the Public Suffix List",
+      "version": "664f3dc85259ec65e30248a61fa1c45b7b0e4c3f",
+      "license": "BSD-3-Clause",
+      "copyright": [
+        "Copyright 2014-2016 The Chromium Authors. All rights reserved."
+      ],
+      "shipped_in": "Qt6Network.dll",
+      "files": [
+        "qt/qtbase/src/3rdparty/libpsl/src/LICENSE.chromium"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtbase",
+      "attribution": "src/3rdparty/wintab/qt_attribution.json",
+      "id": "wintab",
+      "name": "Wintab API",
+      "version": "",
+      "license": "LicenseRef-Lcs-Telegraphics",
+      "copyright": [
+        "Copyright 1991-1998 by LCS/Telegraphics."
+      ],
+      "shipped_in": "plugins/platforms/qwindows.dll",
+      "files": [
+        "qt/qtbase/LICENSES/LicenseRef-Lcs-Telegraphics.txt"
+      ],
+      "note": "no LicenseFile in JSON"
+    },
+    {
+      "repo": "qtimageformats",
+      "attribution": "src/3rdparty/libtiff/qt_attribution.json",
+      "id": "libtiff",
+      "name": "TIFF Software Distribution (libtiff)",
+      "version": "4.7.2",
+      "license": "libtiff",
+      "copyright": [
+        "Copyright (c) 1988-1997 Sam Leffler\nCopyright (c) 1991-1997 Silicon Graphics, Inc."
+      ],
+      "shipped_in": "plugins/imageformats/qtiff.dll",
+      "files": [
+        "qt/qtimageformats/src/3rdparty/libtiff/COPYRIGHT"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtimageformats",
+      "attribution": "src/3rdparty/libwebp/qt_attribution.json",
+      "id": "libwebp",
+      "name": "WebP (libwebp)",
+      "version": "1.6.0",
+      "license": "BSD-3-Clause",
+      "copyright": [
+        "Copyright (c) 2010, Google Inc. All rights reserved."
+      ],
+      "shipped_in": "plugins/imageformats/qwebp.dll",
+      "files": [
+        "qt/qtimageformats/src/3rdparty/libwebp/COPYING",
+        "qt/qtimageformats/src/3rdparty/libwebp/PATENTS"
+      ],
+      "note": "PATENTS file sits next to COPYING (not referenced by JSON)"
+    },
+    {
+      "repo": "qtmultimedia",
+      "attribution": "src/3rdparty/dr_libs/qt_attribution.json",
+      "id": "dr_libs",
+      "name": "DR Libs",
+      "version": "0.14.6-snapshot-ee937527",
+      "license": "Unlicense OR MIT-0",
+      "copyright": [
+        "Copyright 2023 David Reid"
+      ],
+      "shipped_in": "Qt6Multimedia.dll",
+      "files": [
+        "qt/qtmultimedia/src/3rdparty/dr_libs/LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "repo": "qtmultimedia",
+      "attribution": "src/3rdparty/tlsf/qt_attribution.json",
+      "id": "tlsf",
+      "name": "Two-Level Segregated Fit",
+      "version": "v3.1",
+      "license": "BSD-3-Clause",
+      "copyright": [
+        "Copyright (c) 2006-2016, Matthew Conte"
+      ],
+      "shipped_in": "Qt6Multimedia.dll",
+      "files": [
+        "qt/qtmultimedia/src/3rdparty/tlsf/tlsf.h",
+        "qt/qtmultimedia/LICENSES/BSD-3-Clause.txt"
+      ],
+      "note": "no LicenseFile; full BSD-3 text with copyright is in tlsf.h header (lines 4-38)"
+    },
+    {
+      "repo": "qtsvg",
+      "attribution": "src/svg/REUSE.toml",
+      "id": "qtsvg-xsvg",
+      "name": "XSVG-derived code in the SVG handler",
+      "version": "",
+      "license": "HPND-sell-variant",
+      "copyright": [
+        "Copyright 2002 USC Information Sciences Institute"
+      ],
+      "shipped_in": "Qt6Svg.dll",
+      "files": [
+        "qt/qtsvg/LICENSES/HPND-sell-variant.txt"
+      ],
+      "note": "Named in qtsvg REUSE.toml, which says the qt_attribution.json data is missing."
+    }
+  ]
+}

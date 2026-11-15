@@ -100,14 +100,25 @@ def test_snapshot_carries_pinned_notice_texts_but_no_other_packaging_data(
     notices.mkdir()
     (notices / "LGPL-3.0.txt").write_bytes(b"verbatim license text\r\n")
     (notices / "SOURCES.json").write_text('{"schema_version":1,"files":[]}')
+    # L-P05: third-party texts live in nested folders and keep their exact bytes.
+    nested = notices / "qt" / "qtbase" / "src" / "3rdparty" / "zlib"
+    nested.mkdir(parents=True)
+    (nested / "LICENSE").write_bytes(b"zlib terms without extension\r\n")
     (root / "packaging" / "extra.dat").write_bytes(b"not an input")
     destination = tmp_path / "candidate" / "inputs"
     builder().snapshot_inputs(root, destination)
     names = {
         record["path"] for record in manager.read_json(destination / "build-inputs.json")["files"]
     }
-    assert {"packaging/notices/LGPL-3.0.txt", "packaging/notices/SOURCES.json"} <= names
+    assert {
+        "packaging/notices/LGPL-3.0.txt",
+        "packaging/notices/SOURCES.json",
+        "packaging/notices/qt/qtbase/src/3rdparty/zlib/LICENSE",
+    } <= names
     assert "packaging/extra.dat" not in names
+    assert (destination / "packaging/notices/qt/qtbase/src/3rdparty/zlib/LICENSE").read_bytes() == (
+        b"zlib terms without extension\r\n"
+    )
     assert (destination / "packaging/notices/LGPL-3.0.txt").read_bytes() == (
         b"verbatim license text\r\n"
     )

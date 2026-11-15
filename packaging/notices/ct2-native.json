@@ -1,0 +1,248 @@
+{
+  "schema_version": 1,
+  "note": "Code inside the CTranslate2 4.9.0 Windows wheel's native files as shipped, from its v4.9.0 build script (CUDA 12.8.1, oneAPI 2025.3.0, WITH_DNNL=ON, WITH_CUDA=ON, CUDA_DYNAMIC_LOADING=ON) and DLL string evidence (L01 D8).",
+  "entries": [
+    {
+      "id": "ctranslate2",
+      "name": "CTranslate2",
+      "version": "4.9.0",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2018- SYSTRAN"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "CTranslate2-LICENSE.txt"
+      ],
+      "note": ""
+    },
+    {
+      "id": "onemkl",
+      "name": "Intel oneMKL (static: mkl_core, mkl_intel_ilp64, mkl_intel_thread)",
+      "version": "2025.3.0",
+      "license": "LicenseRef-Intel-Simplified-Software-License",
+      "copyright": [
+        "Copyright Intel Corporation"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/intel/onemkl/LICENSE.txt",
+        "ct2/intel/onemkl/third-party-programs.txt",
+        "ct2/intel/onemkl/third-party-programs-openmp.txt",
+        "ct2/intel/onemkl/third-party-programs-oneTBB.txt",
+        "ct2/intel/onemkl/third-party-programs-safestring.txt",
+        "ct2/intel/onemkl/third-party-programs-IntelMPI.txt",
+        "ct2/intel/onemkl/third-party-programs-benchmarks.txt",
+        "ct2/intel/onemkl/third-party-programs-level-zero.txt",
+        "ct2/intel/onemkl/third-party-programs-oneMath.txt"
+      ],
+      "note": ""
+    },
+    {
+      "id": "onednn",
+      "name": "oneDNN",
+      "version": "3.1.1",
+      "license": "Apache-2.0",
+      "copyright": [
+        "Copyright Intel Corporation and oneDNN contributors"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/onednn/LICENSE",
+        "ct2/onednn/THIRD-PARTY-PROGRAMS"
+      ],
+      "note": ""
+    },
+    {
+      "id": "onednn-xbyak",
+      "name": "Xbyak (in oneDNN 3.1.1)",
+      "version": "",
+      "license": "BSD-3-Clause",
+      "copyright": [
+        "Copyright (c) 2007 MITSUNARI Shigeo"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/onednn/src/cpu/x64/xbyak/COPYRIGHT"
+      ],
+      "note": ""
+    },
+    {
+      "id": "onednn-ittnotify",
+      "name": "ITT API (ittnotify, in oneDNN 3.1.1)",
+      "version": "",
+      "license": "BSD-3-Clause",
+      "copyright": [
+        "Copyright (c) 2011, Intel Corporation"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/onednn/src/common/ittnotify/LICENSE.BSD"
+      ],
+      "note": ""
+    },
+    {
+      "id": "cuda-runtime",
+      "name": "NVIDIA CUDA runtime (cudart_static)",
+      "version": "12.8.90",
+      "license": "LicenseRef-NVIDIA-CUDA-Toolkit-EULA",
+      "copyright": [
+        "Copyright NVIDIA Corporation"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/nvidia/CUDA-EULA.txt"
+      ],
+      "note": "Listed as distributable in Attachment A of the CUDA Toolkit EULA."
+    },
+    {
+      "id": "curand-device",
+      "name": "NVIDIA cuRAND device code (Philox4x32-10, XORWOW precalc)",
+      "version": "10.3.9.90",
+      "license": "LicenseRef-NVIDIA-CUDA-Toolkit-EULA AND BSD-3-Clause",
+      "copyright": [
+        "Copyright 2010-2014 NVIDIA Corporation. All rights reserved.",
+        "Copyright 2010-2011, D. E. Shaw Research. All rights reserved."
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/nvidia/NVIDIA-cuRAND-notices.txt",
+        "ct2/nvidia/CUDA-EULA.txt"
+      ],
+      "note": "Compiled from cuRAND device headers, which Attachment A does not list."
+    },
+    {
+      "id": "thrust",
+      "name": "Thrust (CCCL)",
+      "version": "2.7.0",
+      "license": "Apache-2.0 AND BSL-1.0 AND BSD-2-Clause",
+      "copyright": [
+        "Copyright NVIDIA Corporation",
+        "Portions from the Boost Iterator, Tuple, System and Random libraries; thrust::complex portions derived from FreeBSD"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/cccl/LICENSE",
+        "ct2/cccl/thrust/LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "id": "cub",
+      "name": "CUB (CCCL)",
+      "version": "2.7.0",
+      "license": "BSD-3-Clause",
+      "copyright": [
+        "Copyright (c) 2010-2011, Duane Merrill. All rights reserved.",
+        "Copyright (c) 2011-2018, NVIDIA CORPORATION. All rights reserved."
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/cccl/cub/LICENSE.TXT"
+      ],
+      "note": ""
+    },
+    {
+      "id": "libcudacxx",
+      "name": "libcu++ (CCCL)",
+      "version": "2.7.0",
+      "license": "Apache-2.0 WITH LLVM-exception AND (NCSA OR MIT) AND LicenseRef-NVIDIA-Software-License-libcudacxx",
+      "copyright": [
+        "Copyright NVIDIA Corporation",
+        "Copyright (c) 2009-2019 by the contributors listed in CREDITS.TXT (LLVM libc++)"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/cccl/LICENSE",
+        "ct2/cccl/libcudacxx/LICENSE.TXT"
+      ],
+      "note": ""
+    },
+    {
+      "id": "spdlog",
+      "name": "spdlog",
+      "version": "1.10.0",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2016 Gabi Melman."
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/spdlog/LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "id": "fmt",
+      "name": "fmt (bundled in spdlog)",
+      "version": "8.1.1",
+      "license": "MIT",
+      "copyright": [
+        "Copyright (c) 2012 - present, Victor Zverovich"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/spdlog/fmt.license.rst"
+      ],
+      "note": ""
+    },
+    {
+      "id": "cpu_features",
+      "name": "cpu_features",
+      "version": "0.7.0",
+      "license": "Apache-2.0",
+      "copyright": [
+        "Copyright Google LLC and cpu_features contributors"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/cpu_features/LICENSE"
+      ],
+      "note": ""
+    },
+    {
+      "id": "avx_mathfun",
+      "name": "avx_mathfun.h (CTranslate2 third_party)",
+      "version": "",
+      "license": "MIT AND Zlib",
+      "copyright": [
+        "Copyright (c) 2016 Marcin Junczys-Dowmunt, the University of Edinburgh, Adam Mickiewicz University",
+        "Copyright (C) 2012 Giovanni Garberoglio"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/ctranslate2/avx_mathfun.h"
+      ],
+      "note": ""
+    },
+    {
+      "id": "avx512_mathfun",
+      "name": "avx512_mathfun.h (SIMD_Utils)",
+      "version": "0.2.5",
+      "license": "BSD-2-Clause",
+      "copyright": [
+        "Copyright (c) 2019, JishinMaster"
+      ],
+      "shipped_in": "ctranslate2/ctranslate2.dll",
+      "files": [
+        "ct2/simd_utils/LICENSE"
+      ],
+      "note": "License text from upstream master; the header names BSD-2 and version 0.2.5."
+    },
+    {
+      "id": "openmp",
+      "name": "Intel OpenMP runtime",
+      "version": "2025.3.0",
+      "license": "LicenseRef-Intel-EULA-Developer-Tools",
+      "copyright": [
+        "Copyright (C) 1997-2025, Intel Corporation. All rights reserved."
+      ],
+      "shipped_in": "ctranslate2/libiomp5md.dll",
+      "files": [
+        "ct2/intel/openmp/LICENSE.txt",
+        "ct2/intel/openmp/third-party-programs.txt"
+      ],
+      "note": "The redistributable file list (redist.txt) the agreement refers to was not found."
+    }
+  ]
+}
