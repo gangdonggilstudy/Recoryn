@@ -79,8 +79,9 @@ CPython(PSF), OpenSSL 3(Apache-2.0), SQLite(public domain), libffi, numpy/OpenBL
 | L-P05 | D8 고지 완전성 | C00 / recoryn-security / upstream 원문·hash 고정, frozen 후보의 고지 전수 대조, 정확한 tree 전체 회귀 |
 | L-P06 | D9 CTranslate2 CPU 전용 자체 빌드 | C00 / recoryn-arch(빌드·패키징), recoryn-ml(추론 동등성) / 재현 빌드 스크립트, 공식판 대비 무작위 가중치 모델 출력·속도 비교, NVIDIA·Intel 부재 gate, frozen 후보, 정확한 tree 전체 회귀 |
 | L-P07 | D10 GPU 런타임 앱 내 받기 | C00 / recoryn-security(다운로드·동의·검증), recoryn-desktop(UI) / 동의 전 무전송, pin·catalog 검증, 검증한 바이트만 실행, 정책별 CPU 복귀, 실장비 일부 확인 |
+| L-P08 | L-P07의 NOT_RUN "frozen 앱 안의 활성화" 확인 도구. 제품 동작 불변 | C00 / 현재 작업자 중 1명(배정표 L08 행) / probe와 독립 판정 분리, 손으로 쓴 결함 표, mutation, 정확한 tree frozen 빌드의 실장비 판정 PASS |
 
-각 단위는 선행 단위의 원격 CI PASS 뒤에 공개한다. L-P04와 L-P05는 사용자의 "남은 작업 진행" 지시에 따라 L-P03 공개 뒤 추가했다. L-P06과 L-P07은 L-P05 뒤 사용자 결정(직접 빌드, GPU는 앱 안에서 받기)으로 추가했다. 로컬 작성과 검증은 병행할 수 있다. rollback은 각 commit의 revert이며 schema/runtime migration은 없다. 실음성·모델 weights·GPU·clean VM·서명·법률 판정은 이 계획으로 실행하거나 통과 처리하지 않는다.
+각 단위는 선행 단위의 원격 CI PASS 뒤에 공개한다. L-P04와 L-P05는 사용자의 "남은 작업 진행" 지시에 따라 L-P03 공개 뒤 추가했다. L-P06과 L-P07은 L-P05 뒤 사용자 결정(직접 빌드, GPU는 앱 안에서 받기)으로 추가했다. L-P08은 2026-11-22 사용자의 "남은 작업 배분·진행" 지시에 따라 L-P07의 미검증 항목을 닫으려고 추가했다. 로컬 작성과 검증은 병행할 수 있다. rollback은 각 commit의 revert이며 schema/runtime migration은 없다. 실음성·모델 weights·GPU·clean VM·서명·법률 판정은 이 계획으로 실행하거나 통과 처리하지 않는다.
 
 ## 출처
 

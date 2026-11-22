@@ -14,6 +14,17 @@ def main(*, gui: bool) -> int:
 
         print(json.dumps(run(), ensure_ascii=True, sort_keys=True))
         return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "--release-gpu-smoke":
+        # L-P08: activation of an already installed GPU runtime only; nothing is downloaded.
+        from release_smoke import gpu_probe
+
+        parser = argparse.ArgumentParser(description="Recoryn GPU 런타임 활성화 확인")
+        parser.add_argument("--runtime-root", type=Path, required=True)
+        parser.add_argument("--model", type=Path, required=True)
+        options = parser.parse_args(sys.argv[2:])
+        report = gpu_probe(options.runtime_root, options.model)
+        print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+        return 0 if "activate" in report and report["activate"] is None else 2
     if len(sys.argv) > 1 and sys.argv[1] in (
         "--release-install",
         "--release-rollback",

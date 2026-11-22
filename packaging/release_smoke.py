@@ -103,6 +103,151 @@ def _child(output: Any) -> None:
     )
 
 
+def module_paths(handles: list[Any], file_name: Any) -> list[str]:
+    """Names of every enumerated module; one unresolved name fails the whole list (L08-02).
+
+    A partial list could hide exactly the module whose absence is being checked.
+    """
+    paths = []
+    for handle in handles:
+        path = file_name(handle)
+        if not path:
+            raise OSError("MODULE_NAME_UNRESOLVED")
+        paths.append(path)
+    return paths
+
+
+def loaded_modules() -> list[str]:
+    """Full paths of every module (EXE, DLL, PYD) mapped in this process."""
+    import ctypes
+    from ctypes import wintypes
+
+    psapi = ctypes.WinDLL("psapi")
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    psapi.EnumProcessModules.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HMODULE),
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    psapi.EnumProcessModules.restype = wintypes.BOOL
+    kernel32.GetModuleFileNameW.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+    process = kernel32.GetCurrentProcess()
+    count = 1024
+    while True:
+        handles = (wintypes.HMODULE * count)()
+        needed = wintypes.DWORD()
+        if not psapi.EnumProcessModules(
+            process, handles, ctypes.sizeof(handles), ctypes.byref(needed)
+        ):
+            raise OSError("ENUM_PROCESS_MODULES_FAILED")
+        if needed.value <= ctypes.sizeof(handles):
+            break
+        count = needed.value // ctypes.sizeof(wintypes.HMODULE) + 64
+
+    def file_name(handle: Any) -> str | None:
+        buffer = ctypes.create_unicode_buffer(32_768)
+        length = kernel32.GetModuleFileNameW(wintypes.HMODULE(handle), buffer, len(buffer))
+        # 0 is a failure; a full buffer means the name was truncated.
+        return buffer.value if 0 < length < len(buffer) else None
+
+    return module_paths(list(handles[: needed.value // ctypes.sizeof(wintypes.HMODULE)]), file_name)
+
+
+# Seeded so a frozen run and a source run feed the same features (L-P08).
+GPU_FEATURES_SEED = 7
+GPU_PROMPTS = [[1, 2, 5, 9], [1, 3, 5, 9]]
+
+
+def _gpu_child(output: Any, runtime_root: str, model: str) -> None:
+    """Activate the user's GPU runtime exactly as the inference worker does, then report.
+
+    Facts only: the builder-side verdict (scripts/gpu_frozen_smoke.py) decides pass/fail.
+    """
+    _block_network()
+    from recoryn.app.inference import _activate_gpu
+
+    report: dict[str, Any] = {
+        "pid": os.getpid(),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        # Always a string, so a source run is judged NOT_FROZEN with every other check.
+        "bundle": str(Path(getattr(sys, "_MEIPASS", "")).resolve())
+        if getattr(sys, "frozen", False)
+        else "",
+        "activate": _activate_gpu(runtime_root),
+    }
+    if report["activate"] is None:
+        import numpy as np
+
+        ctranslate2 = sys.modules["ctranslate2"]
+        transcribe = importlib.import_module("faster_whisper.transcribe")
+        report.update(
+            {
+                "module": ctranslate2.__file__,
+                "ext": sys.modules["ctranslate2._ext"].__file__,
+                "version": ctranslate2.__version__,
+                "cuda_devices": int(ctranslate2.get_cuda_device_count()),
+                "faster_whisper_uses_runtime": transcribe.ctranslate2 is ctranslate2,
+            }
+        )
+        rng = np.random.default_rng(GPU_FEATURES_SEED)
+        features = rng.standard_normal((2, 80, 3000)).astype(np.float32)
+        tokens = {}
+        runs = {}
+        for compute in ("float16", "float32"):
+            whisper = ctranslate2.models.Whisper(model, device="cuda", compute_type=compute)
+            # What the loaded model actually runs on, read back from it (L08-03).
+            runs[compute] = {
+                "device": whisper.device,
+                "device_index": list(whisper.device_index),
+                "compute_type": whisper.compute_type,
+            }
+            results = whisper.generate(
+                ctranslate2.StorageView.from_array(features),
+                GPU_PROMPTS,
+                beam_size=1,
+                max_length=24,
+                suppress_blank=False,
+                suppress_tokens=[],
+            )
+            tokens[compute] = [list(result.sequences_ids[0]) for result in results]
+            del whisper
+        report["runs"] = runs
+        report["tokens"] = tokens
+    try:
+        report["loaded"] = loaded_modules()
+    except OSError as error:
+        report["loaded"] = None
+        report["loaded_error"] = str(error)
+    output.put(report)
+
+
+def gpu_probe(runtime_root: Path, model: Path, *, timeout: float = 180) -> dict[str, Any]:
+    """Run ``_gpu_child`` in a spawned (frozen) worker process; never downloads anything."""
+    _block_network()
+    context = multiprocessing.get_context("spawn")
+    output = context.Queue(maxsize=1)
+    child = context.Process(
+        target=_gpu_child, args=(output, str(runtime_root.absolute()), str(model.absolute()))
+    )
+    try:
+        child.start()
+        try:
+            report: dict[str, Any] = output.get(timeout=timeout)
+        except Exception:
+            return {"activate": "GPU_SMOKE_CHILD_FAILED", "exitcode": child.exitcode}
+        child.join(30)
+        report["exitcode"] = child.exitcode
+        return report
+    finally:
+        if child.is_alive():
+            child.terminate()
+            child.join(10)
+        output.close()
+        output.join_thread()
+
+
 PLAYBACK_VERIFIED = "PCM_SINK_PLAYED_MUTED_FROM_EXACT_FRAME"
 PLAYBACK_CHANNELS = 12  # Media Foundation could not advance 12..32 channels (L04 review)
 PLAYBACK_RATE = 16_000

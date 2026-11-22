@@ -528,8 +528,99 @@ L-P07 `a6b7732117604408b20f32c15a8f73030b81dbb4`의 원격 CI는 [43720957378](h
   - 탐욕 생성 토큰(prompt `[[1,2,5,9],[1,3,5,9]]`, 24토큰)은 float16과 float32가 같았다.
 - **확인하지 않은 것(NOT_RUN):**
   - 실제 음성, 실제 Whisper 가중치, faster-whisper 전체 경로의 GPU 전사
-  - frozen 앱 안의 활성화
+  - frozen 앱 안의 활성화(L-P08에서 확인)
   - 다른 GPU·드라이버
+
+## L-P08 패키지 앱 GPU 활성화 확인
+
+2026-11-22, 작성 C00. L-P07이 NOT_RUN으로 남긴 "frozen 앱 안의 활성화"를 확인한다. 제품 동작은 바꾸지 않고 확인 도구와 시험만 더한다. 경우의 수는 [L08 경우의 수](../testing/l08-frozen-gpu-cases.md) 2판에 있다.
+
+### 구현(2판, 독립 검토 반영)
+
+- **probe:** `packaging/release_smoke.py`에 `gpu_probe`, `_gpu_child`, `loaded_modules`, `module_paths`를 더했다.
+  - spawn 작업자 프로세스가 제품과 같은 `recoryn.app.inference._activate_gpu`로 런타임을 활성화한다.
+  - 그 뒤 다음을 보고한다.
+    - 모듈 출처, 버전, CUDA 장치 수
+    - faster-whisper가 같은 `ctranslate2` 모듈을 쓰는지
+    - 로드한 모델 객체가 스스로 보고하는 장치·장치 번호·정밀도(`runs`)
+    - float16·float32 생성 token
+    - 프로세스에 올라온 모듈 전체 경로(EnumProcessModules)
+  - 모듈 이름을 하나라도 해석하지 못하면 목록 전체를 실패로 보고한다(loaded=None, loaded_error).
+  - 소스 실행이면 bundle을 빈 문자열로 보고한다.
+  - 네트워크 차단 audit hook을 건다. 다운로드하지 않는다.
+- **진입점:** `packaging/recoryn_release.py`에 `--release-gpu-smoke --runtime-root <폴더> --model <폴더>`를 더했다. 보고에 `activate` 키가 있고 그 값이 None일 때만 종료 코드 0이다.
+- **판정:** `scripts/gpu_frozen_smoke.py`가 probe의 PASS 문자열 대신 보고된 사실을 별도 규칙으로 판정한다. 보고 자체의 진위를 외부에서 인증하지는 않는다.
+  - 실행 전후에 설치된 런타임을 catalog와 대조한다. 무작위 가중치 소형 Whisper 모델을 만든다(weights를 받지 않는다).
+  - 필수 사실 11개, 정확한 타입(bool은 int가 아니다), 정해진 catalog 파일과의 module·ext 일치를 차례로 본다.
+  - 모델 객체가 보고한 CUDA·요청 정밀도·장치 번호 범위를 본다.
+  - token 구조와 float16·float32 일치를 본다.
+  - 기대 런타임 모듈 5개와의 집합 일치를 본다. 이 목록은 L-P07 import 표에서 손으로 옮겼다.
+  - cuDNN이 없어야 하고, 런타임 밖의 CTranslate2·OpenMP·cuBLAS도 없어야 한다. 런타임 안에 `.pyc`가 생기지 않아야 한다.
+  - 경로는 `normcase(realpath)`로 비교해 대소문자와 8.3 별칭을 같은 폴더로 본다. 단, 로컬 드라이브 경로만 해석한다(3판, L08-06). UNC, `\\?\`·`\\.\` 경로, 상대 경로, 네트워크 매핑 드라이브는 해석기에 넘기지 않는다. 이런 경로가 보고되면 NON_LOCAL_PATH_REPORTED로 거부한다.
+
+### 시험과 mutation
+
+- **시험:** `tests/release/test_gpu_smoke.py` 103개가 통과했다.
+  - 판정: 정상 4, 단일 결함 45, 타입 14, 장치 0개 1, cuDNN 위치 2, pyc 1, 로컬 아닌 경로 9, 필수 누락 11, 목록 고정 3, 자식 실패 1.
+  - probe와 진입점: 런타임 없음, 시간 초과, 가짜 모델 객체, 이름 해석 4, 진입점 4, `loaded_modules`.
+- **mutation:** 격리 사본에서 실행했다(pyproject·src·packaging·scripts·tests/release 복사).
+  - 판정의 검사 33개, 진입점 종료 코드 1개, probe 단위 3개(이름 해석 실패 무시, 실행 기록을 요청 상수로 채움, 해석 실패 목록을 빈 목록으로 숨김)를 하나씩 바꾼 mutant 37개가 모두 시험 실패로 잡혔다. 판정 33개에는 3판의 로컬 아닌 경로 거부, 모든 경로 해석, 드라이브 종류 확인 제거 mutant 3개가 들어 있다.
+  - 1판 mutation에서는 형제 폴더 접두사 mutant가 살아남았다. 모듈 위치를 정확한 파일 일치로 바꾼 뒤 형제 폴더 시험이 접두사 코드를 지나지 않았기 때문이다. 형제 폴더의 DLL 행을 더해 잡았다.
+  - probe 쪽 mutant 3개는 소스 실행의 실제 GPU 판정으로 확인했다. 정상본 판정은 NOT_FROZEN 하나뿐이다.
+    - faster-whisper 사실 반전: FASTER_WHISPER_OTHER_MODULE
+    - 로드 목록 비움: RUNTIME_MODULE_SET_MISMATCH
+    - 생성 장치를 CPU float32로 바꿈: RUN_NOT_ON_CUDA, RUN_COMPUTE_TYPE_MISMATCH. 1차 검토에서 살아남았던 mutant다.
+  - 처음에는 소스 실행 보고의 bundle이 None이었다. 그래서 판정이 타입 단계에서 멈췄고, 세 probe mutant가 모두 같은 BAD_TYPE_BUNDLE로만 보였다. bundle을 빈 문자열로 바꾼 뒤 위 결과를 얻었다.
+- **정적 검사:** ruff check·format, `mypy src/recoryn scripts packaging` 83파일이 통과했다.
+
+### 독립 검토
+
+w5:p8 Codex가 1판 tree `98f6ee98`을 검토했다([L08 검토](../reviews/l08-frozen-gpu-review.md), 1차 sha256 LF `20908762…1b73`).
+
+- 결과는 OPEN 5건(S1 3, S2 2)이다. 모두 확인 도구의 거짓 PASS·관측 누락·거짓 FAIL이며, 제품 동작 결함이나 런타임 오염은 관측되지 않았다.
+  - L08-01 외부 cuBLAS 허용
+  - L08-02 모듈 이름 해석 실패 생략
+  - L08-03 실제 장치·정밀도 미확인
+  - L08-04 보고 구조·타입·정확한 위치 미검증
+  - L08-05 8.3 별칭 거짓 FAIL
+- 위 2판 수정으로 대응했다.
+- 같은 검토자가 2판 tree `d9e344de`를 재확인했다(RECHECK 절, sha256 LF `82477f12…1774`).
+  - L08-01~05는 모두 RECHECKED다. 원 반례 21행, 기존 시험 148개, 정확한 tree 번들의 GPU 판정이 통과했다.
+  - 신규 L08-06(S2)이 나왔다. 2판의 `realpath`가 보고된 UNC 경로를 거부하기 전에 Windows 경로 해석기에 넘긴다는 지적이다. 실제 원격 접속 없이 감시 함수로 재현했다.
+- 3판에서 로컬 드라이브 경로만 해석하고, 로컬이 아닌 경로가 보고되면 거부하도록 고쳤다.
+- 같은 검토자가 3판 tree `043de2aa`를 재확인했다(RECHECK 2 절, 최종 sha256 LF `ab60ed86…a5be0`).
+  - L08-06은 RECHECKED다. 기존 시험 103개, 원 반례 1개, 추가 경계 45개가 통과했고, 실제 GPU 판정도 PASS였다.
+  - 추가 실험 1개는 SKIP이다. "UNC를 가리키는 로컬 심볼릭 링크"를 만들려 했으나 이 PC 계정에 링크 생성 권한이 없었다(Windows 오류 1314).
+- **최종 OPEN 0(S0~S3 모두 0).** C00가 L08-01~06을 CLOSED로 처리한다.
+- **남은 한계:** 로컬 드라이브 경로가 원격을 가리키는 링크라면 `realpath`가 그 링크를 따라갈 수 있다. 이 경우는 실험하지 못했다. 다만 probe가 보고하는 경로는 프로세스가 실제로 로드한 모듈이다. 그런 모듈이 있다면 OS는 이미 그 경로를 연 것이다.
+
+### 실제 장비 확인
+
+장비는 NVIDIA GeForce RTX 4070 Laptop GPU, 드라이버 576.57이다. 런타임은 L-P07 실장비 확인 때 앱 경로로 설치한 `build/gpu-e2e2`를 썼다.
+
+- **1판, 작업 트리 빌드(이력):** 커밋 전 작업 트리로 만든 `build/l08-1795356679`에서 판정이 PASS였다. 결과 sha256 LF는 `65c478c1…7b23`이다.
+  - 로드된 모듈 108개 중 런타임에서 온 것은 기대한 5개뿐이었다.
+  - 번들의 CPU 전용 `ctranslate2.dll`·`_ext`, `vcomp140.dll`, cuDNN은 올라오지 않았다. NVIDIA 드라이버는 System32 `nvcuda.dll`과 DriverStore의 `nvcuda64.dll`에서만 왔다.
+  - 이 번들의 `recoryn_release.py`는 검토 tree와 종료 코드 한 줄이 달랐다(검토자 확인).
+- **2판, 정확한 tree:** tree `2c7d260b7ca13223abb79ca2513d48b59bd14df5`에서 검증했다.
+  - **전체 검증:** 7788 passed, coverage 예산·ruff·format·mypy가 통과했다.
+  - **번들:** 같은 tree로 만든 frozen 번들 `build/l08b-exact-1795358709`의 기본 smoke가 PASS였다. 재생은 PCM_SINK_PLAYED_MUTED_FROM_EXACT_FRAME이다.
+  - **GPU 판정:** PASS, 실패 코드 0개, 종료 코드 0이다. 결과 sha256 LF는 `f55fb870db5c8a8ce5da1791d3456bd00bcd6a72a2bfe8b33451bb2017d99517`이다.
+    - 모델 객체가 보고한 실행은 float16·float32 모두 `cuda`, 장치 번호 `[0]`이고 정밀도는 요청과 같았다.
+    - 로드된 모듈 108개 중 런타임에서 온 것은 기대한 5개뿐이었다. token은 1판과 같고 float16·float32가 같았다. 런타임 안 `.pyc`는 없었다.
+- **3판:** L08-06 수정은 판정 스크립트와 시험만 바꿨다. 번들에 들어가는 `packaging/release_smoke.py`, `packaging/recoryn_release.py`와 `src`는 2판 tree와 바이트가 같다. 그래서 위 정확한 tree 번들을 그대로 쓰고, 3판 판정 스크립트로 다시 판정했다.
+  - **GPU 판정:** PASS, 실패 코드 0개, 종료 코드 0이다. 결과 sha256 LF는 `090a2d47f244e119b5423f23c58a7f32cbe88f1dae17f4cf62c8e24d75ec71e1`이다.
+  - 보고된 모듈 경로 108개가 모두 로컬 드라이브 경로였다. 로컬 아닌 경로 거부가 정상 실행을 거짓 실패로 만들지 않는다.
+  - **전체 검증:** 3판 tree `043de2aa57afaa533f05b6ef34eea2f101e7429b`에서 7797 passed, coverage 예산·ruff·format·mypy가 통과했다.
+  - **1판 tree의 실패 1건:** 1판 tree `98f6ee98`의 전체 검증에서 1건이 실패했다(7741 passed). 실패한 시험은 `tests/unit/test_diarization.py::test_owned_hung_child_ack_before_return[timeout]`이다.
+    - 이 시험은 1.5초 시간 제한 안에 자식 프로세스의 시작 표시가 생기기를 기다린다. 다른 세션이 전체 시험을 동시에 돌리던 부하 중에 자식 시작이 늦어 실패했다.
+    - 같은 tree에서 그 시험만 3회 다시 실행하니 모두 통과했다. L-P08은 화자 구분 코드를 바꾸지 않는다.
+    - 실패를 재실행 성공으로 지우지 않는다. 시간 제한에 자식 시작 시간이 포함되는 시험 설계는 G01 후속 시험 보강 후보로 넘긴다.
+- **확인하지 않은 것(NOT_RUN):**
+  - 실제 음성, 실제 Whisper 가중치, faster-whisper `WhisperModel` 전체 경로의 GPU 전사(tokenizer와 모델 파일이 필요하다)
+  - GUI 앱(`Recoryn.exe`)에서의 동의·설치·전사 조작. probe는 CLI 진입점과 같은 spawn 작업자 경로를 쓴다.
+  - 다른 GPU·드라이버
+  - native DLL·드라이버의 OS 수준 무전송. Python socket audit만 걸었다.
 
 ## 미검증
 
