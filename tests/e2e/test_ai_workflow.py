@@ -41,12 +41,14 @@ def recording(library):
             device_frame_position=0,
         )
     )
-    service.stop()
+    # Upper bounds only (GT-P02): the 5 s default writer join timed out once on a slow
+    # CI runner (WRITER_ACK_PENDING). These waits return as soon as work is done.
+    service.stop(timeout=60)
     return service.session_id
 
 
 def finished(service, job_id):
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         job = service.jobs.get(job_id)
         if job.state.value in {"SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED"}:
