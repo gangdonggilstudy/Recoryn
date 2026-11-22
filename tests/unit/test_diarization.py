@@ -11,6 +11,7 @@ import socket
 import sys
 import threading
 import time
+import types
 import wave
 from dataclasses import asdict
 from pathlib import Path
@@ -148,6 +149,38 @@ def _hung_child(
     reply.close()
 
 
+def _slow_start_hung_child(
+    config: Any, request: Any, audio_hash: str, gate: Any, cancel: Any, reply: Any
+) -> None:
+    # Start-up slower than the whole provider timeout, then hang like _hung_child.
+    if gate.wait(5):
+        time.sleep(2.0)
+        request.audio_path.with_suffix(".started").write_text("slow child", encoding="utf-8")
+        threading.Event().wait(30)
+    reply.close()
+
+
+class _MarkerClock:
+    """Provider clock that starts only once the hung child has written its marker.
+
+    Before the marker exists it stands still at 0, so start-up time never uses the
+    provider deadline (GT-P01, review GT01R-01).
+    """
+
+    def __init__(self, marker: Path) -> None:
+        self.marker = marker
+        self.origin: float | None = None
+        self.calls = 0
+
+    def monotonic(self) -> float:
+        self.calls += 1
+        if self.origin is None:
+            if not self.marker.exists():
+                return 0.0
+            self.origin = time.monotonic()
+        return time.monotonic() - self.origin
+
+
 def _success_child(
     config: Any, request: Any, audio_hash: str, gate: Any, cancel: Any, reply: Any
 ) -> None:
@@ -221,6 +254,12 @@ def test_owned_hung_child_ack_before_return(
 ) -> None:
     assert sys.platform == "win32", "Windows guard test requires the designated Windows runner"
     config, request = _synthetic(tmp_path, timeout=1.5 if mode == "timeout" else 10)
+    marker = request.audio_path.with_suffix(".started")
+    # GT-P01: the provider deadline starts before spawn, so under a loaded full run
+    # child start-up alone used the whole 1.5 s. The provider clock now starts only once
+    # the hung child is proven running; start-up has its own bound below (all modes).
+    clock = _MarkerClock(marker)
+    monkeypatch.setattr(process, "time", types.SimpleNamespace(monotonic=clock.monotonic))
     monkeypatch.setattr(LocalDiarizationProcess, "capabilities", _available)
     monkeypatch.setattr(process, "_worker", _hung_child)
     provider = LocalDiarizationProcess(config)
@@ -236,9 +275,10 @@ def test_owned_hung_child_ack_before_return(
 
     worker = threading.Thread(target=run)
     worker.start()
-    deadline = time.monotonic() + 8
-    while not request.audio_path.with_suffix(".started").exists():
-        assert worker.is_alive() and time.monotonic() < deadline
+    started_by = time.monotonic() + 15  # child start-up bound, real clock
+    while not marker.exists():
+        assert worker.is_alive(), f"provider returned before the child marker: {results or errors}"
+        assert time.monotonic() < started_by, "child marker did not appear within 15 s"
         time.sleep(0.01)
     child = provider._process
     api = _observer()
@@ -254,11 +294,38 @@ def test_owned_hung_child_ack_before_return(
         assert results[0].error_code == ("TIMEOUT" if mode == "timeout" else "CANCELLED")
         assert not results[0].complete and provider._process is None
         assert api.WaitForSingleObject(handle, 0) == 0
+        # Fails loudly if the provider ever stops reading its module-level time. Cancel and
+        # close may return before the clock is read again after the marker.
+        assert clock.calls > 0
+        assert clock.origin is not None or mode != "timeout"
     finally:
         event.set()
         provider.close()
         worker.join(8)
         api.CloseHandle(handle)
+
+
+def test_slow_child_start_does_not_use_the_provider_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # GT-P01: a 2 s start-up against a 1.5 s timeout must still time out only after the
+    # child is running, so the test observes the hung child instead of a lost race.
+    config, request = _synthetic(tmp_path, timeout=1.5)
+    marker = request.audio_path.with_suffix(".started")
+    clock = _MarkerClock(marker)
+    monkeypatch.setattr(process, "time", types.SimpleNamespace(monotonic=clock.monotonic))
+    monkeypatch.setattr(LocalDiarizationProcess, "capabilities", _available)
+    monkeypatch.setattr(process, "_worker", _slow_start_hung_child)
+    provider = LocalDiarizationProcess(config)
+    try:
+        started = time.monotonic()
+        result = provider.diarize(request)
+        assert result.error_code == "TIMEOUT" and not result.complete
+        assert marker.exists() and clock.origin is not None
+        assert time.monotonic() - started >= 3.4  # 2 s start-up + 1.5 s deadline
+        assert provider._process is None
+    finally:
+        provider.close()
 
 
 def test_owned_success_reaps_child_and_preserves_audio(

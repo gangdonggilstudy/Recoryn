@@ -27,7 +27,7 @@ G01은 읽기 전용 분석이다. 작업자는 제품 코드·시험·공용 �
 | G04 / G-P04 미확정 세션 확정·재개 | w5:p7 Claude(G-P03 뒤) | w5:p8 Codex | PLANNED |
 | G05 / G-P05 재시작 뒤 삭제 대기 복원 | w5:p8 Codex(G-P04 push 뒤) | w5:p7 Claude | PLANNED |
 | G06 / G-P06 비용 상한 | w5:p8 Codex(G-P02 뒤) | w5:p7 Claude | PLANNED |
-| GT01 / GT-P01 화자 구분 timeout 시험 | C00: tests/unit/test_diarization.py | 다음에 손이 비는 작업자 1명 | WORKING — timeout 모드 1.5→6초, 시작 표시 대기 8→15초. 단독 3회 PASS |
+| GT01 / GT-P01 화자 구분 timeout 시험 | C00: tests/unit/test_diarization.py | w5:p7 Claude: docs/reviews/gt01-diarization-timeout-review.md만 | VERIFIED — 2판: provider 시계를 자식 시작 표시 뒤부터 흐르게 함(시간 제한 1.5초 유지), 결정적 느린 시작 행 추가, 시작 상한 15초·원인 메시지. GT01R-01~03 RECHECKED, GT01R-04(S3 남은 1판 주석) 삭제로 C00 CLOSED. 21개 5회 PASS, mutation 2/2 |
 
 ## 2026-11-15 L: 배포물 라이선스 검토와 개선
 
