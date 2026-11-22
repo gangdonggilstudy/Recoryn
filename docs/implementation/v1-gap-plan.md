@@ -54,7 +54,7 @@ G01-A가 요청한 C00 결정이다. 설계 문서 개정은 아래 GD 단위에
 | --- | --- | --- | --- | --- |
 | G-P02 | 동의 범위 F-SEC01 (G01B-040, 069 일부) | w5:p8 Codex / w5:p7 Claude | security/consent.py·gateway, ui/privacy.py, 관련 시험 | grant에 세션(또는 명시적 전체) 범위·기능·정책 version을 넣는다. 범위가 다른 요청은 송신 전에 차단한다. 기존 철회·세대 무효화 회귀를 유지한다. 실행 세대·철회 양순서와 범위 조합의 경우의 수를 둔다 |
 | G-P03 | 선택 version CAS F-SUM02 (G01B-024, G1A-89 ABA) | w5:p7 Claude / w5:p8 Codex | content/store.py, app/ai.py, 관련 시험 | 게시 transaction이 전사·요약 선택 version과 설정 키를 기대값과 비교한다. 다르면 후보로 보존한다. G01AR-01의 반례 2행(선택 이동 후 같은 ID로 복귀)이 통과해야 한다 |
-| G-P04 | 미확정 세션 확정·재개 GF-01 (G1A-11·62·24), 복구 결과 표시 F-RECUI01 | w5:p7 Claude / w5:p8 Codex | storage/library.py, app/recording.py, app/desktop.py, cli.py, ui/main.py | 상태별 허용·거부 표. 자식 프로세스 kill→recover→finalize→export에서 원본 SHA 불변, 재복구 멱등. 복구 범위·누락·후보를 읽을 수 있게 표시 |
+| G-P04 | 미확정 세션 확정 GF-01 (G1A-11·62·24), 복구 결과 표시 F-RECUI01 | w5:p7 Claude / w5:p8 Codex | storage/library.py, app/recording.py, app/recovery.py(신규), cli.py, ui/main.py | 상태별 허용·거부 표. 자식 프로세스 kill→recover→finalize→export에서 원본 SHA 불변, 재복구 멱등. 녹음 중인 세션의 복구·확정은 SESSION_LIVE로 거부(계약 단계 반례 G04-CE1). 복구 범위·누락·후보를 읽을 수 있게 표시. **재개는 제외**: 다른 실행·재부팅 뒤 이어 녹음하면 시계 기준이 달라 시각 정렬이 틀어지므로 GF-06과 함께 다룬다(C00 결정) |
 | G-P05 | 재시작 뒤 삭제 대기 복원 GF-13 + F-LIFE02 (G01B-067, G1A-72) | w5:p8 Codex / w5:p7 Claude | storage/library.py(`pending_deletions`), ui/main.py | 재시작 뒤 목록과 재시도. 제거 실패 주입 뒤 멱등 완료. tombstone 유지 |
 | G-P06 | 비용 상한 F-COST01 (G01B-046) | w5:p8 Codex / w5:p7 Claude | ui/privacy.py, security 비용 ledger, 관련 시험 | 모델·요청별 검증된 상한이 없거나 가격이 미상이면 strict 모드에서 차단한다. 보수적 UNKNOWN 유지를 보존한다 |
 
@@ -72,7 +72,7 @@ G-P04와 G-P05는 둘 다 `storage/library.py`와 `ui/main.py`를 바꾼다. 동
 | G-P12 | 요약 basis 보존·표시 F-SUM01, 키보드 근거 탐색 F-A11Y01 | |
 | G-P13 | 수동 로컬 모델 digest 고정·표시 F-MOD02 | 위 결정 반영 |
 | G-P14 | 보존 정책 엔진(G01BR-22), 진단 연결 GF-12·F-OBS | 소유권은 단위 시작 때 확정 |
-| 이후 | GF-02 고아 채택, GF-06 clock domain, GF-07 정렬 연결, GF-10 inventory, GF-14 동기화 폴더, 사전 할당 버퍼, S3 묶음(GF-15~18, G01BR-11~17) | 선행 단위 뒤 |
+| 이후 | GF-02 고아 채택, GF-06 clock domain과 미확정 세션 재개(G-P04에서 분리), GF-07 정렬 연결, GF-10 inventory, GF-14 동기화 폴더, 사전 할당 버퍼, UI의 요약 후보 선택(G-P03 검토에서 확인: 지금은 API로만 고를 수 있음), 실제 유료 가격 catalog 항목(G-P06 뒤, 공식 출처 고정), 고아 reader 종료 증명 자동화와 별도 library.sqlite의 DB-only 삭제 기록을 ConsentStore가 직접 보지 못하는 경계(G-P05 계약에서 분리), S3 묶음(GF-15~18, G01BR-11~17) | 선행 단위 뒤 |
 
 ### C00 단위
 

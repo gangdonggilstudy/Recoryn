@@ -78,13 +78,13 @@ flowchart LR
 
 PAUSED는 모든 필수 트랙의 입력 gate 중단 확인과 이전 epoch의 writer drain/seal이 끝난 상태다. 요청 중에는 capture state에 `pending_command=PAUSE`와 진행 상태를 함께 표시하며 PAUSED로 먼저 전환하지 않는다. pause cutoff는 트랙별 gate 종료의 확인 시각과 마지막 accepted sequence/fragment로 고정하며 클릭 시각과 구분한다. cutoff 전 수락한 큐는 저장하지만 이후 신규 입력과 AI tap 전달은 차단한다. late callback도 같은 gate를 검사한다. resume은 PAUSED 이후에만 허용하고 새 epoch로 시작한다.
 
-stop도 같은 gate·cutoff·마지막 유실 누계와 writer ack를 별도 제어 경로로 전달한다. 포화된 PCM 큐의 stop marker 하나에 의존하지 않는다. 필수 트랙의 ack와 수락·유실 frame 회계를 모두 확인하기 전 정지·pause 성공을 표시하지 않는다. 시작 실패는 CREATED에 안전한 오류를 남기며 장치 시작 전 REC로 표시하지 않는다. 모델 종료를 기다리느라 정지를 미루지 않는다.
+stop도 같은 gate·cutoff·마지막 유실 누계와 writer ack를 별도 제어 경로로 전달한다. 포화된 PCM 큐의 stop marker 하나에 의존하지 않는다. 필수 트랙의 ack와 수락·유실 frame 회계를 모두 확인하기 전 정지·pause 성공을 표시하지 않는다. 시작 실패는 안전한 오류를 남기며, 현재 실행에서 오디오가 실제로 수락되고 모든 장치가 준비되기 전에는 REC로 표시하지 않는다. 구현은 RECORDING을 먼저 영속한 뒤 장치를 열므로, 일부 트랙이 이미 수락됐을 수 있는 시작 실패는 모든 장치 해제 ACK와 writer drain/seal이 끝난 뒤 원본 보존을 위해 PAUSED로 둔다. ACK가 끝나지 않으면 종료 확인 대기(`CAPTURE_START_FAILED_ACK_PENDING`, RECORDING 유지)로 남기며 PAUSED나 정지 성공으로 표시하지 않는다(ADR11). 모델 종료를 기다리느라 정지를 미루지 않는다.
 
 정지 순서는 신규 입력 차단 → writer drain과 청크 검증 → AudioRevision/FINALIZED DB commit → manifest projection이다. 원본과 DB 확정 실패·중단은 INTERRUPTED로 처리한다. DB 확정 후 manifest만 실패하면 FINALIZED를 유지하고 `manifest_sync_pending`과 재시도를 표시한다. stop 응답은 원본 확정 완료와 manifest pending을 구분하고 원본 성공을 rollback하지 않는다. 해당 manifest가 필요한 프로젝트 export는 projection 완료 전 성공 처리하지 않는다. FINALIZED 자체는 유실 없음이나 AI 완료를 의미하지 않는다.
 
 각 영속 전이는 기대 상태와 `state_version`을 비교하고 전이 이벤트와 함께 SQLite transaction에 기록한다. 장치에서 발생한 관측 사실은 먼저 메모리에 계수할 수 있지만, DB 실패 시 영속화됐다고 표시하지 않는다. 제어 상태 저장 불가 시 추가 작업을 차단하고 세션을 안전하게 종료·복구 대상으로 남긴다.
 
-작업은 `job_id`, `attempt_id`, 입력 artifact/revision, 정책·모델·설정 digest, idempotency key, 취소 token, lease owner와 만료 시각, 증가하는 fence token을 갖는다. 워커 종료 후 attempt를 ABANDONED 또는 UNKNOWN으로 닫고 Job을 BLOCKED로 옮겨 재실행 조건을 재검사한다. 이전 fence의 늦은 결과는 게시하지 않는다. 취소는 완료되지 않은 작업을 중단하며 이미 외부로 보낸 데이터나 이미 게시한 산출물을 되돌리지 않는다. 외부 중단이 불명확하면 BLOCKED(CANCEL_UNCONFIRMED)로 두고 자동 재전송하지 않는다.
+작업은 `job_id`, `attempt_id`, 입력 artifact/revision, 정책·모델·설정 digest, idempotency key, 취소 token, owner, 증가하는 fence token을 갖는다. v1.0은 lease 만료 시각을 두지 않고, 재시작 시 단일 coordinator가 이전 작업·reader 프로세스의 종료를 명시적으로 확인한 뒤에만 회수한다(ADR12). 이 확인은 호출자의 진술이며 OS 생존 검사로 자동 증명하는 것이 아니다. 만료 기반 lease는 다중 프로세스 worker를 도입할 때 다시 본다. 워커 종료 후 attempt를 ABANDONED 또는 UNKNOWN으로 닫고 Job을 BLOCKED로 옮겨 재실행 조건을 재검사한다. 이전 fence의 늦은 결과는 게시하지 않는다. 취소는 완료되지 않은 작업을 중단하며 이미 외부로 보낸 데이터나 이미 게시한 산출물을 되돌리지 않는다. 외부 중단이 불명확하면 BLOCKED(CANCEL_UNCONFIRMED)로 두고 자동 재전송하지 않는다. 구현은 같은 의미를 BLOCKED(REMOTE_UNKNOWN)와 `cancel_requested=1`로 표현하고 재개를 거부한다(ADR14).
 
 결과 게시 transaction은 현재 Job의 실행·취소 의도, attempt/fence, 삭제 세대와 입력 버전을 검사한 뒤 artifact/revision 행, 선택 포인터 변경, Job/Attempt 완료와 outbox를 함께 commit한다. 취소 transaction도 같은 직렬화 경계에서 fence를 회수한다. 성공 게시가 먼저 commit되면 취소는 ALREADY_SUCCEEDED로 응답하고, 취소가 먼저면 새 게시·하위 dispatch를 차단한다. 재시작 복구는 취소 의도를 보존한다. 실제 파일의 최종 경로 게시는 이 transaction보다 앞서며 DB 게시 실패 파일은 비활성 후보로 남는다.
 
@@ -136,10 +136,10 @@ data/
      descriptor.json
     staging/
     derived/<artifact_id>/
-    transcripts/<revision_id>.json
-    summaries/<revision_id>.json
   deletion-journal/
 ```
+
+전사·요약 revision은 세션 폴더의 JSON 파일이 아니라 `library.sqlite`의 content 테이블(`content_revisions` 등)에 둔다(ADR13). 내보내기는 이 revision에서 파일을 만든다.
 
 청크 bundle의 descriptor에는 schema version, 식별자, 포맷, 첫·마지막 시간, frame 범위, block sequence 범위, flags/gap, byte count와 checksum을 둔다. 해시는 저장 중 손상을 탐지하기 위한 것이며 외부 공격에 대한 인증 서명을 대신하지 않는다. 청크 목표 길이와 큐 용량은 성능 시험으로 확정한다. 긴 세션도 하나의 무제한 WAV로 쓰지 않으며 WAV 구조는 정식 파서로 읽는다.
 
@@ -279,5 +279,12 @@ P1부터 동의 허용·거부·철회, CPU 전환 거부, 예산 대기 취소,
 | ADR08 | Python/Qt/모델/실행 바이너리 버전, 패키저와 서명 | 보류 | 릴리스·보안, 호환성·SBOM·패키지 시험 후 고정 |
 | ADR09 | 라이선스 및 모델 재배포 가능 범위 | 보류 | 보안·릴리스, 버전별 원문과 포함 파일 목록 확인 |
 | ADR10 | VoiceLocal 이관과 호환 데이터 지원 | 보류 | 아키텍트, 원본 소스·데이터·라이선스 확보 후 비교 |
+| ADR11 | 시작 실패의 상태: RECORDING을 먼저 영속하고, 장치 시작이 실패하면 모든 장치 해제 ACK와 writer drain/seal 뒤 일부 수락된 원본을 보존하기 위해 PAUSED로 둔다. ACK 미완료면 종료 확인 대기로 RECORDING을 유지한다. REC는 현재 실행의 양의 수락 frame과 모든 장치 준비 뒤에만 표시 | 설계 채택(2026-11-22, G01-C) | REC 표시 조건의 구현과 시험은 G-P07. 기존 시험의 PAUSED 기대는 유지 |
+| ADR12 | Job lease 만료 시각 대신 단일 재시작 coordinator의 종료 확인 | 설계 채택(2026-11-22, G01-C) | product-contracts B12와 일치. 확인은 호출자의 명시 진술이며 자동 증명이 아님(자동화는 통합 계획 '이후'). 다중 프로세스 worker를 도입할 때 재검토 |
+| ADR13 | 전사·요약 revision은 파일이 아니라 library.sqlite content 테이블에 저장 | 설계 채택(2026-11-22, G01-C) | product-contracts B11과 일치. 배치도에서 transcripts/·summaries/ 폴더를 뺌 |
+| ADR14 | CANCEL_UNCONFIRMED를 BLOCKED(REMOTE_UNKNOWN)+cancel_requested로 표현 | 설계 채택(2026-11-22, G01-C) | 의미 동일: 자동 재전송 없음, 재개 거부. 별도 enum을 추가하지 않음 |
+| ADR15 | 에코·중복 발화 완화(원본에 적용하지 않는 선택 파생 처리) | v1.0 이후로 연기(2026-11-22, G01-C) | v1.0 단계표에 없음. 원본 불변 제약은 그대로 |
+| ADR16 | 동의·인증·capability·자원·예산 오류는 FAILED가 아니라 BLOCKED(reason) | 설계 유지, 구현 정정 예정(2026-11-22, G01-C) | 구현과 편차를 고정한 시험의 기대값 변경은 G-P07 |
+| ADR17 | 사용자가 직접 고른 로컬 모델 디렉터리(product-contracts B13) | 허용 유지, 검증 범위 보류 | 실행 전 digest 고정·'사용자 지정 모델' 표시. 신뢰 책임·명시 확인·validation S04의 적용 또는 예외는 G-P13에서 결정 |
 
 Qt for Python의 선택 라이선스와 포함 모듈·제3자 코드의 조건은 저장소 Apache 2.0과 구분한다. 구체 배포물의 파일 목록과 조건을 확인하기 전 일괄 호환 또는 재배포 가능으로 표시하지 않는다. [Qt for Python 라이선스](https://doc.qt.io/qtforpython-6/commercial/index.html), [제3자 라이선스](https://doc.qt.io/qtforpython-6/licenses.html)
