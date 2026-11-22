@@ -2,6 +2,33 @@
 
 현재 단계: 사용자 지시에 따라 설계 v1.0의 구현 완료까지 개발한다. 아래 D/P 배정은 완료 이력이며 B 배정이 현재 활성 범위다. 배정 없는 신규 세션은 온보딩 후 대기한다. 오케스트레이터만 이 표를 수정한다. pane ID는 조회 시점의 식별자이며 재접속 후 재조회한다.
 
+## 2026-11-22 G: 설계 v1.0 대비 구현 gap 재대조
+
+사용자는 새 작업자 교육 후 남은 작업과 진행 중이던 작업을 배분해 진행하도록 지시했다. 라이선스 단위 L-P01~L-P07a는 모두 push됐다. 기준 commit은 `3f4ee9f2d56b5a7a97e8dccb49399b5637babd4e`이며 원격 CI 43724707889의 세 job이 success다. [인계서](orchestrator-handoff.md)의 남은 업무 1번(제품 계약·설계와 현재 코드의 gap 재대조, 후속 구현·배정 결정)이 아직 열려 있어 G01로 진행한다. 기존 Q00과 네 Codex worker pane은 현재 서버에 없다. 현재 Recoryn 작업자는 w5:t4의 두 세션이며, 이전 소유 범위를 물려받지 않는다.
+
+G01은 읽기 전용 분석이다. 작업자는 제품 코드·시험·공용 설정·Git을 바꾸지 않고 아래 지정 문서 하나씩만 작성한다. 판정은 행마다 설계 근거(문서·절), 요구, 구현 근거(`file:line`), 시험 근거(test node), 판정, 위험, 제안 후속 단위를 적는다. 판정 값은 DONE_VERIFIED(구현과 시험 근거 있음), DONE_UNTESTED(구현은 있으나 해당 요구를 직접 확인하는 시험이 없음), PARTIAL, MISSING, EXTERNAL_GATE(실장비·모델·계정·법률·서명처럼 자동 검증 범위 밖), DEFERRED(설계상 v1.0 이후 단계)이다. 위험은 [품질 체계](../quality-system.md)의 S0~S3를 쓴다. 시험 실행은 기존 시험의 선택 실행만 허용한다(`-p no:cacheprovider`, OS TEMP의 고유 basetemp, offscreen). 실제 장치 열기·음성·모델 weights·다운로드·네트워크·유료 호출·계정·설치·추가 에이전트/pane 생성은 금지한다.
+
+| 배정 / push | 작성자와 쓰기 범위 | 대상 범위 | 독립 검토자와 검토 쓰기 범위 | 상태 |
+| --- | --- | --- | --- | --- |
+| G01-A / G-P01 | w5:p7 Claude(녹음·저장 경로): docs/reviews/g01-gap-recording.md만 | src/recoryn/{domain,capture,audio,storage,jobs,content,diagnostics}, cli.py의 녹음·내보내기·복구·진단 명령. 설계: design-input-v1 요구사항, architecture-v1의 제품 범위·상태와 실행·시간과 오디오·저장과 복구·메타데이터와 산출물 버전·진단, validation-plan의 요구사항 추적·장애 주입·Windows 하드웨어, product-contracts B11·B12 | w5:p8 Codex: docs/reviews/g01-gap-recording-review.md만 | VERIFIED — 보고 sha256 LF e7f4655a…bd6f, 교차 검토(이견 5)와 통합안 확인을 반영 |
+| G01-B / G-P01 | w5:p8 Codex(AI·보안·UI 경로): docs/reviews/g01-gap-ai-security-ui.md만 | src/recoryn/{transcription,summarization,providers,diarization,models,security,app,ui}. 설계: architecture-v1의 AI 제공업체와 자원 관리·전송 동의와 비용·비밀과 데이터 수명·UX와 관측, validation-plan의 AI 품질과 UX·보안과 릴리스, product-contracts B10·B13·B14, provider-matrix, diarization | w5:p7 Claude: docs/reviews/g01-gap-ai-security-ui-review.md만 | VERIFIED — 보고 sha256 LF 1e3cd7c1…3e0b, 교차 검토(이견 17·경계 6)와 통합안 확인을 반영 |
+| G01-C / G-P01 | C00: 이 표, docs/implementation/v1-gap-plan.md(신규, 두 보고서 통합·우선순위·후속 push 단위 manifest) | 두 보고서와 교차 검토 결과 | w5:p7·w5:p8: 각자 위 검토 문서에 통합안 확인을 덧붙임 | VERIFIED — 두 작성자 확인(Claude 이견 S2 2·S3 3, Codex 이견 S2 2, S0·S1 없음), 모두 통합안에 반영 |
+
+순서는 G01-A·G01-B 작성 → 교차 검토(서로 상대 보고서의 근거 실재·판정 타당성·누락 gap) → C00 통합안 → 두 검토자 확인 → G-P01 문서 전용 commit이다. 수락 기준: 대상 범위의 설계 요구가 빠짐없이 행으로 있고, 모든 DONE 판정에 실재하는 `file:line`과 test node가 있으며, PARTIAL·MISSING 행마다 재현 가능한 근거와 제안 후속 단위가 있다. 교차 검토에서 열린 S0·S1 이견이 0이어야 한다. 후속 구현은 v1-gap-plan의 우선순위에 따라 별도 배정으로 시작한다. 위험은 문서 단위라 낮다. rollback은 commit revert다.
+
+### G 1차 구현 단위
+
+[통합 계획](../implementation/v1-gap-plan.md)의 1차(S1) 단위다. 각 작성자는 경우의 수 문서와 계약안을 먼저 보고하고 C00 승인 뒤 구현한다. 공용 API·schema를 바꾸면 영향과 대안을 먼저 보고한다. 작성자는 아래 쓰기 범위 밖을 고치지 않으며, 필요하면 C00에 재배정을 요청한다. git 쓰기, 실제 장치·모델·네트워크·유료 호출·계정, 하위 에이전트·pane 생성은 금지다.
+
+| 배정 / push | 작성자와 쓰기 범위 | 독립 검토자와 검토 쓰기 범위 | 상태 |
+| --- | --- | --- | --- |
+| G03 / G-P03 선택 version CAS | w5:p7 Claude: src/recoryn/content/store.py, src/recoryn/app/ai.py(게시 호출부·기대값 캡처·입장 통과 뒤 설정 키 기록), src/recoryn/ui/ai_bridge.py(화자 구분 게시 호출부만), tests/unit/test_content.py, tests/integration/test_selection_version_cas.py(신규), docs/testing/g03-selection-version-cases.md(신규) | w5:p8 Codex: docs/reviews/g03-selection-version-review.md만 | WORKING — 계약안 d19597dd…f833 C00 승인(신규 테이블 additive 허용, 설정 키 기록, 화자 구분 경로 포함) |
+| G02 / G-P02 동의 범위 | w5:p8 Codex: 계약안 §6의 19파일(src/recoryn/security/{consent,gateway,__init__}.py, src/recoryn/ui/privacy.py, src/recoryn/ui/ai_bridge.py의 attach_privacy·selection·STT·요약 준비 호출부만, 신규 시험 4개, 기존 시험 9개의 fixture 적응, docs/testing/g02-consent-scope-cases.md) | w5:p7 Claude: docs/reviews/g02-consent-scope-review.md만 | WORKING — 계약안 3b6cf68d…18eb C00 승인. ui/ai_bridge.py는 G-P03 커밋 뒤 수정 |
+| G04 / G-P04 미확정 세션 확정·재개 | w5:p7 Claude(G-P03 뒤) | w5:p8 Codex | PLANNED |
+| G05 / G-P05 재시작 뒤 삭제 대기 복원 | w5:p8 Codex(G-P04 push 뒤) | w5:p7 Claude | PLANNED |
+| G06 / G-P06 비용 상한 | w5:p8 Codex(G-P02 뒤) | w5:p7 Claude | PLANNED |
+| GT01 / GT-P01 화자 구분 timeout 시험 | C00: tests/unit/test_diarization.py | 다음에 손이 비는 작업자 1명 | WORKING — timeout 모드 1.5→6초, 시작 표시 대기 8→15초. 단독 3회 PASS |
+
 ## 2026-11-15 L: 배포물 라이선스 검토와 개선
 
 사용자는 오픈소스 중 무료로 쓸 수 없는 라이선스의 전수 검토, 개선 계획과 작업 진행을 지시했다. 기준 commit은 H-P01 `0cf9cdd730eae4fccb9e67446f58ffa1ebb61439`이며 원격 CI 43675045600 세 job PASS를 C00이 확인했다. 판정·결정·push 단위는 [라이선스 검토 L01](../implementation/license-review.md)이 정본이다. C00이 작성하며 아래 검토자가 독립 검토한다. 이 표의 C00 쓰기 범위는 해당 배정 동안 기존 B13/B23 소유권보다 우선한다.
