@@ -750,3 +750,208 @@ def test_checkpoint_is_json_copied_and_bounded(
     monkeypatch.setattr(module, "_MAX_REVISION_BYTES", 10)
     with pytest.raises(ValidationError):
         content.create_transcript("session", [], coverage=coverage)
+
+
+# G03 selection version CAS: value validation and storage contract.
+# Case IDs follow docs/testing/g03-selection-version-cases.md.
+
+
+def _g03_attempt(jobs: JobStore, kind: str = "SUMMARY") -> AttemptRecord:
+    from uuid import uuid4
+
+    job = jobs.create(kind, uuid4().hex)
+    jobs.bind_session(job.job_id, "session")
+    return jobs.claim(job.job_id, "g03")
+
+
+@pytest.mark.parametrize(
+    "version",
+    [-1, 2**63, True, 1.0, "1"],
+    ids=["G03-V-minus1", "G03-V-2pow63", "G03-V-bool", "G03-V-float", "G03-V-text"],
+)
+def test_g03_invalid_selection_versions_are_rejected(content: ContentStore, version: Any) -> None:
+    t1 = content.create_transcript("session", [Segment("s", 0, 1, "one")])
+    with JobStore(content.library.db_path) as jobs:
+        attempt = _g03_attempt(jobs)
+        with pytest.raises(ValidationError):
+            content.publish_transcript(
+                jobs,
+                attempt,
+                "session",
+                [Segment("n", 0, 1, "new")],
+                expected_active=t1,
+                expected_transcript_version=version,
+            )
+        for name in ("expected_transcript_version", "expected_summary_version"):
+            with pytest.raises(ValidationError):
+                content.publish_summary(
+                    jobs,
+                    attempt,
+                    "session",
+                    t1,
+                    [Claim("claim", ("s",))],
+                    expected_transcript=t1,
+                    **{name: version},
+                )
+        assert jobs.get(attempt.job_id).state is JobState.RUNNING
+    assert [item["revision_id"] for item in content.list_revisions("session")] == [t1]
+
+
+@pytest.mark.parametrize(
+    ("version", "selected"),
+    [(0, False), (1, True), (2**63 - 1, False)],
+    ids=["G03-V-0", "G03-V-1", "G03-V-max"],
+)
+def test_g03_version_boundaries_select_only_on_equality(
+    content: ContentStore, version: int, selected: bool
+) -> None:
+    t1 = content.create_transcript("session", [Segment("s", 0, 1, "one")])
+    assert content.selection_state("session")["transcript_version"] == 1  # one selection so far
+    with JobStore(content.library.db_path) as jobs:
+        attempt = _g03_attempt(jobs, "TRANSCRIPTION")
+        revision = content.publish_transcript(
+            jobs,
+            attempt,
+            "session",
+            [Segment("n", 0, 1, "new")],
+            expected_active=t1,
+            expected_transcript_version=version,
+        )
+    assert (content.selection_state("session")["transcript_id"] == revision) is selected
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["", "   ", "x" * 257, "a\x00b"],
+    ids=["G03-K-empty", "G03-K-blank", "G03-K-257", "G03-K-nul"],
+)
+def test_g03_invalid_settings_keys_are_rejected(content: ContentStore, key: str) -> None:
+    t1 = content.create_transcript("session", [Segment("s", 0, 1, "one")])
+    with pytest.raises(ValidationError):
+        content.request_summary_settings("session", key)
+    with JobStore(content.library.db_path) as jobs:
+        attempt = _g03_attempt(jobs)
+        with pytest.raises(ValidationError):
+            content.publish_summary(
+                jobs, attempt, "session", t1, [Claim("claim", ("s",))], settings_key=key
+            )
+    assert content.selection_state("session")["summary_settings_key"] is None
+
+
+@pytest.mark.parametrize(
+    "key",
+    [None, "", "x" * 257],
+    ids=["G03-KR-none", "G03-KR-empty", "G03-KR-257"],
+)
+def test_g03_required_settings_key_is_validated_before_sql(content: ContentStore, key: Any) -> None:
+    # request_summary_settings requires a key; only publish_summary keeps None as LEGACY.
+    content.request_summary_settings("session", "known")
+    with pytest.raises(ValidationError):
+        content.request_summary_settings("session", key)
+    assert _g03_requests(content.library.db_path) == [("session", "known", 1)]
+    assert content.selection_state("session")["summary_settings_key"] == "known"
+
+
+@pytest.mark.parametrize("key", ["x" * 256, "k"], ids=["G03-K-256", "G03-K-short"])
+def test_g03_settings_key_boundaries_are_stored_and_published(
+    content: ContentStore, key: str
+) -> None:
+    t1 = content.create_transcript("session", [Segment("s", 0, 1, "one")])
+    content.request_summary_settings("session", key)
+    assert content.selection_state("session")["summary_settings_key"] == key
+    with JobStore(content.library.db_path) as jobs:
+        attempt = _g03_attempt(jobs)
+        revision = content.publish_summary(
+            jobs,
+            attempt,
+            "session",
+            t1,
+            [Claim("claim", ("s",))],
+            expected_transcript=t1,
+            settings_key=key,
+        )
+    assert content.summary(revision)["settings_key"] == key
+    assert content.active_summary("session")["revision_id"] == revision  # type: ignore[index]
+
+
+def test_g03_selection_state_defaults_for_a_session_without_content(content: ContentStore) -> None:
+    assert content.selection_state("session") == {
+        "session_id": "session",
+        "transcript_id": None,
+        "transcript_version": 0,
+        "summary_id": None,
+        "summary_version": 0,
+        "summary_settings_key": None,
+    }
+
+
+def _g03_requests(path: Path) -> list[tuple[Any, ...]]:
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as raw:
+        return raw.execute("SELECT * FROM content_summary_requests").fetchall()
+
+
+def test_g03_pre_g03_database_gains_the_table_and_reopen_is_idempotent(tmp_path: Path) -> None:
+    with Library(tmp_path) as library:
+        library.create_session("session")
+        with ContentStore(library) as store:
+            t1 = store.create_transcript("session", [Segment("s", 0, 1, "one")])
+        with closing(sqlite3.connect(library.db_path)) as raw, raw:
+            raw.execute("DROP TABLE content_summary_requests")  # a database written before G03
+        with ContentStore(library) as store:
+            assert store.selection_state("session")["summary_settings_key"] is None
+            assert store.selection_state("session")["transcript_id"] == t1
+            store.request_summary_settings("session", "k")
+        first = _g03_requests(library.db_path)
+        with ContentStore(library) as store, ContentStore(library) as again:
+            assert store.selection_state("session") == again.selection_state("session")
+        assert _g03_requests(library.db_path) == first == [("session", "k", 1)]
+        with closing(sqlite3.connect(library.db_path.as_uri() + "?mode=ro", uri=True)) as raw:
+            assert raw.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+def test_g03_requests_count_without_moving_selection_versions(content: ContentStore) -> None:
+    t1 = content.create_transcript("session", [Segment("s", 0, 1, "one")])
+    content.create_summary("session", t1, [Claim("one", ("s",))], expected_transcript=t1)
+    before = content.selection_state("session")
+    content.request_summary_settings("session", "a")
+    content.request_summary_settings("session", "b")
+    after = content.selection_state("session")
+    assert {key: value for key, value in after.items() if key != "summary_settings_key"} == {
+        key: value for key, value in before.items() if key != "summary_settings_key"
+    }
+    assert after["summary_settings_key"] == "b"
+    assert _g03_requests(content.library.db_path) == [("session", "b", 2)]
+
+
+def test_g03_legacy_publication_records_no_settings_key(content: ContentStore) -> None:
+    t1 = content.create_transcript("session", [Segment("s", 0, 1, "one")])
+    with JobStore(content.library.db_path) as jobs:
+        attempt = _g03_attempt(jobs)
+        revision = content.publish_summary(
+            jobs, attempt, "session", t1, [Claim("claim", ("s",))], expected_transcript=t1
+        )
+    assert "settings_key" not in content.summary(revision)
+
+
+def test_g03_session_deletion_cascades_requested_settings(content: ContentStore) -> None:
+    content.request_summary_settings("session", "k")
+    assert content.library.delete_session("session")["deleted"]
+    assert _g03_requests(content.library.db_path) == []
+
+
+def test_g03_deletion_intent_blocks_a_settings_request(content: ContentStore) -> None:
+    with JobStore(content.library.db_path) as jobs:
+        _g03_attempt(jobs)
+        assert content.library.delete_session("session")["state"] == "DELETE_PENDING"
+        with pytest.raises(StateConflict):
+            content.request_summary_settings("session", "k")
+    assert _g03_requests(content.library.db_path) == []
+
+
+def test_g03_second_connection_reads_the_same_selection_state(content: ContentStore) -> None:
+    t1 = content.create_transcript("session", [Segment("s", 0, 1, "one")])
+    content.request_summary_settings("session", "k")
+    with ContentStore(content.library) as other:
+        assert other.selection_state("session") == content.selection_state("session")
+        assert other.select_transcript("session", t1, expected_active=t1)
+        assert content.selection_state("session")["transcript_version"] == 2

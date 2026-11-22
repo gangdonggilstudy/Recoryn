@@ -22,7 +22,7 @@ G01은 읽기 전용 분석이다. 작업자는 제품 코드·시험·공용 �
 
 | 배정 / push | 작성자와 쓰기 범위 | 독립 검토자와 검토 쓰기 범위 | 상태 |
 | --- | --- | --- | --- |
-| G03 / G-P03 선택 version CAS | w5:p7 Claude: src/recoryn/content/store.py, src/recoryn/app/ai.py(게시 호출부·기대값 캡처·입장 통과 뒤 설정 키 기록), src/recoryn/ui/ai_bridge.py(화자 구분 게시 호출부만), tests/unit/test_content.py, tests/integration/test_selection_version_cas.py(신규), docs/testing/g03-selection-version-cases.md(신규) | w5:p8 Codex: docs/reviews/g03-selection-version-review.md만 | WORKING — 계약안 d19597dd…f833 C00 승인(신규 테이블 additive 허용, 설정 키 기록, 화자 구분 경로 포함) |
+| G03 / G-P03 선택 version CAS | w5:p7 Claude: src/recoryn/content/store.py, src/recoryn/app/ai.py(게시 호출부·기대값 캡처·입장 통과 뒤 설정 키 기록), src/recoryn/ui/ai_bridge.py(화자 구분 게시 호출부만), tests/unit/test_content.py, tests/integration/test_selection_version_cas.py(신규), docs/testing/g03-selection-version-cases.md(신규) | w5:p8 Codex: docs/reviews/g03-selection-version-review.md만 | VERIFIED — 계약안 d19597dd…f833 C00 승인(신규 테이블 additive 허용, 설정 키 기록, 화자 구분 경로 포함). Codex 검토 G03-01·03 수정, G03-02 C00 수용, RECHECK OPEN 0, C00 CLOSED. 검토자 지정 tree 전체 회귀 8025 PASS |
 | G02 / G-P02 동의 범위 | w5:p8 Codex: 계약안 §6의 19파일(src/recoryn/security/{consent,gateway,__init__}.py, src/recoryn/ui/privacy.py, src/recoryn/ui/ai_bridge.py의 attach_privacy·selection·STT·요약 준비 호출부만, 신규 시험 4개, 기존 시험 9개의 fixture 적응, docs/testing/g02-consent-scope-cases.md) | w5:p7 Claude: docs/reviews/g02-consent-scope-review.md만 | WORKING — 계약안 3b6cf68d…18eb C00 승인. ui/ai_bridge.py는 G-P03 커밋 뒤 수정 |
 | G04 / G-P04 미확정 세션 확정·재개 | w5:p7 Claude(G-P03 뒤) | w5:p8 Codex | PLANNED |
 | G05 / G-P05 재시작 뒤 삭제 대기 복원 | w5:p8 Codex(G-P04 push 뒤) | w5:p7 Claude | PLANNED |

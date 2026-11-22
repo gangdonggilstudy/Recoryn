@@ -373,8 +373,9 @@ class DesktopAI:
         except Exception:
             self.panel.job_status.setText("화자 분리 manifest 경로와 신뢰한 SHA256을 확인하세요.")
             return
-        selected = self.store.active_transcript(revision["session_id"])
-        expected = selected["revision_id"] if selected else None
+        selection = self.store.selection_state(revision["session_id"])
+        expected = selection["transcript_id"]
+        expected_version = selection["transcript_version"]
         if expected != revision["revision_id"]:
             expected = uuid4().hex  # browsing an old revision produces a candidate
         preparation_cancel = threading.Event()
@@ -440,6 +441,7 @@ class DesktopAI:
                         expected_active=expected,
                         audio_revision_id=revision.get("audio_revision_id"),
                         coverage=coverage,
+                        expected_transcript_version=expected_version,
                     )
 
             if not service.runner.submit(job.job_id, task):

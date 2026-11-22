@@ -38,6 +38,17 @@ def _expected(value: str | None) -> None:
         identifier(value)
 
 
+def _expected_version(value: int | None) -> None:
+    """A selection version captured from selection_state(); None keeps ID-only CAS."""
+    if value is not None and (type(value) is not int or not 0 <= value < 2**63):
+        raise ValidationError("INVALID_SELECTION_VERSION")
+
+
+def _settings_key(value: str | None) -> None:
+    if value is not None:
+        text_value(value, maximum=256, empty=False)
+
+
 def _coverage(value: dict[str, Any] | None, units: list[str]) -> tuple[dict[str, Any], bool]:
     if value is None:
         value = {
@@ -147,6 +158,11 @@ class ContentStore:
                     CREATE TRIGGER IF NOT EXISTS content_revision_immutable
                     BEFORE UPDATE ON content_revisions
                     BEGIN SELECT RAISE(ABORT, 'IMMUTABLE_CONTENT_REVISION'); END;
+                    CREATE TABLE IF NOT EXISTS content_summary_requests (
+                        session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+                        settings_key TEXT NOT NULL,
+                        request_count INTEGER NOT NULL DEFAULT 1
+                    );
                     COMMIT;
                 """)
             except BaseException:
@@ -218,6 +234,49 @@ class ContentStore:
             (session_id,),
         ).fetchone()
         return (row[0], row[1]) if row is not None else (None, None)
+
+    @staticmethod
+    def _selection_versions(connection: sqlite3.Connection, session_id: str) -> tuple[int, int]:
+        row = connection.execute(
+            "SELECT transcript_version,summary_version FROM content_selections WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        return (row[0], row[1]) if row is not None else (0, 0)
+
+    @staticmethod
+    def _requested_settings(connection: sqlite3.Connection, session_id: str) -> str | None:
+        row = connection.execute(
+            "SELECT settings_key FROM content_summary_requests WHERE session_id=?", (session_id,)
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    def selection_state(self, session_id: str) -> dict[str, Any]:
+        """One consistent read of both selections, their versions and requested settings."""
+        with self._mutex:
+            self._live(self._db, session_id)
+            transcript_id, summary_id = self._selection(self._db, session_id)
+            transcript_version, summary_version = self._selection_versions(self._db, session_id)
+            return {
+                "session_id": session_id,
+                "transcript_id": transcript_id,
+                "transcript_version": transcript_version,
+                "summary_id": summary_id,
+                "summary_version": summary_version,
+                "summary_settings_key": self._requested_settings(self._db, session_id),
+            }
+
+    def request_summary_settings(self, session_id: str, settings_key: str) -> None:
+        """Record the latest admitted summary settings; selection versions stay unchanged."""
+        # Required here; only publish_summary's optional key keeps None as ID-only CAS.
+        text_value(settings_key, maximum=256, empty=False)
+        with self._transaction() as connection:
+            self._live(connection, session_id)
+            connection.execute(
+                "INSERT INTO content_summary_requests(session_id,settings_key) VALUES(?,?) "
+                "ON CONFLICT(session_id) DO UPDATE SET settings_key=excluded.settings_key,"
+                "request_count=request_count+1",
+                (session_id, settings_key),
+            )
 
     def _load(
         self, connection: sqlite3.Connection, revision_id: str, revision_type: str
@@ -305,6 +364,7 @@ class ContentStore:
         coverage: dict[str, Any] | None = None,
         partial: bool = False,
         allow_draft_selection: bool = False,
+        expected_version: int | None = None,
     ) -> str:
         self._live(connection, session_id)
         if parent_revision_id is not None:
@@ -314,7 +374,11 @@ class ContentStore:
         normalized, covered = _coverage(coverage, [item.segment_id for item in segments])
         complete = kind != "draft" and covered and not partial
         active, _ = self._selection(connection, session_id)
+        version, _ = self._selection_versions(connection, session_id)
         selected = select and (complete or allow_draft_selection) and active == expected_active
+        if expected_version is not None and version != expected_version:
+            # A selection that moved away and back keeps its ID but not its version.
+            selected = False
         revision_id = uuid4().hex
         body = {
             "schema_version": 1,
@@ -454,6 +518,9 @@ class ContentStore:
         select: bool = True,
         coverage: dict[str, Any] | None = None,
         partial: bool = False,
+        expected_transcript_version: int | None = None,
+        expected_summary_version: int | None = None,
+        settings_key: str | None = None,
     ) -> str:
         self._live(connection, session_id)
         source = self._load(connection, transcript_revision_id, "transcript")
@@ -483,6 +550,8 @@ class ContentStore:
                 }
             )
         active_transcript, active_summary = self._selection(connection, session_id)
+        transcript_version, summary_version = self._selection_versions(connection, session_id)
+        requested = self._requested_settings(connection, session_id)
         normalized, covered = _coverage(coverage, list(source_segments))
         complete = source["complete"] and covered and not partial
         selected = (
@@ -490,6 +559,13 @@ class ContentStore:
             and complete
             and active_transcript == expected_transcript == transcript_revision_id
             and active_summary == expected_summary
+            and (
+                expected_transcript_version is None
+                or transcript_version == expected_transcript_version
+            )
+            and (expected_summary_version is None or summary_version == expected_summary_version)
+            # An older settings request cannot replace the result of the latest one.
+            and (settings_key is None or requested is None or requested == settings_key)
         )
         revision_id = uuid4().hex
         body = {
@@ -504,6 +580,8 @@ class ContentStore:
             "coverage": normalized,
             "audio_revision_id": source.get("audio_revision_id"),
         }
+        if settings_key is not None:
+            body["settings_key"] = settings_key
         self._save(connection, body, "summary", selected)
         if selected:
             connection.execute(
@@ -547,11 +625,18 @@ class ContentStore:
         expected_active: str | None = None,
         audio_revision_id: str | None = None,
         coverage: dict[str, Any] | None = None,
+        expected_transcript_version: int | None = None,
     ) -> str:
-        """Atomic fenced result, or an inactive draft checkpoint when incomplete."""
+        """Atomic fenced result, or an inactive draft checkpoint when incomplete.
+
+        expected_transcript_version, captured with selection_state() when the work
+        was planned, keeps a late result a candidate after the selection moved,
+        including a move away and back to the same revision ID.
+        """
         values = self._segments(segments)
         self._transcript_arguments(kind, parent_revision_id, expected_active)
         _expected(audio_revision_id)
+        _expected_version(expected_transcript_version)
         normalized, covered = _coverage(coverage, [item.segment_id for item in values])
         if type(complete) is not bool or (complete and not covered):
             raise ValidationError("INVALID_CONTENT_COMPLETENESS")
@@ -577,6 +662,7 @@ class ContentStore:
                     coverage=normalized,
                     partial=not complete,
                     allow_draft_selection=streaming and complete,
+                    expected_version=expected_transcript_version,
                 )
 
             _, revision_id = jobs._publish_with(
@@ -597,11 +683,21 @@ class ContentStore:
         expected_transcript: str | None = None,
         expected_summary: str | None = None,
         coverage: dict[str, Any] | None = None,
+        expected_transcript_version: int | None = None,
+        expected_summary_version: int | None = None,
+        settings_key: str | None = None,
     ) -> str:
+        """Selected only if IDs, both captured selection versions and settings still match.
+
+        A mismatch stores the result as a candidate of its original input.
+        """
         values = self._claims(claims)
         text_value(template, maximum=128, empty=False)
         _expected(expected_transcript)
         _expected(expected_summary)
+        _expected_version(expected_transcript_version)
+        _expected_version(expected_summary_version)
+        _settings_key(settings_key)
         if type(complete) is not bool or not isinstance(jobs, JobStore):
             raise ValidationError("INVALID_CONTENT_JOB_CONTEXT")
         with self._mutex, jobs._lock:
@@ -626,6 +722,9 @@ class ContentStore:
                     select=complete,
                     coverage=normalized,
                     partial=not complete,
+                    expected_transcript_version=expected_transcript_version,
+                    expected_summary_version=expected_summary_version,
+                    settings_key=settings_key,
                 )
 
             _, revision_id = jobs._publish_with(

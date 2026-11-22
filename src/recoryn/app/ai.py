@@ -199,7 +199,15 @@ class AIService:
             raise StateConflict("TRANSCRIPTION_AUDIO_EMPTY")
         fixed_ids = frozenset(chunk.chunk_id for chunk in chunks)
         snapshot = _key([chunk.to_dict() for chunk in chunks])
-        active = self.content.active_transcript(session_id)
+        # Capture the selected ID and its version in one read; a later move away and
+        # back to the same ID changes the version and keeps this result a candidate.
+        selection = self.content.selection_state(session_id)
+        expected_version = selection["transcript_version"]
+        active = (
+            self.content.transcript(selection["transcript_id"])
+            if selection["transcript_id"]
+            else None
+        )
         expected = active["revision_id"] if active else None
         if active and active["kind"] == "edited":
             # Automatic results remain selectable candidates, never replace edits.
@@ -382,6 +390,7 @@ class AIService:
                         audio_revision_id=audio_snapshot,
                         parent_revision_id=base["revision_id"] if base else None,
                         coverage=coverage(False),
+                        expected_transcript_version=expected_version,
                     )
                     selected = self.content.active_transcript(session_id)
                     if selected and selected["revision_id"] == partial:
@@ -406,6 +415,7 @@ class AIService:
                         expected_active=expected_active,
                         audio_revision_id=audio_snapshot,
                         coverage=coverage(False),
+                        expected_transcript_version=expected_version,
                     )
                     raise ProviderError("CAPTURE_CLOCK_UNVERIFIED")
                 return self.content.publish_transcript(
@@ -419,6 +429,7 @@ class AIService:
                     audio_revision_id=audio_snapshot,
                     parent_revision_id=base["revision_id"] if base else None,
                     coverage=coverage(True),
+                    expected_transcript_version=expected_version,
                 )
 
         self._submit(job, task, created=created)
@@ -437,8 +448,6 @@ class AIService:
         transcript = self.content.active_transcript(session_id)
         if not transcript or not transcript["complete"]:
             raise StateConflict("SUMMARY_REQUIRES_COMPLETE_TRANSCRIPT")
-        summary = self.content.active_summary(session_id)
-        expected_summary = summary["revision_id"] if summary else None
         revision_id = transcript["revision_id"]
         request = SummaryRequest(
             revision_id,
@@ -488,13 +497,29 @@ class AIService:
                 )
                 request = replace(request, checkpoint=restored)
                 break
+        settings_key = _key([config_key, template])
         job, admitted, created = self._admit(
             session_id,
             "summarization",
             _key([session_id, revision_id, config_key, template, request_nonce]),
         )
         if not admitted:
+            # A request merged into an existing job is still the user's latest
+            # request. That job is not ours, so a failure here leaves it running.
+            self.content.request_summary_settings(session_id, settings_key)
             return job.job_id
+        try:
+            # A request refused before admission records nothing. Record before
+            # capturing, so an older job finishing in between stays a candidate.
+            self.content.request_summary_settings(session_id, settings_key)
+            selection = self.content.selection_state(session_id)
+        except Exception:
+            with self._admission_lock:
+                self._admitted.discard(job.job_id)
+            if created:
+                self.jobs.cancel(job.job_id)
+            raise
+        expected_summary = selection["summary_id"]
 
         def task(attempt: AttemptRecord, cancel: threading.Event) -> str:
             with self.scheduler.acquire(cancel), _OutcomeGuard() as observed:
@@ -532,6 +557,9 @@ class AIService:
                     expected_transcript=revision_id,
                     expected_summary=expected_summary,
                     coverage=coverage,
+                    expected_transcript_version=selection["transcript_version"],
+                    expected_summary_version=selection["summary_version"],
+                    settings_key=settings_key,
                 )
                 if not result.complete:
                     raise ProviderError(
