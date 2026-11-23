@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import shutil
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -76,7 +77,7 @@ def test_legacy_and_schema_cases(
     db = tmp_path / "policy.db"
     scope = ConsentScope.session("A")
     if case == 2:
-        with sqlite3.connect(db) as connection:
+        with closing(sqlite3.connect(db)) as connection, connection:
             connection.execute(
                 "CREATE TABLE security_grants(provider,endpoint,data_type,grant_id,generation,epoch,expires,allowed,PRIMARY KEY(provider,endpoint,data_type))"
             )
@@ -84,14 +85,14 @@ def test_legacy_and_schema_cases(
                 "INSERT INTO security_grants VALUES('p',?,'audio','old','old',1,999999,1)", (URL,)
             )
     if case == 7:
-        with sqlite3.connect(db) as connection:
+        with closing(sqlite3.connect(db)) as connection, connection:
             connection.execute(
                 "CREATE TABLE security_consent_meta(id INTEGER PRIMARY KEY,schema_version INTEGER,policy_version INTEGER)"
             )
             connection.execute("INSERT INTO security_consent_meta VALUES(1,2,2)")
         with pytest.raises(SecurityError, match="UNSUPPORTED_SCHEMA"):
             ConsentStore(db)
-        with sqlite3.connect(db) as connection:
+        with closing(sqlite3.connect(db)) as connection, connection:
             assert not connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='security_grants_v2'"
             ).fetchone()
@@ -116,13 +117,13 @@ def test_legacy_and_schema_cases(
         monkeypatch.setattr(consent, "connect", lambda path: Broken(original(path)))
         with pytest.raises(SecurityError, match="SECURITY_STATE_UNAVAILABLE"):
             ConsentStore(db)
-        with sqlite3.connect(db) as connection:
+        with closing(sqlite3.connect(db)) as connection, connection:
             assert not connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         return
     if case == 9:
-        with sqlite3.connect(db) as connection:
+        with closing(sqlite3.connect(db)) as connection, connection:
             connection.execute("PRAGMA user_version=1")
         with CostLedger(db) as ledger:
             reservation = ledger.reserve("p", "fixture", 40, 100)
@@ -179,7 +180,7 @@ def test_legacy_and_schema_cases(
             )
             return
     if case == 6:
-        with sqlite3.connect(db) as connection:
+        with closing(sqlite3.connect(db)) as connection, connection:
             connection.execute("UPDATE security_consent_meta SET schema_version=3")
         before = db.read_bytes()
         with pytest.raises(SecurityError, match="UNSUPPORTED_SCHEMA"):
@@ -241,3 +242,71 @@ def test_malformed_scope_context(tmp_path: Path, case: int) -> None:
                 policy_version=request.policy_version,
             )  # type: ignore[arg-type]
         assert policy._db.execute("SELECT COUNT(*) FROM security_grants_v2").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("partial", "future", "downgrade", "initialize_io", "rollback_io", "success"),
+    ids=[f"G02B-CLOSE-{i:02d}" for i in range(6)],
+)
+def test_constructor_owns_connections_even_when_initialization_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    db = tmp_path / "constructor.db"
+    if case in ("partial", "future"):
+        with closing(sqlite3.connect(db)) as connection, connection:
+            if case == "partial":
+                connection.execute(
+                    "CREATE TABLE security_consent_meta(id,schema_version,policy_version)"
+                )
+            else:
+                connection.execute("PRAGMA user_version=42")
+    elif case == "downgrade":
+        with ConsentStore(db, policy_version=3):
+            pass
+    opened: list[sqlite3.Connection] = []
+    closed: list[sqlite3.Connection] = []
+    original_connect = sqlite3.connect
+
+    class ObservedConnection(sqlite3.Connection):
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            if case == "rollback_io" and sql == "ROLLBACK":
+                raise sqlite3.OperationalError("synthetic rollback failure")
+            return super().execute(sql, *args, **kwargs)
+
+        def close(self) -> None:
+            closed.append(self)
+            super().close()
+
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        result = original_connect(*args, **kwargs, factory=ObservedConnection)
+        opened.append(result)
+        return result
+
+    def fail_initialize(self: ConsentStore, policy_version: int) -> None:
+        raise OSError("synthetic initialization failure")
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    if case in ("initialize_io", "rollback_io"):
+        monkeypatch.setattr(ConsentStore, "_initialize", fail_initialize)
+    try:
+        if case == "success":
+            store = ConsentStore(db)
+            assert store._db.execute("SELECT 1").fetchone()[0] == 1
+            store.close()
+            store.close()
+        else:
+            with pytest.raises(SecurityError):
+                ConsentStore(db)
+        assert len(opened) == 1 and closed == opened
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            opened[0].execute("SELECT 1")
+    finally:
+        # A leaking mutant must fail the ownership assertion, not produce a late GC warning.
+        for connection in opened:
+            try:
+                connection.execute("SELECT 1")
+            except sqlite3.ProgrammingError:
+                pass
+            else:
+                connection.close()

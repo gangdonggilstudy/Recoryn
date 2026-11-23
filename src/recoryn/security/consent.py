@@ -172,9 +172,12 @@ class ConsentStore:
                 )
                 self._db.execute("COMMIT")
         except BaseException:
-            if self._db.in_transaction:
-                self._db.execute("ROLLBACK")
-            self._db.close()
+            try:
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
+            finally:
+                self._db.close()
+                self._closed = True
             raise
 
     def _initialize(self, policy_version: int) -> None:

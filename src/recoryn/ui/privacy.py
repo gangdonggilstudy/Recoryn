@@ -276,7 +276,7 @@ class PrivacyPanel(QWidget):
         super().closeEvent(event)
 
     def _selected_scope(self, kind: str, session_id: str | None = None) -> ConsentScope:
-        if self._selection_pending:
+        if self._selection_pending and session_id is None:
             raise SecurityError("CONSENT_REQUIRED")
         if self._controls(kind).scope.currentData() == "library":
             return ConsentScope.library()
@@ -285,10 +285,10 @@ class PrivacyPanel(QWidget):
             raise SecurityError("CONSENT_REQUIRED")
         return ConsentScope.session(selected)
 
-    def _show_scope(self, kind: str) -> None:
+    def _show_scope(self, kind: str) -> str:
         control = self._controls(kind)
         if self._selection_pending:
-            return
+            return "선택 갱신 중 — 실행 준비 시 대상·권한을 확인합니다"
         control.setEnabled(True)
         library = control.scope.currentData() == "library"
         enabled = library or self._selected_session is not None
@@ -315,41 +315,42 @@ class PrivacyPanel(QWidget):
             session_id=self._selected_session,
         )
         state = view["state"]
-        if state != "ready":
+        if state != "ready" and not (state == "deleted" and library):
             control.allow.setEnabled(False)
             control.revoke.setEnabled(False)
             message = {
                 "deleted": "삭제 진행 중 — 전송 불가",
-                "checking": "확인 중 — 전송 불가",
+                "checking": "동의 정보 확인 중",
                 "unavailable": "동의 정보 확인 불가 — 전송 불가",
             }[str(state)]
             control.scope_info.setText(label + f" / 기능 {kind} / " + message)
-            if state == "deleted":
-                control.setEnabled(False)
-            elif state == "checking":
+            if state == "checking":
                 self._scope_retry.start()
-            return
+            return message
         detail = f"{label} / 기능 {kind} / 정책 version {view['version']} / 현재 실행만"
+        if state == "deleted":
+            detail += f" / 선택 세션 {self._selected_session}: 삭제 진행 중 — 이 세션 전송 불가"
         whole = view["library"]
         if isinstance(whole, dict) and whole["state"] == "active":
             detail += " / 전체 허용 유지 중 — 전체 범위를 선택해 철회"
         info = view["selected"]
+        status = "동의 없음 — 실행 준비 시 새 동의가 필요합니다"
         if isinstance(info, dict):
             if info["state"] == "active":
                 detail += " / 만료 " + _local_expiry(info["expires"])
+                status = "동의 활성 — 실행 준비 시 세션·권한을 다시 확인합니다"
             else:
-                detail += (
-                    " / "
-                    + {
-                        "previous": "이전 실행 — 다시 동의 필요",
-                        "revoked": "철회됨 — 다시 동의 필요",
-                        "expired": "만료됨 — 다시 동의 필요",
-                        "local_unverified": "로컬 실행 확인 필요",
-                    }[str(info["state"])]
-                )
+                status = {
+                    "previous": "이전 실행 — 다시 동의 필요",
+                    "revoked": "철회됨 — 다시 동의 필요",
+                    "expired": "만료됨 — 다시 동의 필요",
+                    "local_unverified": "로컬 실행 확인 필요",
+                }[str(info["state"])]
+                detail += " / " + status
         else:
             detail += " / 기본 거부"
         control.scope_info.setText(detail)
+        return status
 
     def _confirm_library(
         self, kind: str, provider: str, target: str, data_type: str, version: int, deadline: float
@@ -697,25 +698,11 @@ class PrivacyPanel(QWidget):
             elif action != "refresh":
                 raise SecurityError("INVALID_PRIVACY_ACTION")
             self._refresh(kind)
-            if self._selected_session is not None:
-                request = ConsentRequest(
-                    self._selected_session, 0, kind, self.consents.policy_version
-                )
-                allowed = self.consents.allowed(
-                    provider, target, data_type, scope=self._selected_scope(kind), request=request
-                )
-            else:
-                allowed = False
-            control.status.setText(
-                "동의 기록됨 — 실행 준비 시 세션·권한을 다시 확인합니다"
-                if action == "grant"
-                else "허용됨"
-                if allowed
-                else "거부됨 — 실행 대상 세션과 범위를 확인하세요"
-            )
         except (SecurityError, ProviderError) as error:
             control.status.setText(error.code)
-        self._show_scope(kind)
+            self._show_scope(kind)
+        else:
+            control.status.setText(self._show_scope(kind))
 
     def _revoke_endpoint(self, provider: str, target: str) -> None:
         self.consents.revoke_endpoint(provider, target)

@@ -64,6 +64,12 @@ CASE_IDS = {
     + [f"G02-UI-DEFAULT-{kind}" for kind in ("stt", "summary")],
     "UI_FIX": [f"G02-UI-FIX-{i:02d}" for i in range(30)],
 }
+G02B_CASE_IDS = {
+    "STATUS": [f"G02B-STATUS-{i:02d}" for i in range(20)],
+    "GAP": [f"G02B-GAP-{i:02d}" for i in range(40)],
+    "DELETE": [f"G02B-DELETE-{i:02d}" for i in range(12)],
+    "CHECKING": [f"G02B-CHECKING-{i:02d}" for i in range(2)],
+}
 
 
 class Backend:
@@ -842,3 +848,227 @@ def test_permission_only_change_sends_only_new_stream_chunk(
         finally:
             service.close()
             recorder.stop(timeout=60)
+
+
+@pytest.mark.parametrize(
+    "kind,state,action",
+    list(
+        itertools.product(
+            ("stt", "summary"),
+            ("active", "revoked", "previous", "expired", "none"),
+            ("refresh", "budget"),
+        )
+    ),
+    ids=G02B_CASE_IDS["STATUS"],
+)
+def test_nonissuing_action_reports_grant_facts_without_binding(
+    app: QApplication, tmp_path: Path, kind: str, state: str, action: str
+) -> None:
+    clock = [1_700_000_000.0]
+    data = "audio" if kind == "stt" else "transcript"
+    if state == "previous":
+        with ConsentStore(tmp_path / "scope.db", clock=lambda: clock[0]) as old:
+            old.grant(
+                "openai",
+                URL,
+                data,
+                capability=kind,
+                scope=ConsentScope.session("A"),
+                policy_version=2,
+            )
+    with panel(
+        tmp_path, kind, clock=lambda: clock[0], existing_grants=int(state == "previous")
+    ) as (widget, backend, wire):
+        widget.select_session("A")
+        control = widget.controls[kind]
+        if state in ("active", "revoked", "expired"):
+            control.allow.click()
+        if state == "revoked":
+            control.revoke.click()
+        if state == "expired":
+            clock[0] += 3600
+        (control.refresh if action == "refresh" else control.apply_budget).click()
+        word = {
+            "active": "동의 활성",
+            "revoked": "철회됨",
+            "previous": "이전 실행",
+            "expired": "만료됨",
+            "none": "동의 없음",
+        }[state]
+        assert word in control.status.text()
+        assert ("만료 " in control.scope_info.text()) == (state == "active")
+        assert not control.status.text().startswith("거부됨")
+        assert (
+            widget.consents._db.execute("SELECT COUNT(*) FROM security_sessions").fetchone()[0] == 0
+        )
+        assert backend.reads == 0 and wire.opens == 0
+
+
+@pytest.mark.parametrize(
+    "kind,scope_kind,state,phase",
+    list(
+        itertools.product(
+            ("stt", "summary"),
+            ("session", "library"),
+            ("active", "revoked", "none", "expired", "deleted"),
+            ("stable", "pending"),
+        )
+    ),
+    ids=G02B_CASE_IDS["GAP"],
+)
+def test_fixed_request_uses_its_grant_across_selection_gap(
+    app: QApplication, tmp_path: Path, kind: str, scope_kind: str, state: str, phase: str
+) -> None:
+    clock = [1000.0]
+    with panel(tmp_path, kind, clock=lambda: clock[0]) as (widget, backend, wire):
+        bridge, sessions, _ = linked_selection(widget)
+        try:
+            sessions.setCurrentItem(add_session(sessions, "R"))
+            selected = (
+                ConsentScope.session("R") if scope_kind == "session" else ConsentScope.library()
+            )
+            opposite = (
+                ConsentScope.library() if scope_kind == "session" else ConsentScope.session("R")
+            )
+            data_types = ("audio",) if kind == "stt" else ("transcript", "context")
+            for scope in (opposite,) if state == "none" else (selected, opposite):
+                for data in data_types:
+                    widget.consents.grant(
+                        "openai", URL, data, capability=kind, scope=scope, policy_version=2
+                    )
+            if state == "revoked":
+                for data in data_types:
+                    widget.consents.revoke(
+                        "openai", URL, data, capability=kind, scope=selected, policy_version=2
+                    )
+            elif state == "expired":
+                clock[0] += 3600
+            elif state == "deleted":
+                widget.consents.revoke_session("R")
+            sessions.setCurrentItem(add_session(sessions, "A"))
+            control = widget.controls[kind]
+            control.scope.setCurrentIndex(int(scope_kind == "library"))
+            if phase == "pending":
+                sessions.clear()
+                add_session(sessions, "R")  # A disappeared; no selected row before queued settle.
+                assert widget._selection_pending and widget._selected_session is None
+                assert not control.allow.isEnabled() and not control.revoke.isEnabled()
+                with pytest.raises(SecurityError, match="CONSENT_REQUIRED"):
+                    widget._selected_scope(kind)  # screen-based action remains fail closed
+            if state == "active":
+                execution = widget.prepare_execution(kind, "R", threading.Event())
+                assert execution.gateway is not None and execution.gateway.session_id == "R"
+                assert all(
+                    binding.scope == selected and binding.request.session_id == "R"
+                    for binding in execution.gateway.expected_grants
+                )
+                assert backend.reads == 1
+            else:
+                expected = "SESSION_REVOKED" if state == "deleted" else "CONSENT_REQUIRED"
+                with pytest.raises(SecurityError, match=expected):
+                    widget.prepare_execution(kind, "R", threading.Event())
+                assert backend.reads == 0
+            assert wire.opens == 0
+        finally:
+            app.processEvents()
+            bridge.window.tabs.close()
+            sessions.close()
+
+
+@pytest.mark.parametrize(
+    "kind,action",
+    list(
+        itertools.product(
+            ("stt", "summary"),
+            ("delete_key", "revoke_library", "budget", "settle", "grant_session", "revoke_session"),
+        )
+    ),
+    ids=G02B_CASE_IDS["DELETE"],
+)
+def test_deleted_selection_preserves_unrelated_privacy_controls(
+    app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, action: str
+) -> None:
+    with panel(tmp_path, kind) as (widget, backend, wire):
+        data = seed(widget, kind, (ConsentScope.session("A"), ConsentScope.library()))
+        removed_keys: list[str] = []
+        monkeypatch.setattr(backend, "delete", removed_keys.append)
+        widget.consents.revoke_session("C")
+        widget.select_session("C")
+        control = widget.controls[kind]
+        assert control.isEnabled() and control.scope.isEnabled()
+        assert not control.allow.isEnabled() and not control.revoke.isEnabled()
+        assert "삭제 진행 중" in control.scope_info.text()
+        if action == "delete_key":
+            assert control.delete_key.isEnabled()
+            control.delete_key.click()
+            assert len(removed_keys) == 1
+        elif action == "revoke_library":
+            control.scope.setCurrentIndex(1)
+            assert control.allow.isEnabled() and control.revoke.isEnabled()
+            assert "삭제 진행 중" in control.scope_info.text()
+            control.revoke.click()
+        elif action == "budget":
+            control.total.setValue(2)
+            assert control.apply_budget.isEnabled()
+            control.apply_budget.click()
+            assert widget.ledger.snapshot("openai")["limit"] == 2_000_000
+        elif action == "settle":
+            reservation = widget.ledger.reserve("openai", "pending", 1000, 1_000_000)
+            widget.ledger.mark_unknown(reservation)
+            control.refresh.click()
+            control.actual.setValue(0.0005)
+            control.confirm_actual.setChecked(True)
+            assert control.settle.isEnabled()
+            control.settle.click()
+            balance = widget.ledger.snapshot("openai")
+            assert balance["confirmed"] == 500 and balance["unknown_exposure"] == 0
+        else:
+            before = [
+                tuple(row)
+                for row in widget.consents._db.execute(
+                    "SELECT * FROM security_grants_v2 ORDER BY scope_kind,scope_id"
+                )
+            ]
+            (control.allow if action == "grant_session" else control.revoke).click()
+            assert [
+                tuple(row)
+                for row in widget.consents._db.execute(
+                    "SELECT * FROM security_grants_v2 ORDER BY scope_kind,scope_id"
+                )
+            ] == before
+        info = widget.consents.grant_info(
+            "openai", URL, data, capability=kind, scope=ConsentScope.library(), policy_version=2
+        )
+        assert info and info["active"] == (action not in ("delete_key", "revoke_library"))
+        if info["active"]:
+            control.scope.setCurrentIndex(1)
+        with pytest.raises(SecurityError, match="SESSION_REVOKED"):
+            widget.prepare_execution(kind, "C", threading.Event())
+        assert backend.reads == 0 and wire.opens == 0
+
+
+@pytest.mark.parametrize("kind", ("stt", "summary"), ids=G02B_CASE_IDS["CHECKING"])
+def test_busy_consent_view_does_not_claim_transmission_is_blocked(
+    app: QApplication, tmp_path: Path, kind: str
+) -> None:
+    held, release = threading.Event(), threading.Event()
+    with panel(tmp_path, kind) as (widget, backend, wire):
+
+        def hold() -> None:
+            with widget.consents.coordinator.lock:
+                held.set()
+                release.wait(5)
+
+        worker = threading.Thread(target=hold)
+        worker.start()
+        assert held.wait(5)
+        try:
+            widget.select_session("A")
+            text = widget.controls[kind].scope_info.text()
+            assert "동의 정보 확인 중" in text and "전송 불가" not in text
+            assert not release.is_set()
+        finally:
+            release.set()
+            worker.join(5)
+        assert not worker.is_alive()
+        assert backend.reads == 0 and wire.opens == 0

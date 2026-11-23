@@ -674,3 +674,118 @@ D:/project/Recoryn/.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider 
 | tests/integration/test_ai_independent.py | `b80139e46372426e72429c78a7f72cfe53cc4524617a052c7ca67add04dd6370` |
 | tests/contract/test_provider_contracts.py | `9e4fca24c51bf5cb41d6bbc69d449217c1f7e5a9ab5e253575bba7c259ccf8cb` |
 | tests/ui/test_privacy_ui.py | `d048ea94088460ac049f4bcf6f895f0db1e809c32ade09c8a603cbe016d6e114` |
+
+## 11. G-P02b 동의 패널 후속 — 계약·경우의 수
+
+2026-11-23, 작성 w5:p8 Codex. C00의 **G-P02 커밋 완료 신호 `66f0a85f348fba6bec159484f47908bd88d1ffe4`** 뒤 착수한다. 정본은 독립 검토 A의 RECHECK G02A-09·10·11과 이 창의 추가 배정이다. G02A-12의 provider 오류 분류는 G-P07로 남긴다. 최초 수정 범위는 privacy.py·ai_bridge.py의 선택/표시/준비 호출부·UI 시험·이 문서이며 consent.py는 생성 실패 연결 종료 점검에 한해서 추가 승인됐다. 다른 작업자의 G-P04 변경은 포함하지 않는다.
+
+### 11.1 입력 분할과 독립 기대값
+
+| 가족 | 유한 입력과 feasible 분모 | 독립 oracle |
+| --- | --- | --- |
+| G02B-STATUS | 기능 STT/요약2 × grant active/revoked/previous/expired/없음5 × 비용 갱신/예산 적용2 = **20** | 세션 미등록이어도 grant 사실이 같으면 표시도 같다. active만 동의 활성·만료, 나머지는 사유/동의 없음. 탐색·표시가 세션을 등록하지 않음 |
+| G02B-GAP | 기능2 × 선택 SESSION/LIBRARY2 × 작업 R의 권한 active/revoked/없음/expired/세션 삭제5 × 화면 안정/목록 재구성 공백2 = **40** | fixed_session=R과 명시 선택 범위의 현재 권한으로만 준비. 공백이 권한을 넓히거나 좁히지 않음. SESSION↔LIBRARY fallback 금지, 권한 없음/철회/만료/삭제는 계속 거부. 화면 기반 grant/revoke는 공백 동안 금지 |
+| G02B-DELETE | 기능2 × 삭제 세션과 무관한 키 폐기/LIBRARY 철회/예산/정산4 + 기능2 × 삭제 세션 대상 허용/철회2 = **12** | 앞8행은 실제 버튼 경로로 실행 가능, 뒤4행은 무변경. LIBRARY grant를 유지해도 삭제된 C를 준비/전송하지 못함 |
+| G02B-CHECKING | 기능2 × 다른 thread의 coordinator 점유1 = **2** | 표시는 동의 정보 확인 중이며 이미 진행 중인 전송을 전송 불가라고 단정하지 않음. 탐색은 lock 해제 전에 반환 |
+| 합계 | **74행**, 고유 ID는 가족별 00부터 부여 | fixture 자체가 불가능한 조합은 없고 거부 대상도 분모에 포함 |
+
+기존 CASE_IDS 18,463행과 새 UI 후속74행을 구분한다. 이전 property manifest를 다른 파일에서 수정하지 않고, 새 UI 파일의 별도 `G02B_CASE_IDS`와 독립 TEMP audit가 중복·누락/실제 node를 대조한다. 이 단위 기본 대표 분모는 **18,537**이며 생성 실패 보강 시험 범위를 승인받으면 그 분모를 따로 더한다.
+
+grant 표시는 권한 부여가 아니다. `_show_scope`의 read-only metadata와 일치하는 상태 문구를 비발급 동작에도 사용한다. 실패 코드 표시를 덮지 않는다. 명시 작업 세션이 없는 화면 동작은 pending 중 계속 거부하지만, 명시 fixed_session을 받은 준비는 fresh capture/bind/permit 검사로 판단한다. 삭제 상태는 SESSION 대상 동의만 비활성화하고 endpoint 키 폐기·LIBRARY 범위 선택/철회·예산·정산은 막지 않는다. LIBRARY 선택이 삭제된 세션을 되살리지 않는 것을 함께 검증한다.
+
+### 11.2 ResourceWarning 조사와 검증 계획
+
+수정 전 `test_legacy_and_schema_cases` 12행에 `-W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning`와 allocation tracing을 적용했다. testcase는 12 PASS였지만 종료 시 **unraisable 연결6건으로 exit1**이었다. 할당 원문은 tests/unit/test_consent_scope.py의 `with sqlite3.connect(...)` 여섯 곳이다. SQLite context manager는 transaction만 끝내고 close하지 않는다. ConsentStore 생성자는 일반 생성 실패에서는 이미 rollback/close한다. 다만 rollback 자체가 실패해도 finally에서 close하도록 별도 보강을 검토한다. fixture 수정·생성 실패 시험을 해당 unit 파일에 넣을 수 있도록 C00에게 실제 오류 근거와 함께 쓰기 범위 추가를 요청했으며, 승인 전에는 그 파일을 수정하지 않는다.
+
+UI는 fake vault/transport·SQLite만 사용한다. 정상본에서 새74행, 기존 tests/ui 전체·G-P02 네 파일·G-P03 content/selection CAS, security 회귀를 실행한다. 생성 실패 단위와 보안 시험은 ResourceWarning 및 pytest unraisable을 오류로 취급한다. OS TEMP의 고유 basetemp, no:cacheprovider, offscreen, bytecode 억제를 적용한다. 가능하면 기준 commit+승인 파일만의 사본에서 전체 오프라인 회귀를 수행한다.
+
+계획 mutation: (B01) 상태 표시를 allowed로 복귀, (B02) pending이면 fixed_session도 거부, (B03) pending의 화면 기반 범위 판정까지 허용, (B04) deleted 그룹 전체 비활성, (B05) deleted SESSION 허용 버튼까지 활성, (B06) 삭제 세션 bind fence 우회 여부 부정 행, (B07) checking을 전송 불가로 표시, (B08) 생성 실패 close 제거, (B09) rollback 실패 시 close 건너뜀. B06은 consent의 전송 규칙을 바꾸지 않는 이번 제품 수정과 구분하고 기존 삭제 fence 시험의 회귀 관측으로 확인한다. source/files를 승인 범위 밖에서 변이하지 않으며 필요하면 TEMP 사본에서만 단일 변이한다. import/수집 오류·timeout을 검출로 세지 않는다. 실제 실행 결과·유효 변이 수는 다음 절에 별도로 기록한다.
+
+### 11.3 직접 실행 — 범위 추가 승인 대기 중인 제안 사본
+
+증거 루트 **R4 = `C:/Users/gangd/AppData/Local/Temp/recoryn-g02b-6r_1r8lq`**. `R4/isolated`는 기준 commit66f0a85를 git archive로 추출하고 이번 소유 파일을 덧씌웠다. **tests/unit/test_consent_scope.py의 추가 변경은 아직 TEMP 제안 사본에만 있다.** 이 절의 그 시험을 포함한 결과를 작업 트리에 이미 반영한 결과라고 읽지 않는다. 제안 diff는 `R4/proposed-unit.diff`다. source·pytest pythonpath는 이 사본 src로 고정했다.
+
+원인 조사에서 직접 얻은 allocation trace 여섯 곳은 기준 unit 파일의 **79·87·94·119·125·182행**이다. test case가 실행된 때와 나중에 GC 경고가 찍힌 때는 다를 수 있다. 일반 생성 실패의 ConsentStore close가 누락됐다고 판정하지 않는다. 별도로 rollback 실패 시 close도 누락될 수 있는 경로는 실제 반례로 확인해 consent.py의 try/finally로 보강했다. 생성 실패 객체는 closed 상태로 마감한다.
+
+제안 unit 변경은 기존 여섯 fixture를 `closing(sqlite3.connect(...))`와 원래 transaction context로 감싸고, 기존 기대값을 유지한다. 추가 **G02B-CLOSE-00~05 6행**은 partial schema·미래 user_version·정책 감소·initialize I/O 실패·rollback I/O 실패·정상 close/중복 close다. 실제 SQLite 연결을 관측해 정확히 한 번 종료되고 이후 SELECT가 closed ProgrammingError인지 확인한다. 누수 mutant의 뒤늦은 GC 경고를 assertion 검출로 오인하지 않도록 시험 정리에서 열린 연결은 직접 닫는다. UI74+종료6 = **새80행**, 기존18,463과 합친 대표 분모 **18,543**이다.
+
+| 실행 | 직접 결과 |
+| --- | --- |
+| 수정 전66f0a85의 제품 코드 + 새80행 | **43 failed·37 passed**, error0. STATUS20·GAP8·DELETE12·CHECKING2·CLOSE1이 실패. R4/before.xml |
+| UI 후속74행, 작업 트리 | **74 PASS / 4.35s** |
+| 종료 수명6행, 제안 사본·ResourceWarning/unraisable 오류화 | **6 PASS / 0.26s** |
+| 새4파일 전체, 제안 사본·ResourceWarning/unraisable 오류화 | **1094 PASS / 43.33s**, skip0. unit112+property5+integration685+UI292. 시간 예산60초 이내 |
+| tests/ui 전체 + G-P03 content/selection CAS, 격리 사본 | **647 PASS / 35.57s**, skip0. UI341+content103+integration203 |
+| 기존 보안·gateway·provider·privacy/Ollama529 + scope unit112, 제안 사본·ResourceWarning/unraisable 오류화 | **641 PASS / 26.00s**, skip0 |
+| 검토자 원본 재확인 probe의 TEMP 무수정 사본, `-k 'not presend_policy'` | **9 PASS / 1.48s**, G02A-12 관련2 node는 명시 제외. 원본 경로는 build/review-trees/g02-sub-a2/tests/review_g02a/test_g02a_recheck.py이며 사용자 제시 축약 경로에는 파일이 없었다 |
+
+모든 pytest 실행은 `-p no:cacheprovider`, offscreen, bytecode 억제, 새 OS TEMP basetemp다. 경고 오류화 옵션은 `-W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning`다. 후자는 destructor의 경고가 pytest 종료 시 unraisable로 처리돼 testcase PASS 숫자만 보고 놓치지 않기 위해 추가했다. 전체 결과·exit를 함께 확인한다. 새 node80·기존18,463의 관계는 R4/case-audit.json에서 구분하며 새 ID 누락/중복0이다. 이전 property manifest 파일은 수정하지 않았다.
+
+### 11.4 직접 mutation과 정적 검사
+
+`R4/run_mutations.py`, 최종 사본/로그/결과는 `R4/mutations-final`이다. pyproject/src/tests/scripts/packaging을 함께 복사하고 매 실행의 consent.__file__을 해당 사본 src와 대조했다. 정상 선택 baseline **1.807초 PASS**, **유효 변이8/8 KILLED, survived/invalid/error0**이다. B06은 신규 변이를 만들지 않고 GAP의 삭제 부정 행과 기존 삭제 fence 회귀로 관측했다.
+
+| 변이 | 실제 실패 node |
+| --- | --- |
+| B01 allowed로 상태 계산 복귀 | STATUS-00 |
+| B02 fixed_session도 pending 거부 | GAP-01 |
+| B03 화면 기반 pending 검사 제거 | GAP-11(LIBRARY) |
+| B04 삭제 상태 그룹 전체 비활성 | DELETE-00 |
+| B05 삭제 SESSION 허용/철회 활성 | DELETE-00 |
+| B07 checking을 전송 불가로 표시 | CHECKING-00 |
+| B08 생성 실패 close 제거 | CLOSE-00 |
+| B09 rollback 실패 때 close 건너뜀 | CLOSE-04 |
+
+첫 B03 선택은 SESSION의 GAP-01이었다. 이 행은 뒤의 선택 None 검사로도 거부돼 해당 변이를 검출하지 못했다. 이미 정의한 LIBRARY의 GAP-11로 선택을 고쳐 같은 결함을 관측했다. 시험 행/기대값을 줄이거나 바꾸지 않았다. 이력은 R4/mutations, 최종8개는 mutations-final에 분리해 보존했다. 모두 testcase assertion 실패이며 import/수집 오류·timeout을 검출로 세지 않았다.
+
+격리 사본에서 ruff check 전체 PASS, 승인 파일과 제안 unit을 포함한 Python5파일 format check PASS, `python -m mypy src/recoryn scripts packaging` **83 source files PASS**다. ai_bridge.py는 수정하지 않았으며 지정된 선택·표시·준비 경계 밖의 source와 G-P04 변경은 건드리지 않았다.
+
+### 11.5 제안 사본 전체 회귀와 남은 범위 승인
+
+```powershell
+# cwd R4/isolated. 기준66f0a85 + G-P02b 파일 + TEMP 제안 unit 수정.
+# PYTHONPATH=R4/isolated/src, PYTHONDONTWRITEBYTECODE=1,
+# QT_QPA_PLATFORM=offscreen, HF_HUB_OFFLINE=1,
+# TRANSFORMERS_OFFLINE=1, HF_HUB_DISABLE_TELEMETRY=1
+D:/project/Recoryn/.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning --basetemp R4/full-bt --junitxml R4/full.xml --durations=8 --tb=short
+```
+
+직접 결과 **9119 passed in 253.55s / exit0**, failure/error/skip0이다. 경고를 숨긴 결과가 아니며 ResourceWarning과 pytest unraisable 모두 오류로 처리한 전체 실행이다. 기존9039+UI후속74+종료6이다. UI전체341·G-P03 content103/selection203·scope unit112가 모두 포함된다. 증거는 R4/full.xml·full.log·full-audit.json에 있다.
+
+검사 당시 작업 트리에는 privacy.py·consent.py·UI 시험·이 문서 **4파일만 새로 변경**했다. ai_bridge.py는 기준과 동일하다. 당시 unit 파일은 기준66f0a85와 raw bytes가 동일함을 직접 대조했다. fixture close6곳과 종료 시험6행의 diff는 TEMP에만 있어 **추가 쓰기 승인을 기다렸고 IMPLEMENTATION_READY로 보고하지 않았다.** 아래 §11.6은 C00이 범위를 추가 승인한 뒤의 반영 결과다. 다른 배정 파일·Git 인덱스·실제 device/model/network/vault는 수정하거나 사용하지 않았다.
+
+### 11.6 범위 추가 승인 뒤 최종 반영·제출
+
+C00이 **tests/unit/test_consent_scope.py의 fixture 연결 종료 수정과 연결 수명 시험**을 추가 승인했다. TEMP에서 검증한 파일의 LF SHA256 `7604e33f…c7a89`를 확인한 뒤 작업 트리에 그대로 반영했다. 이번 최종 변경은 **제품2파일(consent.py·privacy.py), 시험2파일(unit·UI), 문서1파일의 합5파일**이다. ai_bridge.py는 변경하지 않았다.
+
+**원인과 제품 보강을 구분한다.** 보고된 ResourceWarning6건의 실제 할당 원인은 unit 시험의 SQLite fixture6곳이었다. transaction context만 사용하고 연결을 명시 종료하지 않은 누수였으며 `closing`과 기존 transaction context를 함께 사용해 고쳤다. ConsentStore는 일반적인 schema 거부·초기화 실패 때는 이미 연결을 닫고 있었다. 추가 조사에서 **rollback 자체가 실패하면 그 뒤 close가 실행되지 않는 별도 경로**를 재현했으므로 제품도 try/finally로 보강했다. 부분 schema·미래 버전·정책 감소·초기화 I/O·rollback I/O·정상 종료/중복 종료6행은 실제 SQLite 연결의 종료와 이후 SELECT 거부를 관측한다.
+
+반영 뒤 작업 트리에서 다음을 직접 실행했다. 다른 배정 변경이 있는 작업 트리의 실행과, 그 변경을 제외한 §11.5의 전체 격리 실행을 구분한다.
+
+```powershell
+# cwd D:/project/Recoryn, PYTHONPATH=D:/project/Recoryn/src
+# bytecode 억제 / offscreen / offline. R4는 위 증거 루트.
+.venv/Scripts/python.exe -B -m pytest tests/unit/test_consent_scope.py tests/unit/test_security.py tests/property/test_security_case_space.py tests/integration/test_gateway.py tests/integration/test_egress_independent.py tests/integration/test_provider_security_independent.py tests/integration/test_publication_independent.py tests/integration/test_ai_independent.py tests/contract/test_provider_contracts.py tests/ui/test_privacy_ui.py tests/integration/test_ollama_runtime_independent.py -q -p no:cacheprovider -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning --basetemp R4/security-workspace-bt --junitxml R4/security-workspace.xml --tb=short
+```
+
+직접 결과 **641 PASS / 24.15s / exit0**, failure/error/skip0이며 ResourceWarning·unraisable 오류0이다. 요청한 G02-MIG-09와 scope unit112 전체가 포함된다. 최종 Python5파일(변경4+불변 ai_bridge)의 ruff check와 format check도 작업 트리에서 PASS다. mypy는 같은 제품 파일의 격리 사본에서 src/recoryn·scripts·packaging **83 source files PASS**였다.
+
+작업 트리와 전체 **9119 PASS** 격리 사본의 Python5파일 LF hash가 전부 일치함을 확인했다. 따라서 제안 사본만 통과하고 다른 구현을 제출한 결과가 아니다. 새4파일 **1094 PASS / 43.33s**, UI전체와 G-P03 **647 PASS**, 새80행/합계18,543 대표 ID 누락·중복0, mutation **8/8 KILLED** 결과를 그대로 인계한다. 제품 코드/시험은 그 실행 뒤 추가로 변경하지 않았다.
+
+| 직접 증거(R4 기준) | SHA256(LF, CR 제거) |
+| --- | --- |
+| new-four.xml | `a9a606c5ecb76df194af43741e807072cc1efdc4ae9204bb4c31af5ae54f8724` |
+| security.xml(격리) | `8a1d5c301da6a35a17361419dab55cb208178e5c9d838e93b8ff86e96d0470c6` |
+| ui-g03.xml | `8cb901609967b016de1e9bb8c7ac562ba0a2b6547b090aad9df2345766fb7223` |
+| reviewer.xml | `599929a5537eed83b3a28d3182326e464ad27480e4a814bbd014e532585a6c2a` |
+| mutations-final/results.json | `7ac37c22c6ee8729cc2a9d049d7321c4f0b005bd17a2b27096455f4c61d5b235` |
+| full.xml | `234ce4a8e803437f593b7723c43f2755b8388369423721cb721ef7364229fdef` |
+
+최종 파일 해시는 다음 표와 R4/implementation-files.json에 기록한다. 문서 자체 해시는 자기 참조를 피하기 위해 최종 창에 출력한다. **이 단위의 미해결 구현 반례0**, 독립 재확인과 C00 통합은 대기다. G02A-12는 C00 결정대로 G-P07에 남겼고 providers/_common.py를 수정하지 않았다. 독립 재확인을 작성자가 대신 승인하지 않는다.
+
+| 변경 파일 | SHA256(LF, CR 제거) |
+| --- | --- |
+| src/recoryn/security/consent.py | `9b1f60ea47593169e26e41657b4dbc0903eac63e3289051fe5424dedcf77f955` |
+| src/recoryn/ui/privacy.py | `078e25b4944b1ccb32c0e9ffe6941357e4c00afdc09c1b36e37a51635ecf8c26` |
+| tests/ui/test_consent_scope_ui.py | `1c3ede01d9ba9d5a96f453c7d94b3e7baaef8266577a4790a7df6ead691bbe9f` |
+| tests/unit/test_consent_scope.py | `7604e33fd2aff9aea4811ff528f86b2b9663554a63e2ef4c710e32d8ca3c7a89` |
