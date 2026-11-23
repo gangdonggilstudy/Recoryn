@@ -50,6 +50,7 @@ FMT = AudioFormat(48000, 1)
 def test_repeated_live_refusals_preserve_every_recording_block(
     tmp_path: Path, operation: str
 ) -> None:
+    """QUEUE_DROP은 G-P15 seal 지연 측정값이며 claim 거부는 publications·writer_error로 판정한다."""
     with Library(tmp_path / "library") as library:
         service = RecordingService(library, {"mic": FMT}, session_id="rec", chunk_frames=480)
         service.start()
@@ -103,37 +104,55 @@ def test_repeated_live_refusals_preserve_every_recording_block(
             worker.join(30)
         before_stop = service.health_snapshot()
         publications = list(claims.publications)
-        (tmp_path / "live-measurement.json").write_text(
-            json.dumps(
-                {
-                    "operation": operation,
-                    "outcomes": outcomes,
-                    "rejected_blocks": rejected,
-                    "claim_publications": len(publications),
-                    "accepting": before_stop["accepting"],
-                    "storage_failed": before_stop["storage_failed"],
-                    "dropped_frames": before_stop["tracks"]["mic"]["dropped_frames"],
-                }
-            ),
-            encoding="utf-8",
-        )
+        measurement = {
+            "operation": operation,
+            "outcomes": outcomes,
+            "rejected_blocks": rejected,
+            "claim_publications": len(publications),
+            "accepting": before_stop["accepting"],
+            "storage_failed": before_stop["storage_failed"],
+            "writer_error": str(service._writer_error)
+            if service._writer_error is not None
+            else None,
+            "dropped_frames": before_stop["tracks"]["mic"]["dropped_frames"],
+        }
+        measurement_path = tmp_path / "live-measurement.json"
+        measurement_path.write_text(json.dumps(measurement), encoding="utf-8")
+        print(json.dumps(measurement))
         try:
             assert not worker.is_alive()
             assert outcomes and "ACCEPTED" not in outcomes
             assert set(outcomes) <= {"SESSION_LIVE", "Live writer cannot be recovered"}
             assert publications == [], "a refused live request published a claim"
-            assert rejected == 0 and before_stop["accepting"] and not before_stop["storage_failed"]
+            assert before_stop["accepting"] and not before_stop["storage_failed"]
             assert service._writer_error is None
             service.stop(timeout=60)
-            assert service.health_snapshot()["tracks"]["mic"]["dropped_frames"] == 0
+            track = service.health_snapshot()["tracks"]["mic"]
+            gaps = library.capture_health("rec")["epochs"][0]["tracks"]["mic"]["gaps"]
             descriptors = library.chunks("rec")
-            assert len(descriptors) == 300 and sum(d.frame_count for d in descriptors) == 144000
-            assert (
-                b"".join(
-                    (library.root / d.relative_path / "audio.pcm").read_bytes() for d in descriptors
-                )
-                == data * 300
+            audio = b"".join(
+                (library.root / d.relative_path / "audio.pcm").read_bytes() for d in descriptors
             )
+            accepted_blocks = 300 - rejected
+            measurement.update(
+                accepted_blocks=accepted_blocks,
+                accepted_frames=track["accepted_frames"],
+                dropped_frames=track["dropped_frames"],
+                gap_reasons=[gap["reason"] for gap in gaps],
+                gap_frames=sum(gap["frame_count"] for gap in gaps),
+                stored_descriptors=len(descriptors),
+                stored_frames=sum(d.frame_count for d in descriptors),
+                stored_bytes=len(audio),
+            )
+            measurement_path.write_text(json.dumps(measurement), encoding="utf-8")
+            print(json.dumps(measurement))
+            assert track["dropped_frames"] == rejected * 480
+            assert all(gap["reason"] == "QUEUE_DROP" for gap in gaps)
+            assert sum(gap["frame_count"] for gap in gaps) == rejected * 480
+            assert track["accepted_frames"] == accepted_blocks * 480
+            assert len(descriptors) == accepted_blocks
+            assert sum(d.frame_count for d in descriptors) == accepted_blocks * 480
+            assert audio == data * accepted_blocks
         finally:
             service.join_writer()
 

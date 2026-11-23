@@ -1066,3 +1066,72 @@ R7/run.py·results.json에 실제 명령과 import 위치를, 각 실행 XML/log
 | old-window-control.xml | `73d47e51808d7904b757dbac571c168413d74a584828b632410a1df1d336bfb1` |
 | results.json | `338e303b7ae840cb56487964c4b1759e9dbdd10002ca4c1c436c85c08bec8d85` |
 
+## 17. GT-P03 / GT03 — live 반복 거부 시험의 수락 회계
+
+C00이 CI run45129655909의 core3.11/3.13 실패를 GT-P03으로 배정했다. 저장한 원문 `build/ci-evidence/g04-core3.11.log`에서 recover/finalize의 `rejected == 0`이 각각 3/4로 실패했고 나머지 9545건은 PASS, 3.13 원문에서는 finalize가 38로 실패하고 나머지 9546건은 PASS였음을 직접 대조했다. 이는 사용자 로그 사본의 관측이며 실제 GitHub runner를 여기서 재실행한 것은 아니다. 공격적 `chunk_frames=480`과 300회·10ms 제출은 유지한다.
+
+입력 분할은 recover/finalize 2종, 자연 실행/동시 부하, 제출 수락/QUEUE_DROP이다. 기존 의미 행 `G04-F4-LIVE-recover/finalize` **2행**과 독립 writer 방어 행 **1행**을 유지한다. 반복 실행을 새 의미 행으로 세거나 300개 수락/거부 열의 전수 실행으로 부르지 않는다. 별도 TEMP gate는 첫 블록을 writer가 꺼낸 뒤 첫 seal을 300번째 제출까지 대기시켜 기본 큐256에서 수락257·거부43을 강제한다. 이 제어 trace는 새 회계 assertion이 거부0에서만 통과하는지 확인하는 보강이며 제품·CI 시험에는 gate를 넣지 않는다.
+
+독립 oracle은 제출300·frame480·고정 PCM data에서 손계산한다. 거부 R은 측정·출력하고, 수락 N=300−R에 대해 dropped_frames=R×480, 저장 descriptor 수=N, 저장 frame=N×480, 이어 붙인 audio=data×N이어야 한다. health gap의 reason은 모두 QUEUE_DROP이며 합계도 R×480이다. worker 종료, 허용된 live 거부 코드만, ACCEPTED 없음, claim publications=[], writer_error 없음, 종료 전 accepting=True·storage_failed=False는 그대로 검사한다. QUEUE_DROP 자체는 writer seal 지연 **G-P15**의 관측이고, claim 회귀는 publications·writer_error/저장 실패로 판정한다.
+
+기준은 **8e09b62**의 TEMP archive + 지정 시험/문서 두 파일뿐이다. G-P05가 수정 중인 storage/library.py·ui/main.py·cli.py를 작업 트리에서 복사하지 않는다. G-P06 29파일도 hash로 동결한다. 정상 반복·실제 무거운 시험 동시 실행·TEMP gate 보강, 거부 전 live 사전 판정 제거 mutant, writer의 claim 방어를 되돌린 mutant, ruff·format을 확인한 뒤 아래에 실제 결과와 hash를 기록한다.
+
+### 17.1 CI 원문과 판정 범위
+
+두 로그의 실패 위치는 기존 `rejected == 0 and …`의 첫 항이며, 그 뒤 flags·writer_error assertion까지 CI가 통과했다고 해석하지 않는다. QUEUE_DROP 원인 판단은 C00 결정·RECHECK 4의 클릭 없는 대조·RecordingService.submit의 큐 거부 회계 경로에 근거한다. 로컬 제어 trace와 아래 변이로 queue 거부와 claim 오류를 분리했다. 실제 CI 3.11/3.13 재실행은 C00의 후속 검증이며 여기서는 **Windows 로컬 Python3.13.1**로 실행했다.
+
+| 읽은 CI 로그 | SHA256(LF, CR 제거) |
+| --- | --- |
+| build/ci-evidence/g04-core3.11.log | `bac5c9125bf72163de33fc6a7dcd0de1e9d0ffed06fe16ea55296a2061207e96` |
+| build/ci-evidence/g04-core3.13.log | `6bd0b35f9c1aed4ac16c803b392d03ad8266bc32b98daf52faab25da5a430ac5` |
+
+### 17.2 직접 실행 결과
+
+증거 루트 **T=`C:/Users/gangd/AppData/Local/Temp/recoryn-gt03-66n18lq3`**. 착수 전 두 소유 파일은 8e09b62와 LF hash가 같았다. T/isolated는 그 commit archive에 수정한 두 파일만 복사했다. G-P06 변경이나 G-P05 작업 트리를 복사하지 않았으며 제품 코드를 바꾸지 않았다. 실제 import는 각 사본 src로 확인했다.
+
+명령은 절대 Python 경로의 `-B -m pytest <선택 node> -q -s -p no:cacheprovider -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning --basetemp <T의 실행별 고유 폴더> --junitxml <T의 실행별 XML> --tb=short`다. offscreen·bytecode 억제·HF/transformers offline이며 실제 장치·모델·네트워크·계정·vault 쓰기·설치를 하지 않았다. 실제 전체 인자와 import 경로는 T/run.py 및 실행별 result.json에 있다.
+
+| 실행 | PASS node | JUnit suite 시간(초) | 구성 |
+| --- | ---: | ---: | --- |
+| normal | 3 | 36.009 | live2 + 독립 writer 방어1 |
+| repeat | 2 | 33.690 | 같은 live2 반복 |
+| under-load | 2 | 36.330 | 아래 별도 무거운 프로세스와 동시 live2 |
+| load-worker | 4 | 136.628 | PCM oracle + 목록7200·확정900·복구900 |
+| controlled-drop | 2 | 34.249 | TEMP queue gate + 같은 live2 |
+
+합계 **13 PASS**, failure/error/skip/경고 0이다. 부하 프로세스의 첫 시험 실행 신호를 확인한 뒤 target을 시작했고 target 종료 때도 부하 프로세스가 실행 중이었다. 시간은 subprocess 전체 경과와 구별한 XML의 suite 시간이다. 전체9547건을 다시 돌렸다는 뜻은 아니다.
+
+| live 관측 | 행 수 | 거부 R | 수락 N | dropped/gap frame | descriptor | 저장 frame | 저장 bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| normal/repeat/under-load의 recover·finalize | 6 | 0 | 300 | 0 | 300 | 144000 | 288000 |
+| controlled-drop recover | 1 | 43 | 257 | 20640 | 257 | 123360 | 246720 |
+| controlled-drop finalize | 1 | 43 | 257 | 20640 | 257 | 123360 | 246720 |
+
+모든 정상 live 관측에서 claim 게시0·writer_error=None·종료 전 accepting=True/storage_failed=False였고 허용된 거부 코드만 있었다. 제어 행의 gap은 QUEUE_DROP 한 구간이며 frame 합20640이었다. health_snapshot의 accepted/dropped와 stop 후 영속 capture_health의 gap을 대조하고 실제 descriptor·frame·이어 붙인 PCM 전체를 손계산한 N과 비교했다. 제어 gate는 T/gt03_queue_gate.py에만 있으며 CI 시험에는 지연이나 큐 크기 변경을 넣지 않았다. 자연 실행에서 이번에 거부0이었던 사실을 CI의 유실0 보장으로 확대하지 않는다.
+
+### 17.3 mutation과 제출
+
+동일 archive를 각 TEMP 사본에 pyproject/src/tests/scripts/packaging과 함께 복사하고 한 결함씩 주입했다. 제품 원본과 G-P05 파일은 수정하지 않았다.
+
+| 변이 | 실제 검출 node | 실패 근거 | 결과 |
+| --- | --- | --- | --- |
+| A: _admit_session의 live 사전 판정 제거, writer 방어 유지 | G04-F4-LIVE-recover | publications374건, `publications == []` 실패 | KILLED |
+| B: live writer도 다른 작업 claim에 막히도록 등록 방어 되돌림 | test_live_writer_admission_has_an_independent_claim_defense | writer_error가 `StateConflict('SESSION_OPERATION_IN_PROGRESS')`, None assertion 실패 | KILLED |
+
+**2/2 KILLED**, survived/invalid/import 오류/timeout 0이다. 정상 목표 선택이 먼저 PASS했으며 위 assertion 실패를 각각 확인했다. T의 diff·results.json·mutation XML/log에 원본/변이 hash와 명령을 보존했다. ruff check·format --check도 PASS다. `final-audit.json`은 비소유 추적 파일의 archive 대비 차이0, G-P06 29파일 불변, 작업 트리/사본 시험 hash 일치를 대조한다.
+
+| GT-P03 변경 시험 | SHA256(LF, CR 제거) |
+| --- | --- |
+| tests/integration/test_unfinished_recovery.py | `3f64331e31397266cf500f3cd1bf7978a9fbab0d7b1b533bfc61cc53fc1c2bbd` |
+
+이 문서의 최종 hash는 제출 창과 T/implementation-files.json에 기록한다. GT-P03 작성자 검증 결과이며 독립 재확인·원격 CI 재실행은 C00에게 넘긴다. G-P15의 writer seal 개선은 이 단위 밖에 그대로 남는다.
+
+| 직접 증거(T 기준) | SHA256(LF, CR 제거) |
+| --- | --- |
+| normal.xml | `9f01a55277f77b1e5b0bf88bae01265af14d715a0143f660f15c836090c8d0c5` |
+| repeat.xml | `9bcac266164e059a1674e32014ee501420d13280d35fe447e598545f369c84f9` |
+| under-load.xml | `ecfddff87d263914bbd1f2f1cf91d0456854de90d76e4f3cdc0985734cab45f0` |
+| controlled-drop.xml | `b80a009b3aa844015590695ac59b169c63187dc5690b18ca23c432dffece2f99` |
+| load-worker.xml | `fc8f0a739a14e39642f9a0fdaa4e3b43510115ed6bfa40af2da0e1866bfd2b8f` |
+| results.json | `e50643bdfc4b1062d7b81840c55010ce080e6150631edd68a79bd0e571d483ce` |
+

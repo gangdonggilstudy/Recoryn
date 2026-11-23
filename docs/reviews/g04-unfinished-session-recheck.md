@@ -579,3 +579,68 @@ MC 판단:
 ### R6-5. RECHECK 6 결론
 
 **FIX6 수용 가능 / G04-12 RECHECKED / 새 OPEN 0.** 남은 OPEN은 RECHECK 4의 **G04-11(S3)** 1건이다. 최종 판정과 전체 회귀는 C00가 최종 tree로 수행한다.
+
+## RECHECK 7 (GT-P03) — 2026-11-23, live 반복 거부 시험의 수락 회계 oracle 재확인
+
+같은 검토자(Claude)가 작성자 Codex의 GT-P03을 짧게 확인했다. 전체 회귀는 C00 지시로 생략했다. 위 내용은 이력으로 보존한다.
+
+**요약: GT-P03 수용 가능. 새 oracle은 G04-10 회귀를 계속 검출하고, 수락한 블록의 저장 손실과 QUEUE_DROP 외 사유의 거부를 숨기지 않는다. 느린 디스크 모사(거부 28블록)에서도 정상본은 PASS, G04-10 변이는 FAIL이다. 새 OPEN 0. 개선 제안 1건은 결함으로 세지 않는다.**
+
+### R7-1. 입력
+
+- 대상 tree **`45c5f70ee3bff6b4509c01207aa972d92cd9962e`**(tree), 기준 `8e09b62`(G-P04 커밋). `git diff --stat 8e09b62 45c5f70e`는 시험 1파일(63줄 변경)과 문서 §17(69줄)뿐이다.
+- 작업 트리의 G-P05·G-P06 미완성 변경을 피하려고 `git archive`로 `build/review-trees/gt03`(판정)과 `build/review-trees/gt03-pristine`(변이)에 새로 풀어 판정했다.
+- 시험 LF SHA256 `3f64331e31397266cf500f3cd1bf7978a9fbab0d7b1b533bfc61cc53fc1c2bbd`, 문서 `39771053586f4a32f2778ab8d2e79722174df02c95dc89167fce0f41c11ebc73`. 둘 다 C00 제시값과 같고, 시험 hash는 §17 표(1125행)와도 같다.
+- 쓰기는 이 절 추가뿐이다. 검토자 wrapper·변이는 `build/review-trees/` 아래에만 두었다.
+
+### R7-2. oracle 검토(코드 읽기)
+
+- **유지된 판정**:
+  - 클릭 worker 종료
+  - outcomes ⊆ {SESSION_LIVE, Live writer cannot be recovered}, ACCEPTED 없음
+  - `publications == []`(ClaimRecorder로 claim 게시 자체를 관측)
+  - 정지 전 `accepting`, `not storage_failed`, `_writer_error is None`
+- **바뀐 판정**: `rejected == 0` 대신 다음 회계 일치를 요구한다.
+  - `dropped_frames == rejected×480`
+  - 저장 health gap의 reason이 모두 QUEUE_DROP이고 gap frame 합이 `rejected×480`
+  - `accepted_frames == (300−rejected)×480`
+  - descriptor 수 == 300−rejected
+  - 저장 frame 합 == 수락×480
+  - 이어 붙인 audio == `data×수락`
+- **QUEUE_DROP 외 거부가 숨을 수 있는가**: `RecordingService.submit`이 False를 돌려주는 경로는 두 가지다.
+  - 비수락(`_accepting False`): drop 회계를 하지 않는다.
+  - 큐 `offer` 실패: `dropped_frames`와 QUEUE_DROP gap을 기록한다.
+
+  따라서 writer 중단처럼 비수락으로 거부되면 `dropped == rejected×480`이 깨지고, `accepting`·`_writer_error` 단언도 실패한다. writer 실패 처리는 gate 안에서 `_accepting=False`를 먼저 세운 뒤 큐를 닫으므로, 닫힌 큐가 QUEUE_DROP으로 위장되는 창도 없다(`recording.py` `_consume` 예외 처리).
+- **수락 블록 무손실**: 수락 수와 descriptor 수·frame 합·이어 붙인 bytes가 모두 같아야 하므로, 수락했는데 저장하지 않은 블록이 있으면 실패한다.
+  - **한계(개선 제안, 결함 아님)**: 모든 블록의 payload가 같은 `data`라서 **어느** 블록이 저장됐는지(순서·sequence)는 확인하지 않는다. 블록별 서로 다른 payload를 쓰거나, descriptor의 sequence 집합을 수락 index 집합과 대조하면 더 정확해진다. 현재 경로에서 손실과 중복이 정확히 상쇄될 메커니즘은 찾지 못했다(chunk_id 단위 등록).
+
+### R7-3. 변이 재현(검토자 작성 diff, `python -I build/review-trees/gt03-mutate.py`)
+
+harness LF `2b71f9e837c79ec740d12973129664304722af4303a3632370207290856e2d7d`, 결과 `gt03-mutations.json` LF `86bd67ad6a3a4057542edd12d2e460bff3362f528699eb02024d1de368f261ad`. baseline(대상 2행 + 느린 seal wrapper 1행)은 3 PASS다.
+
+| 변이 | 내용 | 결과 | 실패 assertion(직접 확인) |
+| --- | --- | --- | --- |
+| V1 | FIX4 이전 동작: `_session_operation`이 claim을 먼저 게시하고, 별도 mutex 구간에서 admission(거부 시 claim 제거) | **KILLED**(2/2행) | `a refused live request published a claim`(게시 1,153/1,092건) |
+| V3 | V1 + `register_chunk`가 live여도 claim을 검사(FIX3 동작 재현) | **KILLED**(2/2행) | writer `SESSION_OPERATION_IN_PROGRESS`로 중단, 이후 ACCEPTED 8/43회, 거부 168/277블록(ACCEPTED 단언에서 먼저 실패) |
+| V2 | `register_chunk`의 live 우회만 제거 | SURVIVED | live 세션에 claim이 게시되지 않으므로 관측 가능한 차이가 없는 방어층 변이(동등). V3에서 결합 효과를 확인했다 |
+| A1 | writer가 sequence 100의 수락 블록을 등록하지 않고 폐기 | **KILLED** | `assert 299 == 300`(descriptor 수) |
+| A2 | submit이 sequence 150을 비수락 사유로 조용히 거부 | **KILLED** | `assert 0 == 1*480`(dropped 회계) |
+
+### R7-4. 느린 디스크 모사
+
+- `tests/review_gt03/test_slow_seal_wrapper.py`(LF `f4b094ef0728b2f0ef3a46d9a1e918c18d470f0944d0d2b505e360e45a9ceab9`)는 대상 시험 함수를 **수정 없이** 호출하되, `ChunkWriter._seal`마다 0.15초 지연을 주입한다(root mutex 안의 seal 지연을 모사). 그리고 거부가 실제로 생겼는지 단언한다.
+- **정상본**: PASS. 거부 28블록, 유실 13,440frame, gap 2건 모두 QUEUE_DROP, 수락 272 = descriptor 272, 저장 261,120 bytes(=272×960), claim 게시 0, writer 오류 없음이다.
+- **V1**(같은 지연): 거부 29, 게시 231건 → **FAIL**(publications 단언)
+- **V3**(같은 지연): 거부 28, 게시 235건 → **FAIL**(publications 단언). 이 실행에서는 seal이 느려 writer 중단까지는 일어나지 않았지만, claim 게시 단언으로 검출됐다.
+
+### R7-5. 대상 시험 단독 반복
+
+`pytest …::test_repeated_live_refusals_preserve_every_recording_block -W error::ResourceWarning`(gt03, `PYTHONPATH=gt03/src`)를 실행했다.
+
+- 반복 4~6: 각 **2 passed**(34.26s / 29.13s / 27.73s)
+- 반복 1~3: 검토자의 출력 파서 오류로 pass 줄을 수집하지 못했다. 각 `live-measurement.json`은 recover/finalize 모두 요청 1,036~1,268회, 거부 0, 게시 0, 수락 300 = 저장 300, 288,000 bytes, writer 오류 없음으로 단언 조건과 일치한다.
+
+### R7-6. RECHECK 7 결론
+
+**GT-P03 수용 가능 / 새 OPEN 0 (S0 0 / S1 0 / S2 0 / S3 0).** G04-10 회귀(V1·V3)는 자연 실행과 느린 seal 모사 모두에서 검출되고, 회계 oracle은 수락 블록 손실(A1)과 비QUEUE_DROP 거부(A2)를 검출한다. 블록별 payload 식별 강화는 선택 개선 제안이다. RECHECK 4의 **G04-11(S3)**은 이 단위 범위 밖이며 그 뒤 처리 여부는 C00 기록을 따른다.
