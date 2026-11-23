@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 import time
 from collections.abc import Callable
@@ -54,6 +55,21 @@ _REFUSALS = {
     "STALE_SESSION_VERSION": "세션 상태가 바뀌었습니다. 목록을 새로 고쳤으니 다시 확인하세요.",
     "NOT_FOUND": "세션을 찾을 수 없습니다. 목록을 새로 고쳤습니다.",
 }
+# Current reasons for a pending deletion and this run's retry results (closed codes).
+_DELETION_REASONS = {
+    "SESSION_LIVE": "녹음 중인 세션 · 정지 확인 대기",
+    "ACTIVE_READER_OR_WRITER": "로컬 reader/writer 종료 확인 대기",
+    "SESSION_OPERATION_IN_PROGRESS": "복구·확정 작업 종료 대기",
+    "JOURNAL_REPAIR_REQUIRED": "삭제 기록 보강 필요",
+    "CATALOG_CLEANUP_REQUIRED": "삭제 기록 확인/정리 대기",
+    "RETRY_REQUIRED": "재시도 필요 · 이전 제거 실패 사유는 보존되지 않음",
+    "MEDIA_REMOVAL_FAILED": "원본 파일 제거 실패",
+    "DELETION_METADATA_PENDING": "삭제 기록 정리 대기",
+    "STALE_DELETE_GENERATION": "목록이 바뀌었습니다 · 다시 확인한 뒤 선택하세요",
+    "DELETE_HISTORY_CONFLICT": "삭제 이력 확인 필요",
+    "DELETION_HISTORY_UNAVAILABLE": "삭제 이력 확인 불가",
+    "NOT_PENDING": "삭제 대기 아님",
+}
 
 
 class MainWindow(QMainWindow):
@@ -70,7 +86,17 @@ class MainWindow(QMainWindow):
         self.recorder = recorder or DesktopRecorder(library, self._source_factory)
         self.power = PowerCoordinator(self.recorder)
         self._pending_suspend = False
+        # Screen cache of Library.pending_deletions(); storage remains authoritative.
         self._pending_deletions: dict[str, dict[str, Any]] = {}
+        self._pending_attempts: dict[tuple[str, int], str] = {}
+        self._pending_tasks: set[Task] = set()
+        self._pending_generation = 0
+        self._pending_requested: int | None = None
+        self._pending_loading = False
+        self._pending_unconfirmed = False
+        self._completion_note = ""
+        # Last recording/device alert written by _tick; it keeps the shared warning slot.
+        self._alert_text: str | None = None
         self._inventory: dict[str, dict[str, Any]] = {}
         self._inventory_pool = QThreadPool(self)
         self._inventory_pool.setMaxThreadCount(1)
@@ -205,10 +231,23 @@ class MainWindow(QMainWindow):
             button = QPushButton(text)
             button.clicked.connect(callback)
             sidebar_layout.addWidget(button)
+        sidebar_layout.addWidget(QLabel("삭제 대기"))
+        self.pending_list = QListWidget()
+        self.pending_list.setAccessibleName("삭제 대기 세션 목록")
+        self.pending_list.currentItemChanged.connect(self._pending_selected)
+        sidebar_layout.addWidget(self.pending_list)
+        self.pending_detail = QLabel("")
+        self.pending_detail.setWordWrap(True)
+        self.pending_detail.setAccessibleName("선택한 삭제 대기 항목의 상세")
+        sidebar_layout.addWidget(self.pending_detail)
         self.retry_delete_button = QPushButton("삭제 대기 재시도")
-        self.retry_delete_button.setAccessibleName("숨겨진 삭제 대기 세션의 원본 제거 재시도")
+        self.retry_delete_button.setAccessibleName("선택한 삭제 대기 세션의 원본 제거 재시도")
         self.retry_delete_button.clicked.connect(self.retry_pending_deletions)
         sidebar_layout.addWidget(self.retry_delete_button)
+        self.retry_all_button = QPushButton("모두 재시도")
+        self.retry_all_button.setAccessibleName("모든 삭제 대기 세션의 원본 제거 재시도")
+        self.retry_all_button.clicked.connect(self.retry_all_pending_deletions)
+        sidebar_layout.addWidget(self.retry_all_button)
         splitter.addWidget(sidebar)
         self.tabs = QTabWidget()
         splitter.addWidget(self.tabs)
@@ -332,7 +371,9 @@ class MainWindow(QMainWindow):
         for combo in (self.microphone, self.system):
             combo.setEnabled(not self.busy and not active)
         self.devices_button.setEnabled(not self.busy and not active)
-        self.retry_delete_button.setEnabled(not self.busy and bool(self._pending_deletions))
+        retry = not self.busy and not self._pending_unconfirmed
+        self.retry_delete_button.setEnabled(retry and self._selected_pending() is not None)
+        self.retry_all_button.setEnabled(retry and bool(self._pending_deletions))
         self.finalize_button.setEnabled(self._finalize_allowed())
 
     def _finalize_allowed(self) -> bool:
@@ -434,6 +475,7 @@ class MainWindow(QMainWindow):
         self.recovery_status.setText("미확정 세션 확인 중")
         self._render_sessions(list(self._inventory.values()))
         self._start_inventory()
+        self._refresh_pending()
 
     def _start_inventory(self) -> None:
         if self._inventory_tasks or self._inventory_requested is None or self._closing_requested:
@@ -511,7 +553,12 @@ class MainWindow(QMainWindow):
             if entry["session_id"] == current:
                 self.sessions.setCurrentItem(item)
         blocker.unblock()
-        self._session_selected()
+        if self.selected_session() != current:
+            # The rebuild is one logical refresh, but a selection that disappeared
+            # must still reach every listener, e.g. the privacy panel's None (G-P02 2.4).
+            self.sessions.currentItemChanged.emit(self.sessions.currentItem(), None)
+        else:
+            self._session_selected()
         self._update_controls()
 
     def selected_session(self) -> str | None:
@@ -722,6 +769,7 @@ class MainWindow(QMainWindow):
         )
         if choice == QMessageBox.StandardButton.Yes:
             self.ai_bridge.stop_playback()
+            start = self._pending_generation
 
             def delete() -> Any:
                 self.ai_bridge.before_delete(session_id)
@@ -730,24 +778,33 @@ class MainWindow(QMainWindow):
                     # deleting the session metadata used by later UI polling.
                     self.recorder.close()
                     self.recorder.recording = None
-                return self.library.delete_session(session_id)
+                result = self.library.delete_session(session_id)
+                return result, self._observe_pending()
 
-            self.operation(
-                delete,
-                self._delete_result,
-            )
+            self.operation(delete, lambda value: self._delete_result(value[0], value[1], start))
 
-    def _delete_result(self, result: dict[str, Any]) -> None:
+    def _delete_result(self, result: dict[str, Any], snapshot: tuple[str, Any], start: int) -> None:
         session_id = result["session_id"]
-        if result.get("deleted") is True and result.get("state") == "DELETED_LOCAL":
-            self._pending_deletions.pop(session_id, None)
-            self.deletion_status.setText("로컬 원본·기록 삭제 완료 · 내보낸 사본은 남습니다.")
-            self.warning.setText("로컬 삭제를 완료했습니다.")
-        else:
-            # Keep the ID independently of list_sessions(), which correctly
-            # hides deletion intents. A live reader still owns the media.
-            self._pending_deletions[session_id] = dict(result)
-            self._show_pending_deletions()
+        deleted = result.get("deleted") is True and result.get("state") == "DELETED_LOCAL"
+        self._completion_note = (
+            "로컬 원본·기록 삭제 완료 · 내보낸 사본은 남습니다." if deleted else ""
+        )
+        if deleted:
+            self._announce("로컬 삭제를 완료했습니다.")
+        # list_sessions() correctly hides deletion intents; the pending list comes
+        # from the durable inventory observed after this call, not from this dict.
+        self._adopt_pending(start, snapshot)
+        row = self._pending_deletions.get(session_id)
+        if not deleted and row is not None:
+            self._pending_attempts[(session_id, row["generation"])] = str(result.get("reason", ""))
+            self._render_pending()
+        if not deleted and row is not None:
+            self._show_pending_deletions(announce=True)
+        elif not deleted:
+            reason = _DELETION_REASONS.get(str(result.get("reason", "")), "삭제 상태 확인 필요")
+            self._announce(
+                f"삭제 대기 · {reason} · 아직 삭제되지 않았습니다. 목록을 다시 확인합니다."
+            )
         if self.recorder.recording is None:
             self._started_at = None
         self.refresh_sessions()
@@ -757,42 +814,243 @@ class MainWindow(QMainWindow):
             panel.show_transcript(None)
             panel._show_summary(None)
 
-    def _show_pending_deletions(self) -> None:
-        if not self._pending_deletions:
+    def _observe_pending(self) -> tuple[str, Any]:
+        """Worker thread: one read-only observation, or a closed error code."""
+        try:
+            return "ok", self.library.pending_deletions()
+        except (ValueError, OSError, sqlite3.Error) as error:
+            code = error.args[0] if len(error.args) == 1 else None
+            if code not in ("DELETION_HISTORY_UNAVAILABLE", "DELETE_HISTORY_CONFLICT"):
+                code = "DELETION_HISTORY_UNAVAILABLE"
+            return "error", code
+
+    def _refresh_pending(self) -> None:
+        if self._closing_requested:
             return
-        result = next(iter(self._pending_deletions.values()))
-        reason = {
-            "ACTIVE_READER_OR_WRITER": "로컬 reader/writer 종료 확인 대기",
-            "MEDIA_REMOVAL_FAILED": "원본 파일 제거 실패",
-        }.get(str(result.get("reason", "")), "삭제 상태 확인 필요")
-        if result.get("state") == "DELETE_PENDING" and result.get("deleted") is False:
-            text = (
-                f"삭제 대기 {len(self._pending_deletions)}건 · 원본 제거 보류 · {reason}. "
-                "원본 제거가 끝나지 않았으며 삭제 완료가 아닙니다. "
-                "종료 확인 후 ‘삭제 대기 재시도’를 선택하세요."
-            )
+        self._pending_generation += 1
+        self._pending_requested = self._pending_generation
+        self._pending_loading = True
+        self._start_pending()
+
+    def _start_pending(self) -> None:
+        if self._pending_tasks or self._pending_requested is None or self._closing_requested:
+            return
+        generation = self._pending_requested
+        self._pending_requested = None
+        task = Task(self._observe_pending)
+        self._pending_tasks.add(task)
+
+        def complete(value: tuple[str, Any]) -> None:
+            self._pending_tasks.discard(task)
+            if self._closing_requested:
+                return
+            self._apply_pending(generation, value)
+            self._start_pending()  # only the newest coalesced request remains
+
+        task.signals.finished.connect(complete, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(
+            lambda code: complete(("error", "DELETION_HISTORY_UNAVAILABLE")),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        # Same reader pool as the unfinished inventory: closing waits for both.
+        self._inventory_pool.start(task)
+
+    def _adopt_pending(self, start: int, snapshot: tuple[str, Any]) -> None:
+        """Apply an observation taken after an operation unless a newer one was requested."""
+        if self._pending_generation != start:
+            return
+        self._pending_generation += 1
+        self._pending_requested = None
+        self._apply_pending(self._pending_generation, snapshot)
+
+    def _apply_pending(self, generation: int, value: tuple[str, Any]) -> None:
+        if generation != self._pending_generation:
+            return  # an older observation never replaces a newer request
+        self._pending_loading = False
+        status, payload = value
+        if status == "ok":
+            self._pending_unconfirmed = False
+            self._pending_deletions = {row["session_id"]: dict(row) for row in payload}
+            self._pending_attempts = {
+                key: code
+                for key, code in self._pending_attempts.items()
+                if self._pending_deletions.get(key[0], {}).get("generation") == key[1]
+            }
         else:
-            text = (
-                "삭제 결과 확인 필요 · 로컬 원본 삭제 완료를 확인하지 못했습니다. "
-                "‘삭제 대기 재시도’로 상태를 다시 확인하세요."
+            # Keep the last successful list as unconfirmed; never show it as 0건.
+            self._pending_unconfirmed = True
+        self._render_pending()
+
+    def _pending_reason(self, row: dict[str, Any]) -> str:
+        attempt = self._pending_attempts.get((row["session_id"], row["generation"]))
+        code = attempt or str(row["reason"])
+        return _DELETION_REASONS.get(code, "삭제 상태 확인 필요")
+
+    def _pending_label(self, row: dict[str, Any]) -> str:
+        label = f"{row['session_id'][:12]} · {self._pending_reason(row)}"
+        label += " · 원본 폴더 남음" if row["media_present"] else " · 원본 폴더 없음"
+        if row["repair_required"]:
+            label += " · 기록 보강 필요"
+        if self._pending_unconfirmed:
+            label += " · 확인 전"
+        return label
+
+    def _render_pending(self) -> None:
+        previous = self._selected_pending()
+        blocker = QSignalBlocker(self.pending_list)
+        self.pending_list.clear()
+        for session_id, row in sorted(self._pending_deletions.items()):
+            item = QListWidgetItem(self._pending_label(row))
+            item.setData(Qt.ItemDataRole.UserRole, session_id)
+            item.setToolTip("세션 ID: " + session_id)
+            self.pending_list.addItem(item)
+            if previous is not None and session_id == previous[0]:
+                self.pending_list.setCurrentItem(item)
+        if self.pending_list.currentItem() is None and self.pending_list.count():
+            self.pending_list.setCurrentRow(0)
+        blocker.unblock()
+        self._pending_selected()
+        self._show_pending_deletions()
+
+    def _selected_pending(self) -> tuple[str, int] | None:
+        item = self.pending_list.currentItem()
+        if item is None:
+            return None
+        row = self._pending_deletions.get(str(item.data(Qt.ItemDataRole.UserRole)))
+        return None if row is None else (row["session_id"], row["generation"])
+
+    def _pending_selected(self, current: Any = None, previous: Any = None) -> None:
+        selected = self._selected_pending()
+        if selected is None:
+            self.pending_detail.setText("")
+        else:
+            row = self._pending_deletions[selected[0]]
+            attempt = self._pending_attempts.get(selected)
+            self.pending_detail.setText(
+                f"세션 ID: {row['session_id']}\n삭제 세대: {row['generation']}\n"
+                f"현재 이유: {_DELETION_REASONS.get(str(row['reason']), '삭제 상태 확인 필요')}\n"
+                "원본 폴더: "
+                + ("남음(원본 전체 보존을 뜻하지 않음)" if row["media_present"] else "없음")
+                + "\n기록 보강: "
+                + ("필요" if row["repair_required"] else "불필요")
+                + "\n이번 실행의 마지막 시도: "
+                + (_DELETION_REASONS.get(attempt, "확인 필요") if attempt else "없음")
+                + "\n삭제가 끝나기 전까지 정상 목록·복구·확정·전송에 다시 쓰이지 않습니다."
             )
-        self.deletion_status.setText(text)
+        self._update_controls()
+
+    def _announce(self, text: str) -> None:
+        """A deletion result for the shared warning slot; recording/device alerts win."""
+        if self._alert_text is not None and self.warning.text() == self._alert_text:
+            return  # G05R-01: never hide frame-loss/device warnings behind deletion news
         self.warning.setText(text)
 
+    def _show_pending_deletions(self, *, announce: bool = False) -> None:
+        """Pending deletions live in deletion_status; the warning slot only on announce."""
+        parts = [self._completion_note] if self._completion_note else []
+        count = len(self._pending_deletions)
+        if self._pending_unconfirmed:
+            parts.append(
+                "삭제 이력 확인 불가 · "
+                + ("마지막으로 확인한 목록을 확인 전 상태로 보여줍니다. " if count else "")
+                + "삭제 대기 목록을 확인하지 못해 재시도를 막았습니다. "
+                "‘새로고침’으로 다시 확인하세요."
+            )
+        elif count:
+            rows = [self._pending_deletions[key] for key in sorted(self._pending_deletions)]
+            selected = self._selected_pending()
+            focus = self._pending_deletions[selected[0]] if selected else rows[0]
+            head = (
+                "원본 제거 보류"
+                if any(row["media_present"] for row in rows)
+                else "삭제 기록 확인/정리 대기"
+            )
+            pending = (
+                f"삭제 대기 {count}건 · {head} · {self._pending_reason(focus)}. "
+                "원본 제거나 기록 정리가 끝나지 않아 아직 삭제되지 않았습니다. "
+                "종료 확인 후 ‘삭제 대기 재시도’를 선택하세요."
+            )
+            parts.append(pending)
+            if announce:
+                self._announce(pending)
+        self.deletion_status.setText(" ".join(parts))
+
     def retry_pending_deletions(self) -> None:
-        if self.busy or not self._pending_deletions:
+        """Retry the selected pending deletion; all of them when none is selected."""
+        selected = self._selected_pending()
+        self._retry_pending([selected] if selected else self._pending_targets())
+
+    def retry_all_pending_deletions(self) -> None:
+        self._retry_pending(self._pending_targets())
+
+    def _pending_targets(self) -> list[tuple[str, int]]:
+        return [
+            (session_id, self._pending_deletions[session_id]["generation"])
+            for session_id in sorted(self._pending_deletions)
+        ]
+
+    def _retry_pending(self, targets: list[tuple[str, int]]) -> None:
+        # The user already approved these deletions; no new confirmation dialog.
+        if self.busy or self._pending_unconfirmed or not targets:
             return
-        sessions = tuple(self._pending_deletions)
+        self.ai_bridge.stop_playback()
+        start = self._pending_generation
+        self._completion_note = ""
 
-        def retry() -> list[dict[str, Any]]:
-            return [self.library.delete_session(session) for session in sessions]
+        def retry() -> tuple[list[dict[str, Any]], tuple[str, Any]]:
+            outcomes = [self._retry_one(session, generation) for session, generation in targets]
+            return outcomes, self._observe_pending()
 
-        def done(results: list[dict[str, Any]]) -> None:
-            for result in results:
-                self._delete_result(result)
-            self._show_pending_deletions()
+        def done(value: tuple[list[dict[str, Any]], tuple[str, Any]]) -> None:
+            self._retry_done(start, *value)
 
         self.operation(retry, done)
+
+    def _retry_one(self, session_id: str, generation: int) -> dict[str, Any]:
+        """Worker thread: revoke transfers, then retry exactly the shown (ID, generation)."""
+        outcome: dict[str, Any] = {"session_id": session_id, "generation": generation}
+        try:
+            self.ai_bridge.before_delete(session_id)
+            if self.recorder.session_id == session_id:
+                self.recorder.close()
+                self.recorder.recording = None
+            outcome["result"] = self.library.retry_deletion(
+                session_id, expected_generation=generation
+            )
+        except Exception as error:  # one item's failure never hides another's result
+            code = error.args[0] if len(error.args) == 1 else None
+            known = isinstance(code, str) and code in _DELETION_REASONS
+            outcome["error"] = code if known else "OPERATION_FAILED"
+        return outcome
+
+    def _retry_done(
+        self, start: int, outcomes: list[dict[str, Any]], snapshot: tuple[str, Any]
+    ) -> None:
+        completed = 0
+        for outcome in outcomes:
+            session_id, generation = outcome["session_id"], outcome["generation"]
+            current = self._pending_deletions.get(session_id)
+            if current is not None and current["generation"] != generation:
+                continue  # a late result for an older generation never touches a newer row
+            result = outcome.get("result") or {}
+            if result.get("deleted") is True and result.get("state") == "DELETED_LOCAL":
+                self._pending_deletions.pop(session_id, None)
+                self._pending_attempts.pop((session_id, generation), None)
+                completed += 1
+            else:
+                self._pending_attempts[(session_id, generation)] = str(
+                    outcome.get("error") or result.get("reason") or result.get("state")
+                )
+        if completed:
+            self._completion_note = (
+                f"로컬 원본·기록 삭제 완료 {completed}건 · 내보낸 사본·외부 백업은 남습니다."
+            )
+            self._announce(self._completion_note)
+        self._render_pending()
+        self._adopt_pending(start, snapshot)
+        if not completed:
+            self._show_pending_deletions(announce=True)
+        self.refresh_sessions()
 
     def _choose_model(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "이미 설치한 로컬 모델 폴더")
@@ -817,15 +1075,15 @@ class MainWindow(QMainWindow):
         self.ai_bridge.tick()
         blocks, health = self.recorder.observations()
         if health:
-            self.warning.setText("장치 상태: " + str(health[-1].get("code", "CAPTURE_WARNING")))
+            self._alert("장치 상태: " + str(health[-1].get("code", "CAPTURE_WARNING")))
         recording = self.recorder.recording
         if recording is not None:
             capture_health = recording.health_snapshot()
             if capture_health["storage_failed"]:
                 self.indicator.setText("저장 오류 · 녹음 지속을 확인할 수 없습니다")
-                self.warning.setText("확정된 원본은 보존됩니다. 정지 후 복구 정보를 확인하세요.")
+                self._alert("확정된 원본은 보존됩니다. 정지 후 복구 정보를 확인하세요.")
             elif any(track["dropped_frames"] for track in capture_health["tracks"].values()):
-                self.warning.setText(
+                self._alert(
                     "오디오 저장 큐 포화로 유실된 프레임이 있습니다. 건강 정보에 누계를 보존합니다."
                 )
             chunks = [] if self.busy else self.library.chunks(recording.session_id)
@@ -844,10 +1102,13 @@ class MainWindow(QMainWindow):
             from recoryn.ui.meter import peak_percent
 
             meter.setValue(peak_percent(blocks[track]) if track in blocks else 0)
-        if self._pending_deletions and not (
-            recording is not None and recording.health_snapshot()["storage_failed"]
-        ):
+        if self._pending_deletions:
+            # Refresh only the dedicated area; recording/device alerts keep the warning slot.
             self._show_pending_deletions()
+
+    def _alert(self, text: str) -> None:
+        self._alert_text = text
+        self.warning.setText(text)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._closing:
@@ -861,6 +1122,8 @@ class MainWindow(QMainWindow):
         self._closing_requested = True
         self._inventory_generation += 1
         self._inventory_requested = None
+        self._pending_generation += 1
+        self._pending_requested = None
         self.ai_bridge.stop_playback()
         central = self.centralWidget()
         if central is not None:

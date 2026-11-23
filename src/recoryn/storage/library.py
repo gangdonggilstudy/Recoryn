@@ -9,7 +9,7 @@ import sys
 import threading
 import uuid
 import weakref
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
@@ -59,6 +59,8 @@ _UNFINISHED = frozenset(
         SessionState.INTERRUPTED,
     }
 )
+_DELETION_STATUSES = frozenset({"DELETE_PENDING", "DELETED_LOCAL"})
+_HISTORY_UNAVAILABLE = "DELETION_HISTORY_UNAVAILABLE"
 
 
 class LiveOwner(Protocol):
@@ -108,6 +110,9 @@ class Library:
         self._session_locks: dict[str, Any] = {}
         self._claims: dict[str, int] = {}
         self._exclusive_claims: set[str] = set()
+        # Bumped under root_mutex before this Library writes a deletion journal,
+        # so a journal read outside the mutex can be validated cheaply.
+        self._history_version = 0
         mkdir(self.root)
         self.db_path = safe_path(self.root, "library.sqlite")
         for suffix in ("-wal", "-shm", "-journal"):
@@ -203,13 +208,12 @@ class Library:
             connection.rollback()
             raise
 
-    def _deletion_intents(self) -> set[str]:
-        if self._missing_deletion_history:
-            raise ValidationError("Deletion history is unavailable")
+    def _read_journal(self) -> dict[str, int]:
+        """One validated journal level: session ID -> generation. Never repairs."""
         journal = safe_path(self.root, "deletion-journal")
         if not journal.is_dir():
-            raise ValidationError("Deletion history is unavailable")
-        intents = {row[0] for row in self._db.execute("SELECT session_id FROM deleted_sessions")}
+            raise ValidationError(_HISTORY_UNAVAILABLE)
+        entries: dict[str, int] = {}
         for path in journal.iterdir():
             check_path(path)
             if path.name.startswith(".tmp-"):
@@ -220,11 +224,50 @@ class Library:
             value = read_json(path)
             schema(value)
             sid = identifier(value.get("session_id"))
-            integer(value.get("generation"), minimum=1)
+            generation = integer(value.get("generation"), minimum=1)
             if path.name != sid + ".json" or value.get("state") != "DELETE_REQUESTED":
                 raise ValidationError("Invalid deletion intent")
-            intents.add(sid)
-        return intents
+            entries[sid] = generation
+        return entries
+
+    def _journal_prefetch(self) -> tuple[int, dict[str, int] | None]:
+        """Read the journal outside root_mutex; _deletion_history re-reads if it changed."""
+        with self._mutex:
+            version = self._history_version
+        try:
+            return version, self._read_journal()
+        except (ValueError, OSError):
+            return version, None  # the locked re-read reports the failure
+
+    def _deletion_history(
+        self, prefetched: tuple[int, dict[str, int] | None] | None = None
+    ) -> tuple[dict[str, tuple[int, str]], dict[str, int]]:
+        """Root mutex held: validated DB rows and journal. Corruption is never absence."""
+        connection = self._db
+        try:
+            if self._missing_deletion_history:
+                raise ValidationError(_HISTORY_UNAVAILABLE)
+            journal = None
+            if prefetched is not None and prefetched[0] == self._history_version:
+                journal = prefetched[1]
+            if journal is None:
+                journal = self._read_journal()
+            rows: dict[str, tuple[int, str]] = {}
+            for sid, generation, status in connection.execute(
+                "SELECT session_id,generation,status FROM deleted_sessions"
+            ):
+                identifier(sid)
+                integer(generation, minimum=1)
+                if status not in _DELETION_STATUSES:
+                    raise ValidationError("Unsupported deletion status")
+                rows[sid] = (generation, status)
+        except (ValueError, OSError, sqlite3.Error):
+            raise ValidationError(_HISTORY_UNAVAILABLE) from None
+        return rows, journal
+
+    def _deletion_intents(self) -> set[str]:
+        rows, journal = self._deletion_history()
+        return set(rows) | set(journal)
 
     def _live(self, session_id: str) -> None:
         identifier(session_id)
@@ -1041,65 +1084,353 @@ class Library:
             }
 
     def delete_session(self, session_id: str) -> dict[str, Any]:
+        """Record a durable intent first, then remove media when no owner remains.
+
+        Returns DELETED_LOCAL, DELETE_PENDING (with reason) or NOT_FOUND. An
+        existing intent keeps its generation; a completed tombstone is never
+        demoted. Storage exceptions propagate as before.
+        """
+        return self._progress_deletion(
+            session_id, expected_generation=None, create=True, strict=False
+        )
+
+    def retry_deletion(self, session_id: str, *, expected_generation: int) -> dict[str, Any]:
+        """Retry an existing intent only; never turn an unknown ID into a new deletion.
+
+        NOT_PENDING when no intent exists. StateConflict STALE_DELETE_GENERATION
+        (expected_generation differs) or DELETE_HISTORY_CONFLICT, and
+        ValidationError DELETION_HISTORY_UNAVAILABLE / DELETION_METADATA_PENDING,
+        change no media and report no completion.
+        """
+        identifier(session_id)
+        integer(expected_generation, minimum=1)
+        return self._progress_deletion(
+            session_id, expected_generation=expected_generation, create=False, strict=True
+        )
+
+    def deletion_generation(self, session_id: str) -> int | None:
+        """Read only: the current deletion-intent generation (pending or completed)."""
+        identifier(session_id)
+        prefetched = self._journal_prefetch()
         with self._mutex:
-            identifier(session_id)
-            intents = self._deletion_intents()
+            rows, journal = self._deletion_history(prefetched)
+            if session_id not in rows and session_id not in journal:
+                return None
+            return max(rows.get(session_id, (0, ""))[0], journal.get(session_id, 0))
+
+    def pending_deletions(self) -> list[dict[str, Any]]:
+        """Read-only inventory of durable deletion intents requiring completion or repair.
+
+        DB rows, journal and catalog generations are one observation under root_mutex;
+        in-process owner/reader flags are read in short bounded batches and folder
+        presence outside the mutex. Nothing is repaired, removed or ACKed. History
+        corruption raises ValidationError and a newer catalog generation raises
+        StateConflict DELETE_HISTORY_CONFLICT; neither becomes an empty list.
+        """
+        prefetched = self._journal_prefetch()
+        observed: list[dict[str, Any]] = []
+        with self._mutex:
+            self._check_version()
+            rows, journal = self._deletion_history(prefetched)
+            identities = sorted(set(rows) | set(journal))
+            connection = self._db
+            catalog: dict[str, int] = {}
+            for start in range(0, len(identities), 500):
+                part = identities[start : start + 500]
+                marks = ",".join("?" * len(part))
+                catalog.update(
+                    connection.execute(
+                        f"SELECT session_id,generation FROM sessions WHERE session_id IN ({marks})",  # noqa: S608
+                        part,
+                    ).fetchall()
+                )
+            for session_id in identities:
+                current = rows.get(session_id)
+                published = journal.get(session_id)
+                generation = max(current[0] if current else 0, published or 0)
+                if catalog.get(session_id, 0) > generation:
+                    raise StateConflict("DELETE_HISTORY_CONFLICT")
+                observed.append(
+                    {
+                        "session_id": session_id,
+                        "generation": generation,
+                        "current": current,
+                        "published": published,
+                        "session_generation": catalog.get(session_id),
+                    }
+                )
+        for start in range(0, len(observed), 64):
+            with self._mutex:
+                connection = self._db
+                for entry in observed[start : start + 64]:
+                    session_id = entry["session_id"]
+                    entry["live"] = self._is_live(session_id)
+                    entry["active"] = has_active_writer(self.root, session_id) or self._active_jobs(
+                        session_id, connection
+                    )
+                    entry["claimed"] = session_id in self._claims
+        items = []
+        for entry in observed:
+            session_id, generation = entry["session_id"], entry["generation"]
+            current, published = entry["current"], entry["published"]
+            media = self._media_present(session_id)
+            session_present = entry["session_generation"] is not None
+            if (
+                current == (generation, "DELETED_LOCAL")
+                and published == generation
+                and not session_present
+                and not media
+            ):
+                continue  # a completed tombstone is history, not pending work
+            journal_repair = published != generation
+            repair = (
+                journal_repair
+                or current is None
+                or current[0] != generation
+                or (session_present and entry["session_generation"] != generation)
+            )
+            if entry["live"]:
+                reason = "SESSION_LIVE"
+            elif entry["active"]:
+                reason = "ACTIVE_READER_OR_WRITER"
+            elif entry["claimed"]:
+                reason = "SESSION_OPERATION_IN_PROGRESS"
+            elif journal_repair:
+                reason = "JOURNAL_REPAIR_REQUIRED"
+            elif not media:
+                reason = "CATALOG_CLEANUP_REQUIRED"
+            else:
+                reason = "RETRY_REQUIRED"  # an earlier removal error is not persisted
+            sources = tuple(
+                name for name, value in (("db", current), ("journal", published)) if value
+            )
+            items.append(
+                {
+                    "session_id": session_id,
+                    "generation": generation,
+                    "state": "DELETE_PENDING",
+                    "deleted": False,
+                    "db_status": current[1] if current else None,
+                    "intent_sources": sources,
+                    "session_present": session_present,
+                    "media_present": media,
+                    "live": entry["live"],
+                    "active_reader_or_writer": entry["active"],
+                    "reason": reason,
+                    "repair_required": repair,
+                }
+            )
+        return items
+
+    def _media_present(self, session_id: str) -> bool:
+        """Folder presence only. An uninspectable path is never reported as absent."""
+        try:
+            return safe_path(self.root, f"sessions/{session_id}").exists()
+        except (ValueError, OSError):
+            return True
+
+    def _deletion_blocker(self, session_id: str, *, claimed: bool = False) -> str | None:
+        """Root mutex held. Never stops a source or fabricates a reader ACK.
+
+        claimed=True means the caller holds this session's claim itself.
+        """
+        if self._is_live(session_id):
+            return "SESSION_LIVE"
+        if self._active_jobs(session_id):
+            return "ACTIVE_READER_OR_WRITER"
+        if not claimed and session_id in self._claims:
+            return "SESSION_OPERATION_IN_PROGRESS"
+        return None
+
+    def _publish_intent(self, session_id: str, generation: int) -> None:
+        """Root mutex held: atomically publish the minimal journal intent at generation."""
+        self._history_version += 1
+        atomic_json(
+            safe_path(self.root, f"deletion-journal/{session_id}.json"),
+            {
+                "schema_version": 1,
+                "session_id": session_id,
+                "generation": generation,
+                "state": "DELETE_REQUESTED",
+            },
+        )
+
+    def _deletion_complete(self, session_id: str, generation: int) -> bool:
+        """Root mutex held: tombstone at generation, no catalog row and no folder."""
+        current = self._db.execute(
+            "SELECT generation,status FROM deleted_sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        if current is None or (current[0], current[1]) != (generation, "DELETED_LOCAL"):
+            return False
+        if self._db.execute("SELECT 1 FROM sessions WHERE session_id=?", (session_id,)).fetchone():
+            return False
+        return not self._media_present(session_id)
+
+    def _journal_generation(self, session_id: str) -> int | None:
+        path = safe_path(self.root, f"deletion-journal/{session_id}.json")
+        if not path.exists():
+            return None
+        value = read_json(path)
+        schema(value)
+        if value.get("session_id") != session_id or value.get("state") != "DELETE_REQUESTED":
+            raise ValidationError("Invalid deletion intent")
+        return integer(value.get("generation"), minimum=1)
+
+    @staticmethod
+    def _pending_result(
+        session_id: str, reason: str, generation: int, strict: bool
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "session_id": session_id,
+            "state": "DELETE_PENDING",
+            "deleted": False,
+            "reason": reason,
+        }
+        if strict:
+            result["generation"] = generation
+        return result
+
+    @staticmethod
+    def _completed_result(
+        session_id: str, generation: int, already: bool, strict: bool
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "session_id": session_id,
+            "state": "DELETED_LOCAL",
+            "deleted": True,
+        }
+        if strict:
+            result.update(already_deleted=already, generation=generation)
+        return result
+
+    @staticmethod
+    def _metadata_write(strict: bool, call: Callable[[], None]) -> None:
+        """retry_deletion reports a failed record write as a closed, non-sensitive code."""
+        try:
+            call()
+        except (OSError, sqlite3.Error):
+            if not strict:
+                raise  # delete_session keeps its historical storage exceptions
+            raise ValidationError("DELETION_METADATA_PENDING") from None
+
+    def _project_intent(self, session_id: str, generation: int) -> None:
+        """Root mutex held: DB intent and catalog fence at g; a tombstone stays DELETED_LOCAL."""
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT INTO deleted_sessions VALUES(?,?,'DELETE_PENDING') "
+                "ON CONFLICT(session_id) DO UPDATE SET generation=excluded.generation",
+                (session_id, generation),
+            )
+            connection.execute(
+                "UPDATE sessions SET generation=? WHERE session_id=?", (generation, session_id)
+            )
+
+    def _progress_deletion(
+        self,
+        session_id: str,
+        *,
+        expected_generation: int | None,
+        create: bool,
+        strict: bool,
+    ) -> dict[str, Any]:
+        """Shared deletion progression for delete_session and retry_deletion.
+
+        Root mutex is held only for history checks, intent records and the final
+        catalog commit. Folder removal runs under the session claim alone, so
+        another session's capture writer is never blocked by it.
+        """
+        identifier(session_id)
+        prefetched = self._journal_prefetch()
+        with self._mutex:
+            self._check_version()
+            rows, journal = self._deletion_history(prefetched)
             row = self._db.execute(
                 "SELECT generation FROM sessions WHERE session_id=?", (session_id,)
             ).fetchone()
-            if row is None and session_id not in intents:
-                return {"session_id": session_id, "state": "NOT_FOUND", "deleted": False}
-            self._check_version()
-            path = safe_path(self.root, f"deletion-journal/{session_id}.json")
-            if not path.exists():
-                old_intent = self._db.execute(
+            current = rows.get(session_id)
+            published = journal.get(session_id)
+            if current is None and published is None:
+                if not create:
+                    return {"session_id": session_id, "state": "NOT_PENDING", "deleted": False}
+                if row is None:
+                    return {"session_id": session_id, "state": "NOT_FOUND", "deleted": False}
+                generation = integer(row[0] + 1, minimum=1)
+                self._publish_intent(session_id, generation)
+                self._project_intent(session_id, generation)
+            else:
+                # Existing intent: keep the maximum valid generation, never a new one.
+                generation = max(current[0] if current else 0, published or 0)
+                if row is not None and row[0] > generation:
+                    raise StateConflict("DELETE_HISTORY_CONFLICT")
+                if expected_generation is not None and expected_generation != generation:
+                    raise StateConflict("STALE_DELETE_GENERATION")
+                if (
+                    current == (generation, "DELETED_LOCAL")
+                    and published == generation
+                    and row is None
+                    and not self._media_present(session_id)
+                ):
+                    return self._completed_result(session_id, generation, True, strict)
+                # Both minimal intents and the catalog fence reach g before removal.
+                if published != generation:
+                    self._metadata_write(
+                        strict, lambda: self._publish_intent(session_id, generation)
+                    )
+                if (
+                    current is None
+                    or current[0] != generation
+                    or (row is not None and row[0] != generation)
+                ):
+                    self._metadata_write(
+                        strict, lambda: self._project_intent(session_id, generation)
+                    )
+            blocker = self._deletion_blocker(session_id)
+            if blocker is not None:
+                return self._pending_result(session_id, blocker, generation, strict)
+        stale = False
+        with self._session_operation(session_id):
+            with self._mutex:
+                # Recheck under the claim: another actor may have finished meanwhile.
+                current = self._db.execute(
                     "SELECT generation FROM deleted_sessions WHERE session_id=?", (session_id,)
                 ).fetchone()
-                atomic_json(
-                    path,
-                    {
-                        "schema_version": 1,
-                        "session_id": session_id,
-                        "generation": max(row[0] if row else 0, old_intent[0] if old_intent else 0)
-                        + 1,
-                        "state": "DELETE_REQUESTED",
-                    },
-                )
-            generation = read_json(path)["generation"]
-            with self._transaction() as connection:
-                connection.execute(
-                    "INSERT INTO deleted_sessions VALUES(?,?,'DELETE_PENDING') "
-                    "ON CONFLICT(session_id) DO UPDATE SET status='DELETE_PENDING'",
-                    (session_id, generation),
-                )
-                connection.execute(
-                    "UPDATE sessions SET generation=? WHERE session_id=?", (generation, session_id)
-                )
-            if session_id in self._claims:
-                return {
-                    "session_id": session_id,
-                    "state": "DELETE_PENDING",
-                    "deleted": False,
-                    "reason": "SESSION_OPERATION_IN_PROGRESS",
-                }
-            if has_active_writer(self.root, session_id) or self._active_jobs(session_id):
-                return {
-                    "session_id": session_id,
-                    "state": "DELETE_PENDING",
-                    "deleted": False,
-                    "reason": "ACTIVE_READER_OR_WRITER",
-                }
-        with self._session_operation(session_id):
+                stale = current is None or current[0] != generation
+                if not stale:
+                    if self._deletion_complete(session_id, generation):
+                        return self._completed_result(session_id, generation, True, strict)
+                    blocker = self._deletion_blocker(session_id, claimed=True)
+                    if blocker is not None:
+                        return self._pending_result(session_id, blocker, generation, strict)
+            if not stale:
+                return self._remove_and_seal(session_id, generation, strict)
+        # Raised after the claim so it is not reported as a plain DELETE_PENDING.
+        raise StateConflict("STALE_DELETE_GENERATION")
+
+    def _remove_and_seal(self, session_id: str, generation: int, strict: bool) -> dict[str, Any]:
+        """Session claim held, root mutex not held: remove media, then commit the tombstone."""
+        try:
+            directory = safe_path(self.root, f"sessions/{session_id}")
+            if directory.exists():
+                remove_tree(directory)
+        except (OSError, ValueError):
+            # Partial removal stays partial; nothing is restored or reported complete.
+            return self._pending_result(session_id, "MEDIA_REMOVAL_FAILED", generation, strict)
+        with self._mutex:
             try:
-                remove_tree(safe_path(self.root, f"sessions/{session_id}"))
-            except (OSError, ValueError):
-                return {
-                    "session_id": session_id,
-                    "state": "DELETE_PENDING",
-                    "deleted": False,
-                    "reason": "MEDIA_REMOVAL_FAILED",
-                }
-            with self._mutex:
+                published = self._journal_generation(session_id)
+            except (ValueError, OSError):
+                if strict:
+                    raise ValidationError(_HISTORY_UNAVAILABLE) from None
+                raise
+            if published != generation:
+                # Completion requires a valid minimal journal at g.
+                return self._pending_result(
+                    session_id, "JOURNAL_REPAIR_REQUIRED", generation, strict
+                )
+            if self._media_present(session_id):
+                return self._pending_result(session_id, "RETRY_REQUIRED", generation, strict)
+
+            def cleanup() -> None:
                 with self._transaction() as connection:
                     connection.execute("DELETE FROM chunks WHERE session_id=?", (session_id,))
                     connection.execute(
@@ -1107,28 +1438,34 @@ class Library:
                     )
                     connection.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
                     connection.execute(
-                        "UPDATE deleted_sessions SET status='DELETED_LOCAL' WHERE session_id=?",
-                        (session_id,),
+                        "UPDATE deleted_sessions SET status='DELETED_LOCAL',generation=? "
+                        "WHERE session_id=?",
+                        (generation, session_id),
                     )
-            return {"session_id": session_id, "state": "DELETED_LOCAL", "deleted": True}
 
-    def _active_jobs(self, session_id: str | None = None) -> bool:
-        exists = self._db.execute(
+            self._metadata_write(strict, cleanup)
+        return self._completed_result(session_id, generation, False, strict)
+
+    def _active_jobs(
+        self, session_id: str | None = None, connection: sqlite3.Connection | None = None
+    ) -> bool:
+        db = self._db if connection is None else connection  # caller holds root_mutex
+        exists = db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'"
         ).fetchone()
         if not exists:
             return False
-        bindings = self._db.execute(
+        bindings = db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_sessions'"
         ).fetchone()
         if bindings and session_id is not None:
-            readers = self._db.execute(
+            readers = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_local_readers'"
             ).fetchone()
             if readers:
                 scope = "(job_sessions.session_id IS NULL OR job_sessions.session_id=?)"
                 if (
-                    self._db.execute(
+                    db.execute(
                         "SELECT 1 FROM jobs LEFT JOIN job_sessions USING(job_id) "
                         "JOIN job_local_readers USING(job_id) WHERE job_local_readers.active=1 "
                         "AND " + scope + " LIMIT 1",
@@ -1138,7 +1475,7 @@ class Library:
                 ):
                     return True
                 return (
-                    self._db.execute(
+                    db.execute(
                         "SELECT 1 FROM jobs LEFT JOIN job_sessions USING(job_id) "
                         "LEFT JOIN job_local_readers USING(job_id) "
                         "WHERE jobs.state NOT IN ('SUCCEEDED','FAILED','CANCELLED') "
@@ -1152,7 +1489,7 @@ class Library:
             # Unbound legacy work still fails closed. A known independent session
             # cannot keep this session's deletion pending forever.
             return (
-                self._db.execute(
+                db.execute(
                     "SELECT 1 FROM jobs LEFT JOIN job_sessions USING(job_id) "
                     "WHERE jobs.state NOT IN ('SUCCEEDED','FAILED','CANCELLED') "
                     "AND (job_sessions.session_id IS NULL OR job_sessions.session_id=?) LIMIT 1",
@@ -1162,7 +1499,7 @@ class Library:
             )
         # Legacy stores cannot identify the source media of an active job.
         return (
-            self._db.execute(
+            db.execute(
                 "SELECT 1 FROM jobs WHERE state NOT IN ('SUCCEEDED','FAILED','CANCELLED') LIMIT 1"
             ).fetchone()
             is not None

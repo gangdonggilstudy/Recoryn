@@ -44,15 +44,50 @@ def _parser() -> argparse.ArgumentParser:
     simulate = commands.add_parser("simulate", help="record two deterministic synthetic tracks")
     simulate.add_argument("--seconds", type=_duration, default=1.0)
     listing = commands.add_parser("list", help="list stored sessions")
-    listing.add_argument(
+    which = listing.add_mutually_exclusive_group()
+    which.add_argument(
         "--unfinished", action="store_true", help="only sessions that are not finalized"
+    )
+    which.add_argument(
+        "--delete-pending",
+        action="store_true",
+        help="hidden sessions whose deletion is not complete (read only)",
     )
     for name in ("inspect", "recover", "export", "delete", "finalize"):
         command = commands.add_parser(name)
         command.add_argument("session_id")
         if name == "export":
             command.add_argument("--output", type=Path, required=True, help="new local directory")
+        if name == "delete":
+            command.add_argument(
+                "--retry-only",
+                action="store_true",
+                help="only retry an existing deletion intent; never start a new deletion",
+            )
+            command.add_argument(
+                "--expected-generation",
+                type=_generation,
+                help="deletion generation shown by 'list --delete-pending' (with --retry-only)",
+            )
     return parser
+
+
+def _generation(value: str) -> int:
+    if not value.isascii() or not value.isdigit():
+        raise argparse.ArgumentTypeError("generation must be a positive integer")
+    number = int(value)
+    if not 0 < number <= 2**63 - 1:
+        raise argparse.ArgumentTypeError("generation must be a positive integer")
+    return number
+
+
+def _arguments(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    # Rejected before any Library or ConsentStore is opened.
+    if args.command == "delete" and args.expected_generation is not None and not args.retry_only:
+        parser.error("--expected-generation requires --retry-only")
+    return args
 
 
 def _print(value: object) -> None:
@@ -80,6 +115,41 @@ def _error_code(error: BaseException) -> str:
         code = error.args[0] if len(error.args) == 1 else None
         return code if code in _REFUSAL_CODES else "STATE_CONFLICT"
     return "STORAGE_ERROR"
+
+
+_DELETION_CODES = frozenset(
+    {
+        "DELETION_HISTORY_UNAVAILABLE",
+        "DELETE_HISTORY_CONFLICT",
+        "STALE_DELETE_GENERATION",
+        "DELETION_METADATA_PENDING",
+    }
+)
+
+
+def _deletion_error_code(error: BaseException) -> str:
+    """Closed code set for list --delete-pending and delete --retry-only."""
+    code = error.args[0] if len(error.args) == 1 else None
+    if isinstance(code, str) and code in _DELETION_CODES:
+        return code
+    if code in ("Unsafe identifier", "Reserved identifier"):
+        return "INVALID_SESSION_ID"
+    return "STORAGE_ERROR"
+
+
+def _retry_deletion(library: Any, session_id: str, expected: int | None) -> dict[str, Any]:
+    """Retry only an existing intent; NOT_PENDING changes neither media nor consent."""
+    generation = library.deletion_generation(session_id)
+    if generation is None:
+        return {"session_id": session_id, "state": "NOT_PENDING", "deleted": False}
+    from recoryn.security import ConsentStore
+
+    with ConsentStore(library.root / "security.sqlite") as consents:
+        consents.revoke_session(session_id)
+    result: dict[str, Any] = library.retry_deletion(
+        session_id, expected_generation=generation if expected is None else expected
+    )
+    return result
 
 
 def _simulate(library: Any, seconds: float) -> dict[str, Any]:
@@ -283,7 +353,7 @@ def _export_contiguous_runs(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    args = _arguments(argv)
     if args.command == "gui":
         try:
             from recoryn.ui import launch
@@ -295,12 +365,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Help/version return before optional runtime modules or storage initialization.
     from recoryn.storage import Library
 
+    deletion = (args.command == "list" and args.delete_pending) or (
+        args.command == "delete" and args.retry_only
+    )
     try:
         with Library(args.root) as library:
             if args.command == "simulate":
                 result: object = _simulate(library, args.seconds)
             elif args.command == "list" and args.unfinished:
                 result = library.unfinished_sessions()
+            elif args.command == "list" and args.delete_pending:
+                result = library.pending_deletions()
+            elif args.command == "delete" and args.retry_only:
+                result = _retry_deletion(library, args.session_id, args.expected_generation)
             elif args.command == "list":
                 result = [
                     {"session_id": item.session_id, "state": item.state.value}
@@ -328,6 +405,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 result = _export(library, args.session_id, args.output)
         _print(result)
+        if args.command == "delete" and args.retry_only:
+            # Only a confirmed local completion is success; pending/NOT_PENDING is 2.
+            confirmed = (
+                isinstance(result, dict)
+                and result.get("deleted") is True
+                and result.get("state") == "DELETED_LOCAL"
+            )
+            return 0 if confirmed else 2
         return 0
     except KeyboardInterrupt:
         _print({"error": "INTERRUPTED", "recovery_available": True})
@@ -335,7 +420,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValueError, RuntimeError, OSError, sqlite3.Error, KeyError) as error:
         # Do not persist/print exception repr: SDKs and paths may contain private data.
         payload = {"error": type(error).__name__, "message": "Operation failed; media preserved"}
-        if args.command in {"finalize", "recover"} or (args.command == "list" and args.unfinished):
+        if deletion:
+            payload["code"] = _deletion_error_code(error)
+        elif args.command in {"finalize", "recover"} or (
+            args.command == "list" and args.unfinished
+        ):
             payload["code"] = _error_code(error)
         _print(payload)
         return 1

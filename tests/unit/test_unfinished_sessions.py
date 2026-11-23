@@ -264,7 +264,12 @@ _TRANSCRIBE = {
     "DIRECTORY_ONLY": "KEYERROR",
     "NOT_FOUND": "KEYERROR",
 }
-_DELETE = {"DIRECTORY_ONLY": "NOT_FOUND_DELETE", "NOT_FOUND": "NOT_FOUND_DELETE"}
+# G-P05 (4), C00-approved: a live owner between writers keeps the intent pending.
+_DELETE = {
+    "DIRECTORY_ONLY": "NOT_FOUND_DELETE",
+    "NOT_FOUND": "NOT_FOUND_DELETE",
+    "RECORDING_LIVE": "DELETE_PENDING",
+}
 _RECOVER = {
     "CREATED": "STATE:CREATED",
     "RECORDING_STALE": "STATE:INTERRUPTED",
@@ -351,7 +356,7 @@ def act(world: World, action: str, output: Path) -> str:
             assert isinstance(job_id, str) and job_id
             return "ACCEPTED"
         if action == "DELETE":
-            result = library.delete_session(SID)
+            result = world.result = library.delete_session(SID)
             return "NOT_FOUND_DELETE" if result["state"] == "NOT_FOUND" else str(result["state"])
         result = library.recover_session(SID)
         if result["state"] == "DELETE_PENDING":
@@ -398,6 +403,11 @@ def test_state_action_table(
         if action == "FINALIZE":
             # Staging is salvaged before sealing; a skipped recovery loses these frames.
             assert world.result["frame_count"] == SEALED_FRAMES[state]
+    if (state, action) == ("RECORDING_LIVE", "DELETE"):
+        # Intent recorded first, nothing removed while the recorder is live.
+        assert world.result["reason"] == "SESSION_LIVE"
+        assert (world.root / "deletion-journal" / f"{SID}.json").is_file()
+        assert files(world.root) == before_files
     if outcome == "NOT_FOUND_DELETE" and state == "DIRECTORY_ONLY":
         assert before_files and files(world.root) == before_files  # not deleted (out of scope)
 
