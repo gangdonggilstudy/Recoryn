@@ -12,8 +12,10 @@ jobs:
     runs-on: windows-latest
     # After G-P02 the offline suite took 10m21s on 3.13; on 3.11 the job hit the
     # 15 min limit at 93% and was cancelled with no failures (run 45098064324).
-    # Approved units still add large case-space suites.
-    timeout-minutes: 40
+    # After G-P06 the tests alone took 38m28s on 3.11 and 27m54s on 3.13
+    # (run 45190482741, 15,031 tests). That left under two minutes of the old
+    # 40 min limit, and approved units still add large case-space suites.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:

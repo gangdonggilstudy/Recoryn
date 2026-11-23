@@ -412,3 +412,180 @@ CRASH fixture 재시도는 시험 파일에 한정되며 제품 결함을 가리
 ### R2-7. 결론
 
 **G05R-05 RECHECKED / G05R-06 RECHECKED. 새 OPEN 1 (S0 0 / S1 0 / S2 0 / S3 1) — G05R-07(새 분기 두 곳의 alert 우선 미고정, 동작은 정상).** G05R-02·04(기존 S1)는 G-P15 범위로 그대로 OPEN이다. 전체 회귀는 C00이 최종 tree로 실행한다.
+
+## RECHECK 3 (GC-P02) — 2026-11-23, PERF 상한 0.5초·CI timeout 120분 검토
+
+같은 검토자(Claude 하위 에이전트)가 C00 작성 GC-P02를 짧게 검토했다. 위 내용은 이력으로 보존한다.
+
+**요약: retry 행의 0.5초 상한은 X1(폴더 제거를 mutex 안에서)을 10배 이상 여유로 계속 검출한다. 그러나 X2(목록 전체를 mutex 안에서)는 0.5초에서 6/6 생존한다.** 그래서 G-P05가 C00 교훈으로 고정했던 "목록 열거는 root mutex 밖" 성질을 지키는 시험이 사라진다. **새 OPEN 1 (S2) — G05R-08.** 120분 timeout은 당장의 수용량으로는 합리적이지만 hang 탐지·시간 예산·분할 없이 상한만 올리는 방식에는 위험이 있다(R3-5 의견).
+
+### R3-1. 입력
+
+- 대상 tree `b1b7ad724737e9592567839f18b39828b494d8be`(tree)이고 기준 HEAD는 `68fbbda`다. `git diff --stat 68fbbda b1b7ad72`는 2파일 17+/4-다.
+  - `tests/integration/test_pending_deletion_restart.py` LF `d11ccbc8174dc76eba707c3981c2ac4dfce0dc5af3156e140f4b33c9eb494449`(C00 지정 값과 일치)
+  - `.github/workflows/core.yml` LF `367fed16c3ee5067f8a1508c77fa748c8441cea9def1d35c7cd6d566829e0b74`
+- 추출: `git -c core.autocrlf=false archive b1b7ad72 | tar -x -C build/review-trees/gc02`. probe는 `gc02-probe/`, 변이 사본은 `gc02-mut/`에 두었다. 작업 트리(G-P07·G-P15·G-P06b 변경 공존)는 쓰지 않았다.
+- CI 근거는 `build/ci-evidence/g06-core3.11.log`·`g06-core3.13.log`를 읽기만 했다.
+- 측정 중 다른 작업자의 pytest가 같은 PC에서 돌았다(CPU 약 40%).
+
+### R3-2. 0.5초에서의 검출력(요청 1) — 직접 측정
+
+`perf_mutants.py`(LF `145c02e6…7d08`, 결과 `perf_mutants.json` LF `290be600…6432`)로 PERF 두 행을 정상본·X1·X2 사본에서 각각 3회씩 실행했다. 한 번은 coverage 없이, 한 번은 CI와 같은 `--cov=recoryn --cov-branch`로 돌렸고, 시험이 출력한 JSON(`-s`)에서 관리 스레드 최대 보유를 읽었다.
+
+| 변이 | 행 | coverage 없음(ms, 3회) | coverage 있음(ms, 3회) | 0.5초 판정 |
+| --- | --- | --- | --- | --- |
+| 정상본 | inventory-400 | 1.07 / 0.74 / 1.31 | 1.83 / 1.79 / 1.84 | PASS 6/6 |
+| 정상본 | retry-10800 | 1.57 / 1.28 / 4.76 | 4.88 / 7.45 / 5.32 | PASS 6/6 |
+| X1 폴더 제거를 `_remove_and_seal`의 mutex 안에서 | retry-10800 | 5,589.9 / 5,567.7 / 5,638.9 | 7,199.4 / 7,365.9 / 7,125.8 | **KILLED 6/6** |
+| X2 `pending_deletions` 전체(선읽기·플래그·폴더 검사)를 mutex 한 구간으로 | inventory-400 | 278.9 / 203.9 / 205.6 | 406.7 / 354.5 / 279.7 | **SURVIVED 6/6** |
+
+- 이전 상한 0.05초에서는 X2가 검출됐다(작성자 X2 0.314초, 1차 §4.6).
+- X2의 보유 시간은 대기 기록 수에 비례한다. 400건에서는 큐 용량(1트랙 2.56초, 실제 앱 2트랙 약 1.28초)보다 작아 이 행에서는 유실을 만들지 않는다. 하지만 기록이 수천 건이면 같은 구조가 녹음 유실로 이어진다(G04-07·G05R-02와 같은 유형).
+- CI 3.11의 실패 원인 보유(81.4ms)는 `_remove_and_seal`의 mutex 구간(journal 한 파일 확인 + 정리 transaction의 FULL 동기화 commit, 로그 stack `_remove_and_seal:1418`)이었다. 이 구간을 0.5초로 판정하는 것 자체는 타당하다.
+- 같은 CI 실행의 그 행에서는 writer 자신의 append가 0.05~1.17초, seal이 0.95~1.12초씩 mutex를 잡았다. 거부 1,511블록, 유실 725,280/1,155,840프레임(63%)이었다. CI 러너에서는 녹음 처리량 자체가 실시간을 따라가지 못한다. 그래서 유실 수로는 관리 동작의 영향을 판정할 수 없고, 보유 시간 또는 구조로만 판정할 수 있다(G-P15 범위, 기록만).
+- **구조 oracle 확인**(`structural_probe.py`, LF `f29cc6af…c7fb63d`): 관리 호출 중 현재 thread가 root mutex를 가진 상태(`_is_owned()`)에서 일어난 `Path.iterdir`·`remove_tree` 수를 셌다.
+
+  | 사본 | inventory(400) iterdir owned / free | retry(10,800) iterdir owned / free, remove owned / free |
+  | --- | --- | --- |
+  | 정상본 | 0 / 1 | 0 / 3,606, 0 / 1 |
+  | X1 | 0 / 1 | **3,604** / 2, **1** / 0 |
+  | X2 | **1** / 0 | 0 / 3,606, 0 / 1 |
+
+  시간과 무관하게 세 경우를 구분한다(한 파일 `exists`·읽기는 설계상 mutex 안에서 허용).
+
+### R3-3. 같은 파일의 다른 CI 민감 단언(요청 2)
+
+- **ORDER `two.join(0.3)`**(test_pending_deletion_restart.py:891): `waited = two.is_alive()`를 손 표와 비교한다. 기대 False인 4행(export·delete × new·pending × delete_first)은 상대 동작이 0.3초 안에 끝나야 통과한다. 부하가 큰 러너나 coverage 환경에서 thread 시작·export 거부·두 번째 delete 1단계가 0.3초를 넘으면 거짓 실패가 난다. 결정적인 대안: 기대 False 행은 `release.set()` 전에 `two.join(10)`으로 끝났음을 확인하고, 기대 True 행(recover·finalize)은 지금처럼 release 전 생존을 본다.
+- 관리 동작 전체 300초 상한(:1134)과 각 `Event.wait(10)`, CRASH 120초, 자식 `wait(60)`은 여유가 크다.
+- 같은 단위의 다른 파일: UI `test_uix_pending_query_runs_off_gui_and_older_results_never_win`의 `refresh_sessions()` 0.1초 상한(test_pending_deletion_ui.py:590)도 GUI thread의 동기 `list_sessions` 등이 포함된 실측 상한이라 느린 러너에서 민감하다. 의도는 "조회가 GUI thread에서 실행되지 않음"이며 이미 thread ID 단언(:604)이 있으므로, 시간 상한은 진단 기록으로 낮추는 방안을 권한다.
+
+### R3-4. 새 발견
+
+#### G05R-08 / S2 / OPEN — 0.5초 공통 상한에서 '목록 열거는 root mutex 밖'(X2)을 검출하는 시험이 없어진다
+
+- **근거**: R3-2 표. 정상본 inventory 행의 관리 최대 보유는 coverage 포함 1.84ms인데, X2는 204~407ms로 0.5초 상한 아래에서 통과한다. X2는 G-P05 FIX 전 작성자 mutation의 C00 교훈 변이였다(1차 §4.6, 계약 §11.3 X2).
+- **영향**: 누군가 목록 조회를 다시 한 mutex 구간으로 합쳐도 회귀 시험이 통과한다. 그 구조는 대기 기록 수에 비례해 녹음 유실을 일으키는 G04-07형 결함이다. 현재 제품 동작은 정상이고 시험의 검출력만 줄었으므로 S2로 분류했다.
+- **기대(택1 또는 병행)**:
+  1. 행별 상한: inventory 행은 mutex 안에 fsync·commit이 없으므로(정상본 최대 1.84ms) 예를 들어 0.1초를 쓰고, commit이 있는 retry 행만 0.5초를 쓴다.
+  2. 구조 oracle: 관리 thread가 root mutex를 가진 동안 `iterdir`·`remove_tree`가 0회임을 단언한다. 시간 상한은 진단으로 남긴다. R3-2 probe가 정상본·X1·X2를 결정적으로 구분한다.
+  3. inventory 행의 규모를 키워(예: 수천 건) X2 보유가 상한보다 충분히 크게 만든다. 단, 실행 시간이 늘어난다.
+  - 어느 쪽이든 X1·X2 변이로 다시 검출을 확인한다.
+- 참고: G-P04의 GT-P04 상한 0.5초에서 G-P04 관리 변이(MA·MB)가 여전히 검출되는지는 이 검토가 확인하지 않았다. G04 재확인 기록의 해당 변이 보유는 수 초 단위였다.
+
+### R3-5. CI timeout 120분(요청 3) 의견
+
+- **근거 수치**: 3.11 시험 단계 38분 28초(2,308.54초, 15,031 tests), 3.13 27분 54초(run 45190482741). G-P02 직후 3.13 10분 21초였으므로 하루 사이 약 2.7배가 됐다. 3.11이 느린 주원인은 `--cov --cov-branch`의 추적 비용으로 보인다(같은 시험이 3.13 대비 약 1.38배). 예정 행(G-P07 4,947, G-P09 3,812, G-P10 2,173 등 약 1.1만 행)이 G-P05와 비슷한 비용(이 PC에서 3,166행 약 100초)이라면 CI 3.11에서 수십 분이 더해질 것으로 추정한다. 측정은 아니다.
+- **판단**: 120분은 당분간 시간 초과로 인한 취소를 막기에 충분하다. 다만 상한만 올리면 다음 위험이 있다.
+  1. hang 한 번이 러너 2시간을 쓰고 원인 stack 없이 취소된다.
+  2. 시간 증가가 실패로 드러나지 않아 예산 관리가 사라진다.
+  3. 실시간 녹음·mutex 보유를 재는 시험이 느린 러너에서 더 자주 경계값에 닿는다.
+- **권고**(설치 없이 가능한 것부터):
+  - pytest 내장 `faulthandler_timeout`(예: 600초)으로 hang 시 stack을 남긴다.
+  - job 대신 시험 step에 `timeout-minutes`를 둔다.
+  - `--durations=30` 기록과 함께 job 시간 예산(예: 60분)을 넘으면 경고하는 확인 단계를 둔다.
+  - coverage는 3.13 한쪽에서만 측정하고 3.11은 coverage 없이 실행해 호환성만 확인하는 분리를 검토한다.
+- **병렬화 시점**: 3.11 단독이 60분을 넘거나 예산 경고가 반복되면 병렬화가 필요하다고 본다.
+  - 먼저 디렉터리·marker 기준으로 job을 나누는 방식(예: unit·property·contract / integration / ui·e2e)이 새 의존성 없이 가능하다. coverage는 artifact로 합친다.
+  - pytest-xdist 같은 프로세스 내 병렬화는 위험하다. windows-latest(4 vCPU)에서 TRACE(자식 최대 16)·CRASH(자식 24 동시) 같은 자식 프로세스 시험, 실시간 녹음 PERF·LIVE 시험과 겹치면 CPU 과다 할당으로 시간 민감 시험이 더 불안정해진다. 시간 민감 시험은 별도 marker로 묶어 직렬 job에 두는 것이 먼저다.
+
+### R3-6. 결론
+
+**GC-P02: 0.5초 상한의 retry 행 판정과 120분 timeout은 수용 가능하다. 새 OPEN 1 (S0 0 / S1 0 / S2 1 / S3 0) — G05R-08(0.5초 공통 상한에서 X2 변이 6/6 생존, 목록 열거 위치를 지키는 시험 소실).** ORDER 0.3초 join·UI 0.1초 상한은 CI 민감 단언으로 관찰에 기록했고 결함으로 세지 않았다. 수정·수용은 C00이 결정한다.
+
+## RECHECK 4 (GC-P02 구조 판정) — 2026-11-24, G05R-08 수정 재확인
+
+같은 검토자(Claude 하위 에이전트)가 C00의 구조 판정 추가를 확인했다. 위 내용은 이력으로 보존한다.
+
+**요약: G05R-08 RECHECKED.** 현재 코드에서 구조 판정은 거짓 양성이 없고, X1·X2를 모두 결정적으로 검출한다. 전역 `Path.iterdir` 교체는 관리 스레드만 기록하며 다른 스레드의 동작을 바꾸지 않는다. 다만 판정이 감시하는 함수(`Path.iterdir`·`library_module.remove_tree`)에 묶여 있다. 그래서 열거를 `os.scandir`로 바꾸는 동등 리팩터(G-P15에서 생길 수 있음)만으로 판정이 조용히 무력화되고, 그 위의 X2형 회귀가 시간·구조 판정을 모두 통과한다. **새 OPEN 1 (S3) — G05R-09.**
+
+### R4-1. 입력
+
+- 대상 tree `fa2470ee3cad5d2d0c12b5ec15a975f383b80ca1`(tree)이고 기준 HEAD는 `68fbbda`다.
+- `git diff --stat b1b7ad72 fa2470ee`는 시험 1파일 29+/2-다. workflow는 b1b7ad72와 같다.
+  - `tests/integration/test_pending_deletion_restart.py` LF `1a5ddd4e0ece2429e624df0fd4df5f443b62c04fafdccfe472426137f2685f70`
+  - `.github/workflows/core.yml` LF `367fed16c3ee5067f8a1508c77fa748c8441cea9def1d35c7cd6d566829e0b74`
+  - 둘 다 C00 지정 값과 일치한다.
+- 추출: `git -c core.autocrlf=false archive fa2470ee | tar -x -C build/review-trees/gc02b`. probe는 `gc02b-probe/`, 변이 사본은 `gc02b-mut/`에 두었다. 작업 트리는 쓰지 않았다.
+- 측정: `perf_mutants2.py`(LF `2375da4d…94e8`, 결과 `perf_mutants2.json` LF `5a62998e…d4e2`). 변이마다 사본을 만들어 PERF 행을 coverage 없음 2회·CI와 같은 `--cov --cov-branch` 2회 실행하고, 시험이 출력한 JSON에서 관리 최대 보유와 `management_fs_under_mutex`를 읽었다.
+
+### R4-2. X1·X2 직접 재적용(요청 3)
+
+| 사본 | 행 | 관리 최대 보유 ms(nocov ×2 / cov ×2) | fs_under_mutex | 결과 |
+| --- | --- | --- | --- | --- |
+| 정상본 | inventory-400 | 0.94, 0.62 / 2.09, 1.24 | 0 | PASS 4/4 |
+| 정상본 | retry-10800 | 1.70, 1.38 / 4.87, 7.26 | 0 | PASS 4/4 |
+| X1 폴더 제거를 mutex 안에서 | retry-10800 | 5,052, 5,008 / 6,089, 6,805 | 3,605(remove_tree 1 + iterdir 3,604) | **KILLED 4/4** |
+| X2 목록 전체를 mutex 안에서 | inventory-400 | 180, 172 / 377, 384 | 1(journal 열거) | **KILLED 4/4**(시간 상한만으로는 통과했을 값) |
+| S0 journal 열거만 `os.scandir`로(동작 동일 리팩터) | inventory-400 | 0.67, 0.82 / 1.57, 1.85 | 0 | PASS 4/4 |
+| S2 S0 + X2 | inventory-400 | 179, 176 / 333, 348 | **0** | **SURVIVED 4/4** → G05R-09 |
+
+X2는 이제 구조 판정으로 검출되고, 시간 판정보다 먼저 실패한다. 수치는 C00 확인값(정상 1.1·2.4ms, X1 3,605회·7.36초, X2 1회·0.23초)과 같은 범위다.
+
+### R4-3. 거짓 양성 여부(요청 1)
+
+- `library.py`·`_safe.py`·`_coordination.py`·`chunks.py`의 `iterdir`·`remove_tree` 호출을 전수 확인했다.
+  - G05 관리 경로(`pending_deletions`, `retry_deletion` → `_progress_deletion` → admission 없는 `_session_operation` → `_remove_and_seal`)에서 mutex 안에 들어가는 열거 후보는 둘뿐이다.
+    - `_deletion_history()` 대체 재읽기(library.py:217의 journal 열거): 선읽기가 실패했거나, 그 사이 이 Library가 의도를 게시해 `_history_version`이 바뀐 경우에만 일어난다.
+    - `_session_operation`의 `StateConflict` 처리기(:433의 `_deletion_intents()`).
+  - 두 경로 모두 PERF 두 행에서는 생기지 않는다. 정상본 fs 0(이번 8회와 RECHECK 3 probe)과 일치한다.
+  - 나머지 열거(:661-:984)는 G-P04의 복구·확정·미확정 목록 경로로, 이 시험의 관리 스레드가 부르지 않는다.
+- 선읽기가 일시적 open 거부(G05R-04와 같은 현상)로 실패하면 mutex 안 재읽기가 실제로 일어나 판정이 실패한다. 그것은 실제 O(N) 보유이므로 진단으로 맞는 결과이며 거짓 양성으로 보지 않는다.
+
+### R4-4. 전역 monkeypatch 부작용(요청 2)
+
+- `note_fs`는 thread 이름이 `g05-management`이고, 그 thread의 meter 깊이(`local.depth`)가 0보다 클 때만 기록한다. 다음 호출은 지나가기만 하고 기록되지 않는다.
+  - 녹음 writer의 `check_write_allowed`(블록마다 journal `iterdir`, _coordination.py:33)
+  - writer `register_chunk`의 전체 journal 읽기
+  - 시험 본체(MainThread)의 열거
+- 교체 함수는 실제 `Path.iterdir`가 돌려준 iterator를 그대로 돌려준다. 동작 변화는 없고, 추가 비용은 호출당 thread 이름 비교 정도다.
+- 적용 범위: `monkeypatch`는 이 시험 함수 동안만 프로세스 전체에 적용되고, writer join·Library 종료 뒤 teardown에서 되돌린다. CRASH·TRACE 자식 프로세스에는 영향이 없다.
+- Python 버전 차이: 이 PC에서 소스로 확인했다.
+  - 3.13.1의 `Path.iterdir`는 `os.scandir`를 즉시 실행한다.
+  - 3.11.18은 `os.listdir`를 쓰는 지연 generator다.
+  - 기록은 `iterdir()` 호출 시점에 한다. 이 코드에서는 생성과 순회가 같은 블록이라 두 버전 모두 결과가 같다.
+
+### R4-5. G-P15 이후 유효성(요청 4) — G05R-09
+
+#### G05R-09 / S3 / OPEN — 구조 판정이 감시 함수에 묶여, 열거 API만 바꾼 리팩터에서 조용히 무력화된다
+
+- **근거**: 판정은 `Path.iterdir`과 `library_module.remove_tree` 호출만 센다(test_pending_deletion_restart.py의 `counted_iterdir`·`counted_remove_tree`).
+  - R4-2의 S0은 동작이 같은 리팩터(`os.scandir`로 journal 열거)인데 PASS하면서 fs 0이다.
+  - 그 위에 X2를 얹은 S2는 보유 176~348ms·fs 0으로 **4/4 통과**한다.
+  - G04-07 검토는 `os.scandir` 사용을 권고했고, G-P15 '삭제 의도 색인'은 바로 이 journal 읽기를 다시 짠다. 감시가 실제 열거를 보고 있는지 확인하는 장치가 없으면, 같은 변경으로 X2형 회귀가 다시 시험을 통과할 수 있다.
+- **기대**:
+  1. **양성 대조**: 관리 스레드의 mutex 밖 열거·제거도 세서, 각 행에서 0보다 큼을 단언한다. 정상본에서 inventory 행은 journal 선읽기 1회, retry 행은 iterdir 3,606회다. 열거 방식이 바뀌면 이 단언이 먼저 실패해 감시 대상을 고치게 만든다.
+  2. 감시를 하위 수준(`os.scandir`·`os.listdir`, 필요하면 `shutil.rmtree`)으로 넓힌다. 3.11의 `Path.iterdir`(`os.listdir`)와 3.13(`os.scandir`)을 모두 덮는다.
+  3. G-P15 검토에서 X1·X2와 위 S2형 변이를 다시 실행한다.
+  - G-P15가 색인을 처음 사용할 때 mutex 안에서 전체 journal을 읽어 만들도록 설계하면, 이 판정은 그것을 실패로 잡는다. 그 실패는 O(N) mutex 보유라는 맞는 신호이므로 상한을 완화하지 말고, 색인을 open 시점이나 mutex 밖 선읽기로 만드는 쪽이 맞다.
+- **등급**: 현재 tree에서는 X1·X2가 검출되고 제품 동작도 정상이다. 앞으로의 리팩터에 대한 시험 견고성 문제이므로 S3로 분류했다.
+
+### R4-6. 결론
+
+**G05R-08 RECHECKED. 새 OPEN 1 (S0 0 / S1 0 / S2 0 / S3 1) — G05R-09(구조 판정의 감시 함수 고정, 양성 대조 없음; S2형 변이 4/4 생존).** 0.5초 시간 상한·50ms 진단·workflow 120분은 RECHECK 3 판단 그대로다. G05R-02·04(기존 S1)는 G-P15 범위로 OPEN이다. 수정·수용은 C00이 결정한다.
+
+## RECHECK 5 — 2026-11-24, G05R-09 수정 재확인
+
+같은 검토자(Claude 하위 에이전트)가 짧게 확인했다. 위 내용은 이력으로 보존한다.
+
+- **입력**: tree `ef6709a5f4d4bda3ee3d46a595b1c0f6b5974893`(tree)이고 기준 HEAD는 `68fbbda`다. `git diff --stat fa2470ee ef6709a5`는 시험 1파일 24+/3-다. 시험 LF `865e8fc229f54877ef07b37fd60c32f6e61d30da03cfa58939ca5d266c93fc46`, workflow `367fed16…9e0b74`로 지정 값과 일치한다. `build/review-trees/gc02c`에 풀어서 판정했다.
+- **변경**: 감시 대상에 `os.scandir`·`os.listdir`를 더했다(관리 스레드 이름 필터는 그대로). 관리 스레드의 mutex 밖 폴더 작업 횟수 `management_fs_outside > 0`을 구조 판정보다 먼저 단언한다.
+- **재실행**: RECHECK 4와 같은 앵커의 `perf_mutants3.py`(LF `ea400a7a…f6d4`, 결과 `perf_mutants3.json` LF `7ad7c123…dfe6`)로 coverage 없음·있음 각 1회 실행했다.
+
+| 사본 | 행 | 관리 최대 보유 ms(nocov / cov) | mutex 안 / 밖 | 결과 |
+| --- | --- | --- | --- | --- |
+| 정상본 | inventory-400 | 0.87 / 1.97 | 0 / 2 | PASS |
+| 정상본 | retry-10800 | 1.69 / 2.15 | 0 / 7,211 | PASS |
+| X1 | retry-10800 | 5,450 / 6,967 | 7,209 / 2 | KILLED 2/2 |
+| X2 | inventory-400 | 231 / 379 | 2 / 0 | KILLED 2/2 |
+| S0 scandir 리팩터만 | inventory-400 | 0.80 / 1.91 | 0 / 1 | PASS 2/2 |
+| S2 scandir + X2 | inventory-400 | 205 / 374 | 1 / 0 | **KILLED 2/2**(직전 4/4 생존) |
+
+C00 확인값과 같다. 3.13에서 `Path.iterdir`는 내부에서 `os.scandir`를 부르므로 한 번의 열거가 2회로 세어진다(inventory 밖 2, retry 밖 7,211 = iterdir 3,606 + scandir 3,605). 판정은 0과 0보다 큼만 보므로 영향이 없다.
+
+- **양성 대조가 정상 경로에서 0이 될 수 있는가**: 이 두 PERF 행에서는 생기지 않는다.
+  - 두 행 모두 관리 호출이 처음에 mutex 밖 `_journal_prefetch` → `_read_journal`로 journal 폴더를 열거한다. 셈은 항목 수가 아니라 호출 기준이므로 목록이 비어도 1 이상이다.
+  - retry 행은 여기에 더해 mutex 밖 `remove_tree`가 있다.
+  - 0이 되는 경우는 journal 폴더가 없을 때뿐이다(`_read_journal`이 `is_dir()` 검사에서 열거 전에 실패). 그때는 `pending_deletions`·`retry_deletion`이 이력 확인 불가로 실패하므로 앞의 `result.get("ok")` 단언이 먼저 실패한다.
+  - 3.11의 지연 generator(`os.listdir`)도 순회가 같은 블록의 mutex 밖에서 일어나므로 결과가 같다.
+
+**판정: G05R-09 RECHECKED. 새 OPEN 0.** G05R-02·04(기존 S1)는 G-P15 범위로 그대로 OPEN이다.

@@ -1030,7 +1030,21 @@ class RootHoldMeter:
         self.holds: list[float] = []
         self.management_holds: list[float] = []
         self.long_holds: list[dict[str, Any]] = []
+        self.management_fs_under_mutex: list[str] = []
+        self.management_fs_outside = 0
         self.active = True
+
+    def holding(self) -> bool:
+        return getattr(self.local, "depth", 0) > 0
+
+    def note_fs(self, name: str) -> None:
+        # Folder walks and removal must run outside the root mutex (GC-P02).
+        if threading.current_thread().name != "g05-management":
+            return
+        if self.holding():
+            self.management_fs_under_mutex.append(name)
+        else:
+            self.management_fs_outside += 1
 
     def __enter__(self) -> RootHoldMeter:
         self.lock.acquire()
@@ -1056,6 +1070,16 @@ class RootHoldMeter:
                     }
                 )
         self.lock.release()
+
+
+# 관리 스레드 한 번의 root mutex 보유 판정 상한(GT-P05). CI 3.11 러너에서 정상 retry의
+# 짧은 commit이 81.4ms까지 늘어났다(run 45190482741). G-P04의 GT-P04와 같은 기준으로
+# 0.5초를 쓴다. 녹음 큐 256블록(10ms 블록 기준 약 2.56초, 실제 앱 2트랙 공유 약 1.28초)
+# 보다 작고, 폴더 제거를 mutex 안으로 되돌린 변이(5.6~7.4초)보다 충분히 작다.
+# 목록 전체를 mutex 안으로 되돌린 변이는 0.2~0.4초라 이 상한으로는 구별되지 않으므로,
+# 관리 스레드가 root mutex를 가진 동안 iterdir·remove_tree를 부르지 않는다는 구조 판정을
+# 함께 둔다(G05R-08). 50ms 이상 보유는 진단용 long_holds에 계속 기록한다.
+MANAGEMENT_HOLD_LIMIT_SECONDS = 0.5
 
 
 PERF_CASES = [
@@ -1094,6 +1118,32 @@ def test_pending_management_never_blocks_another_recording(
         meter = RootHoldMeter(library._mutex)
         monkeypatch.setattr(library, "_mutex", meter)
         monkeypatch.setitem(coordination_module._roots, library.root, meter)
+        real_iterdir = Path.iterdir
+        real_scandir = os.scandir
+        real_listdir = os.listdir
+        real_remove_tree = library_module.remove_tree
+
+        def counted_iterdir(path: Path) -> Iterator[Path]:
+            meter.note_fs("iterdir")
+            return real_iterdir(path)
+
+        def counted_scandir(*args: Any) -> Any:
+            meter.note_fs("scandir")
+            return real_scandir(*args)
+
+        def counted_listdir(*args: Any) -> Any:
+            meter.note_fs("listdir")
+            return real_listdir(*args)
+
+        def counted_remove_tree(*args: Any, **kwargs: Any) -> Any:
+            meter.note_fs("remove_tree")
+            return real_remove_tree(*args, **kwargs)
+
+        # A walk rewritten with os.scandir or os.listdir must still be seen (G05R-09).
+        monkeypatch.setattr(Path, "iterdir", counted_iterdir)
+        monkeypatch.setattr(os, "scandir", counted_scandir)
+        monkeypatch.setattr(os, "listdir", counted_listdir)
+        monkeypatch.setattr(library_module, "remove_tree", counted_remove_tree)
         service = RecordingService(library, {"mic": FMT}, session_id="rec")
         service.start()
         result: dict[str, Any] = {}
@@ -1159,8 +1209,13 @@ def test_pending_management_never_blocks_another_recording(
             "management_holds": len(meter.management_holds),
             "long_holds": meter.long_holds,
             "management_long_holds": [
-                hold for hold in meter.long_holds if hold["thread"] == "g05-management"
+                hold
+                for hold in meter.long_holds
+                if hold["thread"] == "g05-management"
+                and hold["seconds"] >= MANAGEMENT_HOLD_LIMIT_SECONDS
             ],
+            "management_fs_under_mutex": len(meter.management_fs_under_mutex),
+            "management_fs_outside": meter.management_fs_outside,
             "rejected": rejected,
             "dropped_frames": health["dropped_frames"],
             "submitted_frames": index * 480,
@@ -1170,7 +1225,11 @@ def test_pending_management_never_blocks_another_recording(
         print(json.dumps(measurement))
         assert result.get("ok"), result
         # Writer seal holds and rejected/dropped blocks are recorded only (G-P15).
-        assert max(meter.management_holds) <= 0.05, measurement
+        # Structural check first: it does not depend on runner speed (GC-P02). The
+        # positive control proves the counters see this action's folder work at all.
+        assert meter.management_fs_outside > 0, measurement
+        assert meter.management_fs_under_mutex == [], measurement
+        assert max(meter.management_holds) < MANAGEMENT_HOLD_LIMIT_SECONDS, measurement
         assert measurement["management_long_holds"] == [], measurement
 
 
