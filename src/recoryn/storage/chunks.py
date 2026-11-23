@@ -317,39 +317,50 @@ class SealedChunk:
     """A chunk this process verified once and published; its writer stays active.
 
     The writer counts as active (deletion waits) until release(), so a caller can
-    register the chunk in the catalog before a delete may remove it.
+    register the chunk in the catalog before a delete may remove it. The descriptor
+    is read-only and bound to the writer that issued it (G15R-01): a capability whose
+    descriptor no longer is that writer's sealed descriptor is no longer issued.
     """
 
-    __slots__ = ("__weakref__", "_writer", "descriptor")
+    __slots__ = ("__weakref__", "_writer", "_descriptor")
 
     def __init__(self, writer: ChunkWriter, descriptor: ChunkDescriptor) -> None:
         self._writer = writer
-        self.descriptor = descriptor
+        self._descriptor = descriptor
+
+    @property
+    def descriptor(self) -> ChunkDescriptor:
+        return self._descriptor
 
     def release(self) -> None:
         self._writer._release(self)
 
 
+def _bound(candidate: object) -> bool:
+    """Caller holds _writers_lock: a live capability still bound to its own bundle."""
+    return (
+        type(candidate) is SealedChunk
+        and candidate in _issued
+        and candidate._writer._capability is candidate
+        and candidate._descriptor is candidate._writer._sealed
+    )
+
+
 def is_issued(candidate: object) -> bool:
     """True only for a live capability returned by ChunkWriter.seal_chunk here."""
     with _writers_lock:
-        return (
-            type(candidate) is SealedChunk
-            and candidate in _issued
-            and candidate._writer._capability is candidate
-        )
+        return _bound(candidate)
 
 
 def issued_descriptor(candidate: object, root: Path) -> ChunkDescriptor | None:
-    """The descriptor of a live capability issued here for root; None otherwise."""
+    """The sealed descriptor of a live capability issued here for root; None otherwise.
+
+    It is the descriptor the writer verified and published, never a value a caller
+    put on the capability, so skipping re-verification covers that one bundle only.
+    """
     with _writers_lock:
-        if (
-            type(candidate) is SealedChunk
-            and candidate in _issued
-            and candidate._writer._capability is candidate
-            and candidate._writer.root == root
-        ):
-            return candidate.descriptor
+        if type(candidate) is SealedChunk and _bound(candidate) and candidate._writer.root == root:
+            return candidate._writer._sealed
     return None
 
 
@@ -380,6 +391,7 @@ class ChunkWriter:
         self._sealing = False
         self._held = False
         self._capability: SealedChunk | None = None
+        self._sealed: ChunkDescriptor | None = None  # what the capability vouches for
 
     def _open(self) -> None:
         check_write_allowed(self.root, self.session_id)
@@ -499,6 +511,7 @@ class ChunkWriter:
                 self._publish()
                 sealed = SealedChunk(self, descriptor)
                 with _writers_lock:
+                    self._sealed = descriptor
                     self._capability = sealed
                     _issued.add(sealed)
             return sealed

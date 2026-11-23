@@ -154,8 +154,19 @@ class RecordingService:
             self._thread = threading.Thread(
                 target=self._consume, name=f"recoryn-writer-{self.session_id}", daemon=False
             )
-            self._sealer.start()
-            self._thread.start()
+            try:
+                self._sealer.start()
+                self._thread.start()
+            except BaseException:
+                # G15R-02: a thread that cannot start leaves nothing running that keeps
+                # the session live. The sealer only stops on _STOP, which the consumer
+                # would have sent; the handles go so join and is_live see no workers.
+                if self._sealer.is_alive():
+                    self._seals.put(_STOP)
+                    self._sealer.join()
+                self._queue.close()
+                self._sealer = self._thread = None
+                raise
             try:
                 self._transition(SessionState.RECORDING)
             except BaseException:

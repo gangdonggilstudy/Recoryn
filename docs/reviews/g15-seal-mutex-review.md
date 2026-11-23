@@ -224,3 +224,121 @@ CRASH 7행이 J1b에서 통과했다(자식은 PYTHONPATH로 사본 src를 impor
   - 3,600청크를 넘는 긴 세션에서 GUI tick `chunks()`의 mutex 밖 decode 비용(GIL)은 G15 범위 밖이라 재지 않았다.
   - 게시 단계 mkdir 뒤·rename 전 kill, `_prepare`의 descriptor 기록 중 kill 같은 추가 크래시 지점.
   - 외부 손상으로 색인이 무효인 상태의 GUI tick 0.50~0.60초 root 보유(§5)는 계약상 fail closed 동작이지만, 더 느린 PC에서는 거부로 이어질 수 있다.
+
+## RECHECK 1 (G-P15b)
+
+상태: **RECHECKED — 독립 재확인 1차, 2026-11-24.** 검토자는 1차와 같은 C00 배정 하위 에이전트(Claude), 작성자는 w5:p7 Claude다. 코드는 고치지 않았다. 이 절 추가 말고 저장소 쓰기는 없다. probe·변이 스크립트는 `build/review-trees/g15b-probe/`, 변이 사본은 `build/review-trees/g15b-mut/`에 있다.
+
+**판정 요약.** G15R-01~04는 모두 **RECHECKED**(해소)다. 원 probe와 원 변이(R5·R10·R16, 원래 결함을 되돌린 B1·S1)를 다시 실행해 확인했다. 새 판정(구조·sealer 0.5초·보존)은 G-P15를 되돌린 회귀 변이 4종(검증을 mutex 안으로, seal을 소비자로, `_live` 색인 우회, capture 경로 journal 읽기)을 소비자 시간 상한 없이 모두 잡았다. 보존 조건은 거부 블록 회계 누락과 수락 블록 유실 변이를 모두 잡았다. **새 OPEN은 S3 1건(G15R-05, G-P07 귀속)**이다. S0·S1·S2는 없다.
+
+### R1.1 입력 고정
+
+| 항목 | 값 |
+| --- | --- |
+| 대상 | tree `2722c672ac4bb0d58825e9f2273d0e1ddf096243`(`git cat-file -t` = tree). HEAD `a57a517`(G-P07, `library.py`에 `job_authority` 추가) + G-P15b 5파일. `git diff a57a517 2722c672 --stat` = 5파일 527+/70- |
+| 추출 | `git archive 2722c672 \| tar -x -C build/review-trees/g15b`, 변이 사본 `git archive 2722c672 pyproject.toml src tests` → `build/review-trees/g15b-mut` |
+| 5파일 LF SHA256 | 배정 값과 일치: chunks.py `e289f3fd…`, recording.py `7a379d10…`, test_seal_phases.py `b006ee9a…`, test_seal_mutex.py `9c5cfc91…`, g15 문서 `46e8d4a4…`(`library.py`는 HEAD판 `39e63c8e…`) |
+| 기존 리뷰 문서 | 이 절을 붙이기 전 LF `4f7bf3f9355531ec0ebabcd4d854f36a40713564d9887eec4bc3f0a0e4a86a87`(`90c6123`판과 같음) |
+
+작성자는 `90c6123`(G-P07 전) `library.py`로 검증했다. **G-P07 `library.py`와 결합한 정확한 tree의 전체 회귀는 이 재확인이 처음 실행했다(RJ1).**
+
+### R1.2 실행 명령과 결과
+
+| # | 명령(사본 `g15b`, `.venv` Python 3.13.1) | 결과 |
+| --- | --- | --- |
+| RJ1 | CI core와 같은 `python -m pytest -q -p no:cacheprovider -W error::ResourceWarning --cov=recoryn --cov-branch --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=85`, `PYTHONPATH=g15b\src`(자식 프로세스도 사본 import, 보고서에 `D:\project\Recoryn\src` 경로 0건), 고유 `TEMP`(`C:\Users\gangd\AppData\Local\Temp\g15r-b-full-4633915`)·`--basetemp`, offscreen | **20376 passed / failure 0 / error 0 / skip 0, 1225.41s, exit 0, 전체 coverage 92.74%**. JUnit LF `f89d4f558f9815f3d6ad2011db72cc191adbdf9245f9b5d6f85191334643681d`, 로그 LF `fab82cfb8c8227c4bbc810d299c6a65856c062e0f06ba3791407a51da98ca854`, `coverage.json` LF `8ea64303741523e5d74f5e50f1c365ae37805e2e1359386fe80035c657eef74a` |
+| RJ2 | `python scripts/check_coverage.py coverage.json` | **전 묶음 PASS**: domain 100.00·100.00, capture 99.85·98.57, jobs 99.10·96.04, **storage 96.52·92.43**, security 98.11·94.43, content 99.59·98.75, all 94.18·88.38(line·branch %) |
+| RJ3 | `ruff check --no-cache src tests scripts packaging` / `ruff format --no-cache --check …` / `MYPYPATH=src python -m mypy --no-incremental src/recoryn scripts packaging` | All checks passed / 177 files already formatted / **88 source files no issues** |
+| RJ4 | 1차 probe 재실행(대상 src만 바꿈, `-I`) + 새 probe 5개 | R1.3·R1.5 |
+| RJ5 | `mutate_b.py ../g15b-mut mutations.jsonl`(검토자 변이 14종, `PYTHONPATH`=사본 src + probe 폴더) | R1.4. 결과 LF `7179babc77e7bc3e8e6531d0b91778593b72d7adefad6987256a117141aa3ab5`. 모든 변이 뒤 3파일 hash 원본 복원 |
+
+새 probe(`build/review-trees/g15b-probe/`, LF SHA256 앞 16자): `probe_cap_swap2.py` `703e388f9b8e01cc`, `probe_job_authority_settle.py` `f1d9930eddec8d8c`, `probe_desktop.py` `4b732ba0e2193a66`, `probe_job_recording.py` `d5a22ebbe22e229c`, `mutate_b.py` `85b51162af99f364`, `g15r_slow_sync.py`(pytest plugin, 모든 `chunks.sync` 앞에 `G15R_SYNC_DELAY`초) `9812b6c526cc0e8f`.
+
+과정 고지: 첫 변이 실행을 V3 선택을 줄이려고 `TaskStop`으로 멈췄을 때, 적용 중이던 V1이 사본 `chunks.py`에 남았다(LF `228383fe…`). `git archive 2722c672 src/recoryn/storage/chunks.py`로 사본 파일만 되살려 `e289f3fd…`를 확인한 뒤 처음부터 다시 돌렸다. 남은 python 프로세스는 없었다. S1 변이의 pytest 자식은 180초 시간 제한에서 `subprocess.run`이 종료시켰다(검토자 스크립트가 만든 프로세스).
+
+### R1.3 G15R-01~04 재확인
+
+| ID | 판정 | 근거 |
+| --- | --- | --- |
+| G15R-01 | **RECHECKED** | `chunks.py:316-364`: `descriptor`는 읽기 전용 property(slot `_descriptor`), 발급 때 `_sealed`에 봉인 descriptor를 `_capability`와 같은 `_writers_lock` 구간에서 기록, `_bound`가 `candidate._descriptor is writer._sealed`를 요구, `issued_descriptor`는 `writer._sealed`를 돌려준다(root 조건 유지). 원 probe `probe_cap_swap.py`: 공개 setter가 `AttributeError`. 우회판 `probe_cap_swap2.py`(`object.__setattr__(cap, "_descriptor", orphan)`): `register_chunk(cap)` → `ValidationError: Invalid journal record`, 손상 고아 catalog 0. 변이 R5(root 조건 제거) → `G15-U-reg-other-root-verifies` 실패, B1(결속 제거 + 호출자 값 반환 = 원래 결함) → `G15-U-reg-swapped-descriptor-verifies` 실패. 남는 경로는 `_descriptor`와 `_writer._sealed`를 함께 바꾸는 private 조작뿐이라 같은 프로세스 오용의 한계로 수용한다 |
+| G15R-02 | **RECHECKED** | `recording.py:157-169`(`try` 157, 정리 159-169): 두 시작이 한 `try`, 실패 시 살아 있는 sealer에 `_STOP`·join, 큐 닫기, 핸들 None. 원 probe `probe_thread_start.py`: 남은 thread 0, `is_live` False, 복구 `CREATED`, 삭제 `DELETED_LOCAL`, 프로세스 정상 종료(HEAD `0d846d6`와 같음). 변이 S1(정리 제거) → START 2행 실패 후 남은 non-daemon sealer 때문에 pytest가 끝나지 않아 180초 시간 초과(원래 증상 그대로 재현·검출) |
+| G15R-03 | **RECHECKED** | 새 node `test_hb6_failed_verification_recovers_only_the_verified_prefix`(검증 prefix, 채택 바이트 = 블록 3·4, staging 1, INTERRUPTED)와 `test_sealer_failure_aborts_every_queued_writer_and_loses_no_appended_block`(FIFO 3 + 열린 writer, writer 5개 모두 비활성, staging 5 보존, 복구 56프레임 바이트 일치)이 계약 oracle을 고정한다. 원 probe `probe_hb6_recovery.py`·`probe_sealer_failure.py`(준비·등록 × 3번째 청크) 재실행 결과도 1차와 같다. 변이 R10(abort 제거) → FIFO-abort node 실패 |
+| G15R-04 | **RECHECKED** | 새 행 `G15-U-fc-unsettled-listing-not-reused`(같은 tick 외부 자기 세션 의도 → append 거부). 변이 R16(`cached[3]` 조건 제거) → 그 행 실패 |
+
+### R1.4 새 판정의 검출력(요청 2·3, J5)
+
+소비자 보유 상한과 1트랙 거부 0 assert가 없어진 시험판(현재 tree) 그대로 실행했다. 남은 시간 판정은 sealer·관리·GUI tick·catalog 경로의 0.5초 상한뿐이다.
+
+| ID | 변이 | 실행 | 결과 | 잡은 판정(대표) |
+| --- | --- | --- | --- | --- |
+| V1 | `_prepare`(검증)를 첫 root mutex 안으로(G-P15 되돌림) | G15 2파일 151 | **20 실패** | 구조: HB4 V 전·후 6행(관리가 seal을 기다림), HB2·HB3 V 전·후 4행, HB5 V 전·후 2행, IDX-HB V 전·후 2행, FIFO-abort. sealer 0.5초 상한: LAT seal1·seal3 × append 0·5ms 4행 + LAT2-seal1. 지연 0·0.2초 LAT 행은 통과(시간·구조 모두 못 잡음, 1차와 같음) |
+| V2 | 가득 찬 청크를 소비자가 `seal()`·`register_chunk`(G-P15 되돌림) | G15 2파일 151 | **24 실패** | 구조: **LAT 10행 전부**(지연 0 행 포함, 소비자 seal·등록·검증·decode ≠ 0), IDX-UI, HB2·HB3·HB5, CRASH C6·C7 |
+| V3 | `_indexed_journal`이 매번 전체 재검증(색인 우회, IX4 종류) | G15 2파일 중 IDX-SCALE 제외 135 | 3 실패 | 구조: **IDX-UI n1000 1·2트랙**(mutex 안 journal 읽기 ≠ 0), IDX-FAIL inplace_rewrite-get |
+| V3b | V3, IDX-SCALE n100만 | 4 | 2 실패 | 구조: `create_session`·`get_session` n100(mutex 안 journal 읽기) |
+| V4 | capture 경로 `_writer_intent`가 journal 전체를 연다(색인 우회, IX5 종류) | G15 2파일 151 | 10 실패 | IDX-IO1~4(녹음 중단), IDX-UI n1000 2행·IDX-SCALE register 3행(구조), FC settled-listing-cache |
+| B1·R5·S1·R10·R16 | R1.3 | — | 모두 검출 | R1.3 |
+| C1 | 거부 블록을 `dropped_frames`에 더하지 않음 | G15 2파일 + `test_app_service.py` + `test_recording_control.py` 172 | 2 실패 | G15 파일은 **못 잡음**(이 PC는 거부 0이라 해당 분기가 안 돈다). 기존 `test_full_queue_close_preserves_last_drop_and_cutoff`·`test_pause_is_acknowledged_after_drain_and_resume_uses_new_epoch`가 잡음 |
+| C1s | C1 + `chunks.sync` 50ms 지연(plugin) | LAT·IDX-UI 14 | **14 실패** | `assert_conserved`(수락 + 탈락 = 제출, 탈락 = 거부) |
+| C2 | 소비자가 수락한 블록 하나(sequence 150)를 버림 | G15 2파일 151 | 17 실패 | `assert_conserved`(저장 = 수락): LAT 10행·IDX-UI 4행 등 |
+| P0 | 변이 없음 + `chunks.sync` 50ms 지연 | LAT·IDX-UI 14 | **14 통과** | 거부 285~2,030블록, 소비자 최장 0.108~0.137초, sealer 3.5~35.2ms, 소비자 seal·등록·검증·decode·mutex 안 journal 읽기 모두 0, 보존 성립 |
+
+보존 조건 `assert_conserved` 판단(요청 3):
+- 트랙별 "수락 + 탈락 = 제출(시험이 센 수)"과 "탈락 = 시험이 센 거부 수"가 함께 있다. 그래서 거부 블록이 회계에서 빠지거나(C1s), `_accepting` 해제 같은 다른 이유로 거부된 블록이 탈락으로 둔갑하면 실패한다. gap 사유는 모두 `QUEUE_DROP`이어야 하고, 잘리지 않았으면 gap 프레임 합 = 탈락이다.
+- "저장 프레임 = 수락 프레임 합"은 catalog(finalize 결과)와 큐 회계라는 서로 다른 두 기록을 대조한다. 그래서 수락 뒤 유실(C2)을 잡는다.
+- 한계(발견 아님):
+  - 저장은 **트랙 합**만 대조한다. 트랙별 저장 = 수락은 보지 않는다(트랙 사이에서 상쇄되는 오류는 못 잡는다. 겹침 검사가 중복을 막아 현실적 위험은 낮다).
+  - 바이트 대조가 없다(프레임 수만 본다).
+  - 거부가 없는 빠른 디스크에서는 탈락 회계 분기를 G15 파일이 실행하지 않는다(기존 시험이 덮는다).
+  - 소비자 처리량 회귀(append 비용 증가)는 이제 어떤 시험도 실패시키지 않고 측정으로만 남는다. C00 결정대로이며 G-P17에서 다룬다. 다만 append당 SQLite 연결 재개 같은 구조적 회귀는 `test_append_deletion_check`의 연결 수 판정이 잡는다.
+
+### R1.5 G-P07(a57a517)과의 결합(요청 4)
+
+- **desktop STOPPING·ACK 경로**(`probe_desktop.py`, 실제 `DesktopRecorder` + 가짜 장치 1트랙, 400블록 = 2청크):
+
+  | 경우 | `stop()` | 정지 직후 progress | `is_live` | 정지 대기 중 복구·확정 | `close()` 뒤 | thread | 저장 |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `_prepare` 3초 지연 | `WRITER_ACK_PENDING` | STOPPING, ack_pending True | True | `Live writer cannot be recovered` / `SESSION_LIVE` | ENDED, ack_pending False, FINALIZED | 0 | 192,000 = 수락 192,000 |
+  | 둘째 등록 실패 | `STORAGE_FAILED_PARTIAL_MEDIA_PRESERVED` | STOPPING, storage_failed True, ack_pending True | False | — | STOPPING·ack_pending True 유지(표시는 `storage_failed`가 우선) | 0 | 복구 뒤 192,000 = 수락 |
+
+  sealer 수명·drain·`is_live`는 G-P07 control mode와 맞게 동작했다. 저장 실패 뒤 `close()`가 ack_pending을 지우지 않는 것은 G-P07의 표시 상태다. `capture_status`가 `storage_failed`를 먼저 보여 사용자 문구에는 영향이 없다고 판단해 발견으로 올리지 않는다.
+- **Job 전이와 녹음**(`probe_job_recording.py`, 완료 삭제 1,000건, 12초 실시간): Job 스레드가 `claim`·`fail`·`resume`을 반복했다. 매번 `Library.job_authority`를 지나며, 실행마다 99~1,194회 root mutex를 잡았다. Job 스레드 최장 보유 1.7~3.7ms였고, 1·2트랙 모두 거부 0·유실 0·보존 성립이었다. 결과 LF `97360c688c28036c4cf1505133354d2f45076a9ab78d428b8211f1f7cbaf8b22`. probe의 Job 순환은 2회 뒤 `JOB_NOT_RESUMABLE`로 멈춰 대부분 `claim` 거부 경로였다. 그 경로도 `job_authority`를 지난다. 참고: `job_authority`는 호출자의 JobStore transaction(commit 포함)이 끝날 때까지 root mutex를 쥔다(`library.py:237-288`, mutex 구간 안의 `yield state`). 이 PC에서는 짧았지만 느린 디스크에서는 append fsync처럼 디스크 지연을 따른다(G-P17·G-P07 범위, 측정만).
+- **G-P07이 G-P15 색인을 갱신하는 경로** → 아래 G15R-05.
+
+### G15R-05 (S3, OPEN, G-P07 귀속) — `job_authority`가 G-P15 색인을 settle로 표시하는 기준 시각이 목록을 만든 뒤다
+
+- 근거: `library.py:196-288`(a57a517 추가) `job_authority`는 mutex 밖 선읽기(`_journal_prefetch`, `:220`)로 journal을 읽는다. 그 뒤 mutex 안에서 `_history_version`과 stamp가 같으면 G-P15 색인(`_intent_journal`·`_intent_stamp`·`_intent_names`)을 그 결과로 바꾸고 `_intent_settled = settled`(`:255`)로 둔다. 그런데 `settled`는 선읽기가 **끝난 뒤** 시각으로 계산한다(`:236` `time.time_ns() - stamp[2] > _STAMP_SETTLE_NS`). G-P15의 settle 규칙(`_list_journal`)은 **목록을 만들기 전** 시각이 mtime보다 2.5초 넘게 늦어야 한다. 목록이 mtime과 같은 tick에서 시작되고 선읽기가 2.5초 넘게 걸리면(완료 삭제 1,000건 냉 읽기 2.4~4.0초, G05 검토 측정) 같은 tick의 외부 변경을 놓친 목록이 settle로 표시된다. 그 뒤 `_index_current()`는 stat 1회로 색인을 믿고, capture 경로(`_writer_intent`)도 그 이름 집합을 쓴다. `reuse` 경로에서도 `_intent_settled`를 덮어쓴다.
+- 재현(`probe_job_authority_settle.py`, 외부 변경 시뮬레이션은 작성자 FC 시험과 같은 `os.utime` mtime 복원):
+  1. 녹음 세션 `rec`의 writer가 열려 있다.
+  2. 외부에서 `ext.json`을 추가한다.
+  3. `job_authority`의 선읽기 안에서, 목록을 만든 뒤 외부가 같은 tick에 `rec.json`(녹음 중 세션의 삭제 의도)을 추가하고, 선읽기가 3초 걸린다.
+  4. writer가 다시 append한다.
+
+  | 모드 | 색인 settled | 색인 이름에 `rec.json` | 다음 append |
+  | --- | --- | --- | --- |
+  | control(`job_authority` 없음, 같은 외부 변경) | — | — | 거부 `Writer session has a deletion intent` |
+  | `job_authority` 실행 | True | 없음 | **ACCEPTED — 의도 뒤 쓰기(I1 위반)** |
+
+- 기대: G-P15 색인을 갱신하는 모든 경로는 settle 규칙(목록 전 시각 기준)을 따르거나 settle을 표시하지 않아야 한다. 예:
+  - `job_authority`가 `_intent_settled = False`로만 두고, `_index_current`가 자기 목록으로 settle하게 한다.
+  - 또는 선읽기 시작 전에 시각을 잰다.
+- 영향: Library를 거치지 않는 외부 변경이 같은 mtime tick에 두 번 있고 선읽기가 2.5초를 넘을 때만 생긴다(계약 §14.3 단일 writer 계약 밖). 같은 프로세스 게시는 `_history_version` 대조가 막는다. 그래서 S3다. 코드 소유는 G-P07(`library.py`)이지만 G-P15의 I1 근거(§14.2·§14.3)를 약하게 하므로 여기에 기록한다. G-P07 검토 결과와 함께 처리 단위를 C00이 정해야 한다.
+
+### R1.6 작성자 관찰 2건에 대한 의견(요청 6)
+
+1. **외부 손상으로 색인이 무효일 때 GUI tick root 보유 0.5~0.6초**
+   - 작성자 권고 (가) "같은 stamp 동안 실패 결과 캐시"에 동의한다. fail closed가 유지되고 비용이 stat 1회로 줄어든다.
+   - 조건: 실패 캐시도 G-P15 settle 규칙을 따라야 한다. 실패를 관찰한 목록이 settle 전이면 질의마다 다시 시도한다. 그래야 같은 tick 안의 손상 복구가 보인다. 결과가 오래 실패 쪽으로 남는 것은 안전 쪽이라 괜찮다.
+   - capture 경로(이름만 사용)에는 적용하지 않는다(G05R-04 해소 유지).
+   - G15R-05와 같은 종류의 실수(목록 뒤 시각으로 settle)를 피해야 하고, `job_authority`가 이 캐시를 덮어쓰지 않게 해야 한다.
+   - `library.py`가 이제 G-P07과 공유되므로 소유 단위를 정한 뒤 진행하는 것이 맞다.
+2. **GC-P02 구조 판정과 `_live` 이름 목록 충돌 위험**
+   - 작성자 권고(단기 (가) 예외, 후속 (나) mutex 밖 목록)에 동의한다.
+   - (가)는 계수기에서 `deletion-journal` 경로의 `os.scandir` 이름 목록만 예외로 두는 좁은 규칙이어야 한다. 폴더 순회·`remove_tree`·다른 경로의 `iterdir`은 계속 금지한다.
+   - (나)는 mutex 밖 목록을 쓰려면 "목록 전 시각 기록 → 목록 → mutex 안 stamp 재확인"을 지켜야 한다. G15R-05는 이 순서를 어긴 실제 사례다.
+
+### R1.7 남는 위험과 놓쳤을 수 있는 영역
+
+- CI 러너(3.11·3.13)에서의 실제 실행은 하지 않았다. 느린 디스크는 fsync 앞 지연 주입으로만 흉내 냈다(50ms, LAT·IDX-UI 14행).
+- 소비자 append의 mutex 안 fsync가 정하는 처리량 한계(CI에서 1트랙도 거부)는 측정으로만 남았다. G-P17 전까지 실제 느린 디스크에서 녹음 유실이 날 수 있다는 것이 남는 제품 위험이다(유실은 `QUEUE_DROP`으로 기록됨).
+- `job_authority`의 root mutex 보유가 JobStore commit을 포함하는 점은 이 PC에서만 쟀다(최장 3.7ms).
+- 1차 §7의 미검증 항목(FAT·exFAT·네트워크 볼륨, 다중 프로세스, 실장비, 전원 장애, 추가 크래시 지점)은 그대로다.

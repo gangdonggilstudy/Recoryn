@@ -298,13 +298,93 @@ class RootHoldMeter:
 #   mutant judged by time: MU7 holds at least the injected 1 s or 3 s in LAT seal1 and seal3,
 #   IX4 held 1.07 s. This PC's longest legitimate hold was 35.3 ms, so a runner 1.4-1.7x
 #   slower keeps about 8x headroom.
-# - APPEND_ONLY_BOUND for the consumer, which only appends and keeps its two fsyncs inside the
-#   mutex (C00 decision 4). Seal work back on the consumer holds it 0.4 s or more (contract
-#   section 2.2). This PC's longest was 57.5 ms with injected 5 ms fsyncs, 98 ms at 1.7x.
+# - The consumer (append only) has no time bound and its rejected blocks are not judged
+#   (C00 decision after main 90c6123 CI run 45234308753). append keeps its two fsyncs per
+#   block inside the mutex (C00 decision 4), so its hold follows the disk: CI held it
+#   0.23-1.04 s and rejected blocks even with one track. That throughput limit belongs to
+#   G-P17 (durability unit). What G15 changed is judged by structure instead: the consumer
+#   never seals, registers, verifies or decodes; no journal file is read under the mutex;
+#   every submitted block is stored or recorded as a QUEUE_DROP gap.
 # - Holds of DIAGNOSTIC_SECONDS or more are printed with each measurement and never fail.
 HOLD_LIMIT_SECONDS = 0.5
-APPEND_ONLY_BOUND = 0.2
 DIAGNOSTIC_SECONDS = 0.05
+STRUCTURE = ("seal", "register", "verify", "decode", "locked_journal_read")
+
+
+def structure_probe(
+    monkeypatch: pytest.MonkeyPatch, measured: RootHoldMeter
+) -> dict[str, list[str]]:
+    """Which threads seal, register, verify or decode, and which read a deletion
+    journal file while owning the root mutex (structural judgement, never timed)."""
+    seen: dict[str, list[str]] = {kind: [] for kind in STRUCTURE}
+    guard = threading.Lock()
+    original_seal = ChunkWriter.seal
+    original_register = Library.register_chunk
+    original_verified = chunks._verified
+    original_decode = chunks.ChunkDescriptor.from_dict.__func__  # type: ignore[attr-defined]
+    original_read = library_module.read_json
+
+    def note(kind: str) -> None:
+        with guard:
+            seen[kind].append(threading.current_thread().name)
+
+    def seal(self: ChunkWriter) -> Any:
+        note("seal")
+        return original_seal(self)
+
+    def register(self: Library, descriptor: Any) -> None:
+        note("register")
+        original_register(self, descriptor)
+
+    def verified(*args: Any) -> Any:
+        note("verify")
+        return original_verified(*args)
+
+    def decode(cls: type, value: dict[str, Any]) -> Any:
+        note("decode")
+        return original_decode(cls, value)
+
+    def read_json(path: Path, **kwargs: Any) -> Any:
+        if path.parent.name == "deletion-journal" and measured.holding():
+            note("locked_journal_read")
+        return original_read(path, **kwargs)
+
+    monkeypatch.setattr(ChunkWriter, "seal", seal)
+    monkeypatch.setattr(Library, "register_chunk", register)
+    monkeypatch.setattr(chunks, "_verified", verified)
+    monkeypatch.setattr(chunks.ChunkDescriptor, "from_dict", classmethod(decode))
+    monkeypatch.setattr(library_module, "read_json", read_json)
+    return seen
+
+
+def structure_counts(seen: dict[str, list[str]]) -> dict[str, int]:
+    """Consumer calls per kind, and journal reads under the mutex by any thread."""
+    counts = {
+        f"consumer_{kind}": sum(name.startswith("recoryn-writer-") for name in seen[kind])
+        for kind in STRUCTURE[:-1]
+    }
+    counts["locked_journal_reads"] = len(seen["locked_journal_read"])
+    return counts
+
+
+def assert_conserved(
+    library: Library,
+    session: str,
+    submitted: dict[str, int],
+    rejected: dict[str, int],
+    stored_frames: int,
+    frames: int = 480,
+) -> None:
+    """Every submitted block is stored or a QUEUE_DROP gap, per track (hand-counted)."""
+    tracks = library.capture_health(session)["epochs"][-1]["tracks"]
+    for track, blocks in submitted.items():
+        health = tracks[track]
+        assert health["accepted_frames"] + health["dropped_frames"] == blocks * frames
+        assert health["dropped_frames"] == rejected[track] * frames
+        assert all(gap["reason"] == "QUEUE_DROP" for gap in health["gaps"])
+        if not health.get("gap_detail_truncated"):
+            assert sum(gap["frame_count"] for gap in health["gaps"]) == health["dropped_frames"]
+    assert stored_frames == sum(tracks[track]["accepted_frames"] for track in submitted)
 
 
 def meter(monkeypatch: pytest.MonkeyPatch, library: Library) -> RootHoldMeter:
@@ -379,7 +459,7 @@ def test_hb4_management_of_another_session_never_waits_for_a_seal(
         print("G15-HB4-MEASURE " + json.dumps(holds))
         assert measured.longest("g15-management") < HOLD_LIMIT_SECONDS
         assert measured.longest("recoryn-sealer-") < HOLD_LIMIT_SECONDS
-        assert measured.longest("recoryn-writer-") < APPEND_ONLY_BOUND
+        # The consumer's append hold follows the disk and is measured only (see above).
 
 
 HB5 = [pytest.param(position, id=f"G15-HB5-{position}") for position in POSITIONS]
@@ -642,11 +722,8 @@ def test_injected_latency_keeps_the_root_mutex_short(
     root = tmp_path / "library"
     with Library(root) as library:
         measured = meter(monkeypatch, library)
-        callers: list[str] = []
         original_prepare = ChunkWriter._prepare
         original_sync = chunks.sync
-        original_seal = ChunkWriter.seal
-        original_register = Library.register_chunk
 
         # time.sleep(0) would itself yield the GIL on every call, so a zero delay must
         # leave the original code path untouched.
@@ -660,30 +737,22 @@ def test_injected_latency_keeps_the_root_mutex_short(
                 time.sleep(append_delay)
             original_sync(stream)
 
-        def seal(self: ChunkWriter) -> Any:
-            callers.append(threading.current_thread().name)
-            return original_seal(self)
-
-        def register(self: Library, descriptor: Any) -> None:
-            callers.append(threading.current_thread().name)
-            original_register(self, descriptor)
-
         monkeypatch.setattr(ChunkWriter, "_prepare", slow_prepare)
         monkeypatch.setattr(chunks, "sync", slow_sync)
-        monkeypatch.setattr(ChunkWriter, "seal", seal)
-        monkeypatch.setattr(Library, "register_chunk", register)
+        seen = structure_probe(monkeypatch, measured)
         tracks = ("mic", "system")[:track_count]
         service = RecordingService(
             library, {track: FMT for track in tracks}, session_id="rec", chunk_frames=48_000
         )
-        rejected = fifo_max = 0
+        rejected = dict.fromkeys(tracks, 0)
+        fifo_max = 0
         try:
             service.start()
             epochs = service.epochs
             started = time.perf_counter()
             for index in range(600):  # 6 s at 100 blocks per second per track, 1 s chunks
                 for track in tracks:
-                    rejected += not service.submit(
+                    rejected[track] += not service.submit(
                         block("rec", track, epochs[track], index, frames=480)
                     )
                 assert service._seals is not None
@@ -701,26 +770,24 @@ def test_injected_latency_keeps_the_root_mutex_short(
             "writer_root_max_s": round(measured.longest("recoryn-writer-"), 4),
             "writer_root_p99_s": round(measured.p99("recoryn-writer-"), 4),
             "sealer_root_max_s": round(measured.longest("recoryn-sealer-"), 4),
-            "rejected_blocks": rejected,
+            "rejected_blocks": sum(rejected.values()),
             "fifo_max": fifo_max,
             "stored_frames": result["frame_count"],
-            "consumer_seal_or_register_calls": sum(
-                name.startswith("recoryn-writer-") for name in callers
-            ),
+            **structure_counts(seen),
             "long_holds": measured.long_holds(),
         }
         print("G15-LAT-MEASURE " + json.dumps(measurement))
-        assert measurement["consumer_seal_or_register_calls"] == 0
-        assert measurement["writer_root_max_s"] < APPEND_ONLY_BOUND
+        # Structure, the sealer bound and conservation carry the verdict. The consumer's
+        # hold and the rejected blocks are measurements (CI disks: section 17).
+        assert {key: measurement[key] for key in structure_counts(seen)} == dict.fromkeys(
+            structure_counts(seen), 0
+        )
+        assert len(seen["seal"]) == len(seen["register"]) >= 1  # the sealer did the work
         assert measurement["sealer_root_max_s"] < HOLD_LIMIT_SECONDS
         assert fifo_max <= SEAL_CAPACITY
-        assert result["frame_count"] == (600 * track_count - rejected) * 480
-        # C00 decision 12.4 (3) asserts two tracks only if they stay at 0. They did on this
-        # PC, but under the CI command (full suite with coverage tracing) the 12 s two-track
-        # rows rejected 3 and 81 blocks with short holds: the consumer's per-append cost,
-        # not a hold. Two tracks therefore stay measured (section 16).
-        if append_delay == 0 and seal_delay <= 1.0 and track_count == 1:
-            assert rejected == 0
+        assert_conserved(
+            library, "rec", dict.fromkeys(tracks, 600), rejected, result["frame_count"]
+        )
 
 
 # --- PART2: registration (section 3.3) and the deletion-intent index (section 11) -----
@@ -1082,6 +1149,7 @@ def test_idx_ui_tick_and_recording_among_tombstones(
     tombstones(root, count)
     with Library(root) as library:
         measured = meter(monkeypatch, library)
+        seen = structure_probe(monkeypatch, measured)
         tracks = ("mic", "system")[:track_count]
         service = RecordingService(library, {track: FMT for track in tracks}, session_id="rec")
         stop_tick = threading.Event()
@@ -1097,7 +1165,7 @@ def test_idx_ui_tick_and_recording_among_tombstones(
                     tick_errors.append(repr(error))
 
         ticker = threading.Thread(target=tick, name="g15-gui-tick")
-        rejected = 0
+        rejected = dict.fromkeys(tracks, 0)
         try:
             service.start()
             ticker.start()
@@ -1105,7 +1173,7 @@ def test_idx_ui_tick_and_recording_among_tombstones(
             started = time.perf_counter()
             for index in range(1200):  # 12 s at 100 blocks per second per track
                 for track in tracks:
-                    rejected += not service.submit(
+                    rejected[track] += not service.submit(
                         block("rec", track, epochs[track], index, frames=480)
                     )
                 delay = started + (index + 1) * 0.01 - time.perf_counter()
@@ -1124,21 +1192,24 @@ def test_idx_ui_tick_and_recording_among_tombstones(
             "sealer_root_max_s": round(measured.longest("recoryn-sealer-"), 4),
             "writer_root_max_s": round(measured.longest("recoryn-writer-"), 4),
             "writer_root_p99_s": round(measured.p99("recoryn-writer-"), 4),
-            "rejected_blocks": rejected,
+            "rejected_blocks": sum(rejected.values()),
             "stored_frames": result["frame_count"],
             "ticks": ticks[0],
+            **structure_counts(seen),
             "long_holds": measured.long_holds(),
         }
         print("G15-IDX-UI-MEASURE " + json.dumps(measurement))
         assert tick_errors == [] and ticks[0] >= 40
         assert measurement["tick_root_max_s"] < HOLD_LIMIT_SECONDS
         assert measurement["sealer_root_max_s"] < HOLD_LIMIT_SECONDS
-        assert measurement["writer_root_max_s"] < APPEND_ONLY_BOUND
-        # Every accepted block is stored. One track never drops (576,000 frames); two tracks
-        # are measured only, for the reason given in the LAT test (section 16).
-        assert result["frame_count"] == (1200 * track_count - rejected) * 480
-        if track_count == 1:
-            assert rejected == 0
+        assert {key: measurement[key] for key in structure_counts(seen)} == dict.fromkeys(
+            structure_counts(seen), 0
+        )
+        assert_conserved(
+            library, "rec", dict.fromkeys(tracks, 1200), rejected, result["frame_count"]
+        )
+        # Rejected blocks are measured only (CI disks, section 17). Every accepted block
+        # is stored; with no rejection that is 576,000 frames per track.
 
 
 IDX_IO = [pytest.param(case, id=f"G15-IDX-{case}") for case in ("IO1", "IO2", "IO3", "IO4", "IO5")]
@@ -1238,12 +1309,17 @@ def test_idx_io_journal_errors_never_stop_another_recording(
             assert catalogued(library, "rec") == 1  # nothing after the failure
             assert library.get_session("rec").state is SessionState.INTERRUPTED
             return
-        assert (rejected, failed) == (0, False)
+        # The recording never fails; a rejected block (consumer throughput on a slow disk,
+        # section 17) is a measured QUEUE_DROP gap, not a verdict.
+        assert failed is False
+        accepted = 400 - rejected
         assert (result["state"], result["chunk_count"], result["frame_count"]) == (
             "FINALIZED",
-            4,
-            400 * 480,
+            -(-accepted // 100),  # 1 s chunks of 100 whole blocks
+            accepted * 480,
         )
+        assert_conserved(library, "rec", {"mic": 400}, {"mic": rejected}, result["frame_count"])
+        print("G15-IDX-IO-MEASURE " + json.dumps({"case": case, "rejected_blocks": rejected}))
         if case == "IO1":
             assert still_armed is True  # the one denial was never consumed by capture
         if case in ("IO1", "IO2"):
@@ -1251,6 +1327,151 @@ def test_idx_io_journal_errors_never_stop_another_recording(
             assert classify(lambda: library.create_session("other")) == "INTENT"
         else:
             assert {s.session_id for s in library.list_sessions()} == {"other", "rec"}
+
+
+START = [
+    pytest.param("recoryn-writer-", id="G15-START-consumer-fails"),
+    pytest.param("recoryn-sealer-", id="G15-START-sealer-fails"),
+]
+
+
+@pytest.mark.parametrize("prefix", START)
+def test_start_failure_leaves_no_worker_and_no_live_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    """G15R-02: as before G15, a worker thread that cannot start leaves nothing live."""
+    root = tmp_path / "library"
+    original = threading.Thread.start
+
+    def start(self: threading.Thread) -> None:
+        if self.name.startswith(prefix):
+            raise RuntimeError("can't start new thread")
+        original(self)
+
+    with Library(root) as library:
+        service = RecordingService(library, {"mic": FMT}, session_id="s")
+        monkeypatch.setattr(threading.Thread, "start", start)
+        with pytest.raises(RuntimeError):
+            service.start()
+        monkeypatch.undo()
+        alive = [t.name for t in threading.enumerate() if t.name.startswith("recoryn-")]
+        assert alive == []
+        assert service.is_live() is False
+        service.join_writer()  # nothing left to wait for
+        assert library.recover_session("s")["state"] == "CREATED"
+        assert library.delete_session("s")["state"] == "DELETED_LOCAL"
+
+
+def payload(index: int) -> bytes:
+    return bytes([10 + index % 200, 0]) * 4  # block()'s four-frame payload
+
+
+def test_hb6_failed_verification_recovers_only_the_verified_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G15R-03, contract 4.3 HB6: nothing of the failed chunk is published or catalogued,
+    its staging stays, the session is INTERRUPTED and recovery adopts only the verified
+    prefix. Expected by hand: chunk 1 = blocks 0-2, chunk 2's damaged block 5 is lost."""
+    root = tmp_path / "library"
+    original = ChunkWriter._prepare
+    calls = [0]
+
+    def prepare(self: ChunkWriter) -> Any:
+        calls[0] += 1
+        if calls[0] == 2:  # chunk 2 (blocks 3-5): flip block 5's first byte, size kept
+            with (self.staging_path / "audio.pcm").open("r+b") as stream:
+                stream.seek(2 * 8)
+                first = stream.read(1)
+                stream.seek(2 * 8)
+                stream.write(bytes([first[0] ^ 0xFF]))
+        return original(self)
+
+    monkeypatch.setattr(ChunkWriter, "_prepare", prepare)
+    with recording(root, chunk_frames=12) as (library, service):
+        epoch = service.epochs["mic"]
+        for index in range(6):  # two chunks of three blocks
+            assert service.submit(block("s", "mic", epoch, index))
+        wait_for(lambda: service.health_snapshot()["storage_failed"])
+        service.join_writer()
+        staging = root / "sessions" / "s" / "staging"
+        assert sorted((c.first_sequence, c.last_sequence) for c in library.chunks("s")) == [(0, 2)]
+        assert published(root, "s") == 1
+        assert len(list(staging.iterdir())) == 1  # the failed chunk stays for recovery
+        assert library.get_session("s").state is SessionState.INTERRUPTED
+        monkeypatch.setattr(ChunkWriter, "_prepare", original)
+        first = library.recover_session("s")
+        second = library.recover_session("s")
+        catalog = sorted(library.chunks("s"), key=lambda c: c.first_sequence)
+        assert [(c.first_sequence, c.last_sequence) for c in catalog] == [(0, 2), (3, 4)]
+        assert "STAGING_TAIL_NOT_ADOPTED" in first["warnings"]
+        assert (second["adopted"], second["recovered"]) == (0, 0)
+        adopted = (root / catalog[1].relative_path / "audio.pcm").read_bytes()
+        assert adopted == payload(3) + payload(4)
+
+
+def test_sealer_failure_aborts_every_queued_writer_and_loses_no_appended_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G15R-03, contract 3.4: after a sealer failure the FIFO writers and the open writer
+    are aborted (none active, staging kept) and recovery adopts every appended block."""
+    root = tmp_path / "library"
+    writers: list[ChunkWriter] = []
+    appended: list[int] = []
+    original_init = ChunkWriter.__init__
+    original_append = ChunkWriter.append
+    original_prepare = ChunkWriter._prepare
+    park = Park()
+
+    def init(self: ChunkWriter, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        writers.append(self)  # strong references: an unaborted writer stays visible
+
+    def append(self: ChunkWriter, item: PCMBlock) -> None:
+        original_append(self, item)
+        appended.append(item.sequence)
+
+    def prepare(self: ChunkWriter) -> Any:
+        if not park.used:
+            park()  # chunk 1 waits outside the mutex while the FIFO fills
+            raise OSError("G15 injected prepare failure")
+        return original_prepare(self)
+
+    monkeypatch.setattr(ChunkWriter, "__init__", init)
+    monkeypatch.setattr(ChunkWriter, "append", append)
+    monkeypatch.setattr(ChunkWriter, "_prepare", prepare)
+    with recording(root, chunk_frames=12) as (library, service):
+        epoch = service.epochs["mic"]
+        for index in range(3):
+            assert service.submit(block("s", "mic", epoch, index))
+        assert park.entered.wait(10)
+        for index in range(3, 14):  # chunks 2-4 queue in the FIFO, blocks 12-13 stay open
+            assert service.submit(block("s", "mic", epoch, index))
+        assert service._seals is not None
+        seals = service._seals
+        wait_for(lambda: seals.qsize() == 3 and len(appended) == 14)
+        park.release.set()
+        wait_for(lambda: service.health_snapshot()["storage_failed"])
+        service.join_writer()
+        assert library.get_session("s").state is SessionState.INTERRUPTED
+        assert (published(root, "s"), catalogued(library, "s")) == (0, 0)
+        assert len(writers) == 5
+        assert not has_active_writer(root, "s")  # every writer was aborted
+        assert all(writer.staging_path.is_dir() for writer in writers)
+        monkeypatch.undo()
+        first = library.recover_session("s")
+        second = library.recover_session("s")
+        catalog = sorted(library.chunks("s"), key=lambda c: c.first_sequence)
+        assert sum(c.frame_count for c in catalog) == len(appended) * 4 == 56
+        joined = b"".join((root / c.relative_path / "audio.pcm").read_bytes() for c in catalog)
+        assert joined == b"".join(payload(index) for index in sorted(appended))
+        assert (second["adopted"], second["recovered"]) == (0, 0)
+        assert first["state"] == "INTERRUPTED"
+
+
+SEALER_ERRORS = [
+    "G15-HB6R-verified-prefix",
+    "G15-FIFO-abort-after-failure",
+]
 
 
 def test_declared_integration_denominators_are_complete_and_unique() -> None:
@@ -1268,6 +1489,7 @@ def test_declared_integration_denominators_are_complete_and_unique() -> None:
         "IDX-OPEN": IDX_OPEN,
         "IDX-UI": IDX_UI,
         "IDX-IO": IDX_IO,
+        "START": START,
     }
     sizes = {name: len(cases) for name, cases in groups.items()}
     assert sizes == {
@@ -1284,8 +1506,9 @@ def test_declared_integration_denominators_are_complete_and_unique() -> None:
         "IDX-OPEN": 3,
         "IDX-UI": 4,
         "IDX-IO": 5,
+        "START": 2,
     }
     ids = [case.id for cases in groups.values() for case in cases]
-    ids += [case.id for case in CRASH] + [case.id for case in LAT]
-    assert len(CRASH) == 7 and len(LAT) == 8 + 2
-    assert len(ids) == len(set(ids)) == 28 + 7 + 10 + 3 + 49
+    ids += [case.id for case in CRASH] + [case.id for case in LAT] + SEALER_ERRORS
+    assert len(CRASH) == 7 and len(LAT) == 8 + 2 and len(SEALER_ERRORS) == 2
+    assert len(ids) == len(set(ids)) == 28 + 7 + 10 + 3 + 49 + 2 + 2

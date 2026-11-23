@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -21,7 +22,7 @@ from recoryn.domain import AudioFormat, PCMBlock, SessionState, StateConflict, V
 from recoryn.storage import ChunkWriter, Library, chunks
 from recoryn.storage import _coordination as coordination
 from recoryn.storage import library as library_module
-from recoryn.storage.chunks import SealedChunk, has_active_writer, is_issued
+from recoryn.storage.chunks import SealedChunk, has_active_writer, is_issued, issued_descriptor
 
 pytestmark = pytest.mark.unit
 
@@ -478,6 +479,28 @@ def fc_settled_listing_cache(root: Path, monkeypatch: pytest.MonkeyPatch) -> Non
             writer.abort()
 
 
+def fc_unsettled_listing_not_reused(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """G15R-04: an unsettled capture listing is taken again, so a same-tick outside
+    intent of the recording session is seen (I1)."""
+    with recording_library(root):
+        journal = root / "deletion-journal"
+        writer = ChunkWriter(root, block(0))
+        try:
+            writer.append(block(0))
+            intent_file(root, "ext")  # outside change: the capture path lists entry names
+            writer.append(block(1))  # one listing at a fresh stamp, so it is not settled
+            stamp = os.stat(journal)
+            intent_file(root, "s")  # the session's own intent, in the same mtime tick
+            os.utime(journal, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            after = os.stat(journal)
+            assert (after.st_ino, after.st_mtime_ns) == (stamp.st_ino, stamp.st_mtime_ns)
+            with pytest.raises(StateConflict) as refused:
+                writer.append(block(2))
+            assert str(refused.value) == "Writer session has a deletion intent"
+        finally:
+            writer.abort()
+
+
 def fc_closed_callback(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A writer that fetched the callback before close falls back to the durable check."""
     library = recording_library(root)
@@ -591,6 +614,7 @@ FAIL_CLOSED = [
     pytest.param(fc_final_bundle_exists, id="G15-U-fc-final-bundle-exists"),
     pytest.param(fc_publish_index_unknown, id="G15-U-fc-publish-index-unknown"),
     pytest.param(fc_publish_stamp_fails, id="G15-U-fc-publish-stamp-fails"),
+    pytest.param(fc_unsettled_listing_not_reused, id="G15-U-fc-unsettled-listing-not-reused"),
 ]
 
 
@@ -603,6 +627,60 @@ def test_fail_closed_paths(
     case(tmp_path, monkeypatch)
 
 
+def flip_first_payload_byte(bundle: Path) -> None:
+    with (bundle / "audio.pcm").open("r+b") as stream:
+        first = stream.read(1)
+        stream.seek(0)
+        stream.write(bytes([first[0] ^ 0xFF]))  # size unchanged
+
+
+BINDING = [
+    pytest.param("read-only", id="G15-U-cap-descriptor-read-only"),
+    pytest.param("swapped", id="G15-U-reg-swapped-descriptor-verifies"),
+    pytest.param("other-root", id="G15-U-reg-other-root-verifies"),
+]
+
+
+@pytest.mark.parametrize("kind", BINDING)
+def test_capability_vouches_only_for_its_own_bundle(tmp_path: Path, kind: str) -> None:
+    """G15R-01: skipping re-verification covers the bundle the capability was issued for.
+
+    A damaged bundle at the same relative path elsewhere, or a descriptor put on a live
+    capability, must go through verify_bundle and be refused.
+    """
+    root = tmp_path / ("a" if kind == "other-root" else "")
+    with recording_library(tmp_path / "b" if kind == "other-root" else root) as library:
+        writer = held_writer(root, [block(0), block(1)])
+        capability = capability_of(writer)
+        try:
+            if kind == "read-only":
+                with pytest.raises(AttributeError):
+                    capability.descriptor = capability.descriptor  # type: ignore[misc]
+                assert issued_descriptor(capability, library.root) is capability.descriptor
+                library.register_chunk(capability)
+                assert len(library.chunks("s")) == 1
+                return
+            if kind == "swapped":
+                # An orphan bundle (sealed, released, never catalogued) is damaged.
+                orphan = ChunkWriter(root, block(5))
+                orphan.append(block(5))
+                orphaned = orphan.seal()
+                flip_first_payload_byte(root / orphaned.relative_path)
+                object.__setattr__(capability, "_descriptor", orphaned)  # bypass read-only
+            else:
+                # The same bundle, damaged, at the same relative path of another root.
+                source = root / capability.descriptor.relative_path
+                target = library.root / capability.descriptor.relative_path
+                shutil.copytree(source, target)
+                flip_first_payload_byte(target)
+            assert issued_descriptor(capability, library.root) is None
+            with pytest.raises(ValidationError):
+                library.register_chunk(capability)
+            assert library.chunks("s") == []
+        finally:
+            writer.unhold()
+
+
 def test_declared_unit_denominators_are_complete_and_unique() -> None:
     ids = (
         [case.id for case in CASES]
@@ -613,7 +691,9 @@ def test_declared_unit_denominators_are_complete_and_unique() -> None:
         + [case.id for case in REGISTRATION]
         + [case.id for case in COORDINATION]
         + [case.id for case in FAIL_CLOSED]
+        + [case.id for case in BINDING]
     )
     assert len(CASES) == 4 * 4 and len(DAMAGE) == 3 and len(CAPABILITY) == 4
-    assert len(REGISTRATION) == 5 and len(COORDINATION) == 2 and len(FAIL_CLOSED) == 11
-    assert len(ids) == len(set(ids)) == 16 + 1 + 3 + 1 + 4 + 1 + 5 + 2 + 11
+    assert len(REGISTRATION) == 5 and len(COORDINATION) == 2 and len(FAIL_CLOSED) == 12
+    assert len(BINDING) == 3
+    assert len(ids) == len(set(ids)) == 16 + 1 + 3 + 1 + 4 + 1 + 5 + 2 + 12 + 3
