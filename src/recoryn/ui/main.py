@@ -795,16 +795,20 @@ class MainWindow(QMainWindow):
         # from the durable inventory observed after this call, not from this dict.
         self._adopt_pending(start, snapshot)
         row = self._pending_deletions.get(session_id)
-        if not deleted and row is not None:
+        pending = not deleted and result.get("state") == "DELETE_PENDING"
+        if pending and row is not None:
             self._pending_attempts[(session_id, row["generation"])] = str(result.get("reason", ""))
             self._render_pending()
-        if not deleted and row is not None:
             self._show_pending_deletions(announce=True)
-        elif not deleted:
+        elif pending:
             reason = _DELETION_REASONS.get(str(result.get("reason", "")), "삭제 상태 확인 필요")
             self._announce(
                 f"삭제 대기 · {reason} · 아직 삭제되지 않았습니다. 목록을 다시 확인합니다."
             )
+        elif not deleted:
+            # NOT_FOUND (e.g. a folder-only entry): no intent was recorded, so never
+            # call it a pending deletion (section 2.1).
+            self._announce(_REFUSALS["NOT_FOUND"])
         if self.recorder.recording is None:
             self._started_at = None
         self.refresh_sessions()

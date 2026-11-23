@@ -1,6 +1,6 @@
 # G05 / G-P05 재시작 뒤 삭제 대기 복원: 계약안과 경우의 수
 
-상태: **FIX1_READY — 독립 검토 G05R 1차 지적(G05R-01 S2, G05R-03 S3) 수정, 같은 검토자 재확인 대기**. 2026-11-23 C00이 §8 승인 요청 (1)~(7)을 권고안대로 승인했고, 구현 작성 권한을 w5:p8 Codex에서 Claude 하위 에이전트로 재배정했다. 계약 작성(Codex)과 구현 작성(Claude)·독립 검토(C00 지정 다른 세션)는 서로 다르며 작성자는 단독 최종 승인하지 않는다. 구현·실행 결과는 §10~§11에 있고, 아래 §1~§9의 계약 본문은 승인 당시 문장을 그대로 둔다.
+상태: **G-P05 커밋 133b010으로 push됨. 후속 G-P05b(G05R-05·06, S3 2건) READY — 같은 검토자 재확인 대기**. 2026-11-23 C00이 §8 승인 요청 (1)~(7)을 권고안대로 승인했고, 구현 작성 권한을 w5:p8 Codex에서 Claude 하위 에이전트로 재배정했다. 계약 작성(Codex)과 구현 작성(Claude)·독립 검토(C00 지정 다른 세션)는 서로 다르며 작성자는 단독 최종 승인하지 않는다. 구현·실행 결과는 §10~§11에 있고, 아래 §1~§9의 계약 본문은 승인 당시 문장을 그대로 둔다.
 
 ## 1. 요구·위험·직접 확인한 근거
 
@@ -493,3 +493,41 @@ D:/project/Recoryn/.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider 
 | tests/property/test_pending_deletion_case_space.py | `f22dc8f7b1aa7defc7e83911dd300677fe77bb88696b496cb93a7a2f14ce1ac4` |
 
 남은 범위: G05R-02는 G-P15에서 다룬다. 사용자 동작 결과는 녹음·장치 alert가 표시 중이면 `warning`에 쓰지 않으므로 그동안의 삭제 결과는 `deletion_status`와 목록 항목으로만 보인다. 실제 장치·전원 장애·다른 프로세스 reader 종료 증명은 여전히 미검증이다.
+
+## 13. G-P05b — RECHECK 1 후속(S3 2건, 2026-11-23)
+
+G-P05는 커밋 133b010으로 push됐다. 검토 문서 RECHECK 1(LF `07edfe8f303340e166b76e573618d782a0147e3a293e755b6bfeb5401cd76d7c`)의 S3 2건을 C00이 후속 단위로 수용했다. 쓰기 범위는 `ui/main.py`, `tests/ui/test_pending_deletion_ui.py`, 이 문서다. 기준 HEAD **133b010**, 판정 사본 **R3/iso = `git archive 133b010` + 이 3파일**(그 밖의 추적 파일 차이 0). 증거 루트 **R3=`C:/Users/gangd/AppData/Local/Temp/recoryn-g05b-najaSz7G`**. G-P15(storage·recording)·G-P06 파일은 건드리지 않았다.
+
+### 13.1 수정 계약
+
+- **G05R-05.** `_delete_result`는 결과 상태를 구분한다. DELETED_LOCAL은 완료 문구, DELETE_PENDING만 삭제 대기 문구(목록 행이 있으면 대기 요약, 아직 없으면 사유와 함께 '아직 삭제되지 않았습니다')를 쓴다. NOT_FOUND(예: '폴더만 있음' 항목, 기록 0건)는 기존 거부 문구 `_REFUSALS["NOT_FOUND"]` "세션을 찾을 수 없습니다. 목록을 새로 고쳤습니다."만 알리고 '삭제 대기'라고 쓰지 않는다(§2.1). 이 문구도 녹음·장치 alert가 표시 중이면 덮지 않는다.
+- **G05R-06.** 동작 변경 없이 FIX1 경고 계약의 나머지를 시험으로 고정한다: alert가 없는 tick·백그라운드 조회가 다른 안내를 다시 쓰지 않음(F2), 저장 실패 경고도 alert로 취급되어 사용자 결과가 덮지 않음(F4), 첫 삭제의 완료 문구도 alert를 덮지 않음(F5).
+
+### 13.2 추가 행(FIX2, 3,166·FIX1과 별도 집계)
+
+| ID | 입력 | 독립 oracle |
+| --- | --- | --- |
+| G05-FIX2-0000 | 미확정 목록의 '폴더만 있음' 항목 선택·삭제 승인 | `warning` = NOT_FOUND 거부 문구, `deletion_status`에 '삭제 대기' 없음, 대기 목록 0, journal 0개, DB 삭제 행 없음, 폴더 파일 hash 보존 |
+| G05-FIX2-0001 | 복원된 대기 + alert 없음, 공용 칸에 다른 안내 | tick 3회·새로고침·tick 뒤에도 그 안내 그대로, `deletion_status` 대기 1건 |
+| G05-FIX2-0002 | 복원된 대기(잠김) + 다른 세션의 실제 seal 실패(storage_failed), tick 뒤 사용자 재시도 | `warning`은 저장 실패 경고 유지, 항목 '원본 파일 제거 실패', `deletion_status` 대기 1건 |
+| G05-FIX2-0003 | 장치 alert 표시 중 정상 세션의 첫 삭제(완료) | `warning`은 장치 경고 유지, `deletion_status`에 '로컬 원본·기록 삭제 완료', DB `(g, DELETED_LOCAL)`·폴더 없음 |
+
+수정 전 재현: 133b010의 main.py를 얹은 사본에서 FIX2-0000만 실패했다(G05R-05 재현). 경고 3행은 통과했다(동작은 맞고 시험 공백이었음). 수정본에서는 4행 모두 통과한다.
+
+### 13.3 실행 결과
+
+- G05 새 5파일: **395 passed in 90.69초**(120초 예산 이내), failure/error/skip 0. `R3/new-five.xml` LF `1b98ad1faa5f80df8f6565e2ddd1c2df8a7ccfb39935d909486cfc5eb8607bad`.
+- case 감사: 3,166 + FIX1 11 + FIX2 4 = **3,181 / 누락·추가·중복·skip 0**, case ID 없는 node 15(변동 없음).
+- tests/ui 전체: **444 passed in 36.83초**.
+- mutation(`R3/run_mutations_fix2.py`, 변이마다 사본·import 위치 확인): **15/15 KILLED**, 전부 exit 1 assertion. 검토자 원문 F1→FIX1-0008, F2→FIX2-0001, F3→FIX1-0008, F4→FIX2-0002, F5→FIX2-0003. G05R-05 되돌림 R05(NOT_FOUND도 대기 문구)→FIX2-0000. main.py·UI 시험이 바뀌어 기존 UI 변이 N3·N9·N9b·M15·M16·M17·M18·X3·X4도 재실행해 같은 node에서 검출했다. `R3/mutations/results.json` LF `4e88d632223b610f9c076b1497067d4b0c7f30761db788f8648fd156bac83723`.
+- 정적 검사(R3/iso): ruff check 전체 PASS, 변경 Python 2파일 format PASS, mypy 84 source files PASS.
+- **전체 오프라인 회귀(R3/iso, 판정): 9942 passed in 676.61초 / exit 0**, failure/error/skip 0, 경고 오류화, import는 사본 src. tests/ui 444, G-P04 4파일 428, G-P05 새 5파일 395. 관리 스레드 root 최대는 목록 400건 0.697ms·retry 10,800파일 2.908ms, ≥50ms 0건, 두 행 모두 녹음 거부·유실 0. `R3/full.xml` LF `36c606911e7be8c3c3c7f5ac05c1a68a3515d31666af9ee85033b33cdb3c00bf`.
+
+### 13.4 G-P05b 제출 파일
+
+| 파일 | SHA256(LF) |
+| --- | --- |
+| src/recoryn/ui/main.py | `941e9af34a165a75135ed883153e07493d59326ec6e15aabc258853ebc718ae9` |
+| tests/ui/test_pending_deletion_ui.py | `07900e6ea877a03a1302500b46f378dbe9ca34638f491753b0aa2e74e25095bb` |
+
+이 문서의 최종 hash는 제출 보고에 둔다. G05R-04(S1, 녹음 writer가 다른 세션의 journal 일시적 open 거부로 멈출 수 있음)·G05R-02는 이 단위의 범위가 아니며 G-P15 쪽 결정을 따른다.

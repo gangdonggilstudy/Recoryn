@@ -22,9 +22,9 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from recoryn.app.desktop import DesktopRecorder
-from recoryn.app.recording import RecordingService
+from recoryn.app.recording import RecordingError, RecordingService
 from recoryn.domain import PCMBlock, SessionState
-from recoryn.storage import Library
+from recoryn.storage import ChunkWriter, Library
 from recoryn.storage import library as library_module
 from recoryn.ui.main import MainWindow
 from tests.unit.test_pending_deletions import (
@@ -35,6 +35,7 @@ from tests.unit.test_pending_deletions import (
     deleted_row,
     journal_generation,
     media,
+    pcm,
     raw,
     sealed,
     write_journal,
@@ -785,6 +786,128 @@ def test_a_retry_result_does_not_replace_an_active_device_warning(
     [label] = labels(window)
     assert "원본 파일 제거 실패" in label
     assert "삭제 대기 1건" in window.deletion_status.text()
+
+
+# --- FIX2 (G05R-05, G05R-06): exact result wording and the rest of the alert contract ----
+# Additional rows outside the 60 UI contract rows and FIX1: G05-FIX2-0000..0003.
+STORAGE_ALERT = "확정된 원본은 보존됩니다. 정지 후 복구 정보를 확인하세요."
+
+
+@pytest.mark.parametrize("case", [pytest.param(0, id="G05-FIX2-0000")])
+def test_deleting_a_folder_only_entry_never_reports_a_pending_deletion(
+    application: QApplication,
+    template: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    windows: Windows,
+    case: int,
+) -> None:
+    """G05R-05 / section 2.1: NOT_FOUND records nothing and is not called pending."""
+    root = clone(template, tmp_path / "library")
+    sealed(root, "dironly", "dironly-c1", (0, 1))  # a folder without any catalog row
+    before = media(root, "dironly")
+    window = windows.open(root)
+    select_session(window, "dironly")
+    answer_yes(monkeypatch)
+    window.delete_selected()
+    settle(window, application)
+    assert window.warning.text() == "세션을 찾을 수 없습니다. 목록을 새로 고쳤습니다."
+    assert "삭제 대기" not in window.deletion_status.text()
+    assert labels(window) == [] and window._pending_deletions == {}
+    assert not list((root / "deletion-journal").iterdir())
+    assert deleted_row(window.library, "dironly") is None
+    assert media(root, "dironly") == before  # the folder is preserved, not deleted
+
+
+@pytest.mark.parametrize("case", [pytest.param(1, id="G05-FIX2-0001")])
+def test_an_alert_free_tick_never_rewrites_another_notice(
+    application: QApplication,
+    template: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    windows: Windows,
+    case: int,
+) -> None:
+    """G05R-06 F2: ticks and background observations refresh deletion_status only."""
+    root = clone(template, tmp_path / "library")
+    blocker = Blocker(monkeypatch)
+    pend_offline(root, blocker, SID)
+    window = windows.open(root)
+    notice = "오디오 내보내기 완료: G05 다른 안내"
+    window.warning.setText(notice)  # another component's result in the shared slot
+    for _ in range(3):
+        window._tick()
+    window.refresh_sessions()
+    settle(window, application)
+    window._tick()
+    assert window.warning.text() == notice
+    assert "삭제 대기 1건" in window.deletion_status.text()
+
+
+@pytest.mark.parametrize("case", [pytest.param(2, id="G05-FIX2-0002")])
+def test_a_retry_result_does_not_replace_the_storage_failure_alert(
+    application: QApplication,
+    template: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    windows: Windows,
+    case: int,
+) -> None:
+    """G05R-06 F4: the storage-failure warning is an alert like frame loss."""
+    root = clone(template, tmp_path / "library")
+    blocker = Blocker(monkeypatch)
+    pend_offline(root, blocker, SID)  # still locked: the retry fails again
+    library = Library(root)
+    recorder = DesktopRecorder(library, forbidden)
+    service = RecordingService(library, {"mic": FMT}, session_id="live", chunk_frames=1)
+    recorder.recording = service
+    service.start()
+
+    def fail_seal(writer: ChunkWriter) -> None:
+        raise OSError("G05 injected seal failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ChunkWriter, "seal", fail_seal)
+        assert service.submit(pcm("live", service.epochs["mic"], 0))
+        with pytest.raises(RecordingError, match="STORAGE_FAILED"):
+            service.stop()
+    assert service.health_snapshot()["storage_failed"]
+    window = MainWindow(library, recorder=recorder)
+    window.timer.stop()
+    windows.opened.append((window, library))
+    settle(window, application)
+    window._tick()
+    assert window.warning.text() == STORAGE_ALERT
+    window.retry_delete_button.click()
+    settle(window, application)
+    assert window.warning.text() == STORAGE_ALERT
+    [label] = labels(window)
+    assert "원본 파일 제거 실패" in label
+    assert "삭제 대기 1건" in window.deletion_status.text()
+
+
+@pytest.mark.parametrize("case", [pytest.param(3, id="G05-FIX2-0003")])
+def test_a_first_delete_completion_does_not_replace_an_active_alert(
+    application: QApplication,
+    template: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    windows: Windows,
+    case: int,
+) -> None:
+    """G05R-06 F5: the first delete's completion goes to deletion_status under an alert."""
+    root = clone(template, tmp_path / "library")
+    Blocker(monkeypatch)
+    window = windows.open(root)
+    alert = device_alert(window, monkeypatch, "G05_DEVICE_GONE")
+    select_session(window, SID)
+    answer_yes(monkeypatch)
+    window.delete_selected()
+    settle(window, application)
+    assert window.warning.text() == alert
+    assert "로컬 원본·기록 삭제 완료" in window.deletion_status.text()
+    assert deleted_row(window.library) == (journal_generation(root), "DELETED_LOCAL")
+    assert not (root / "sessions" / SID).exists()
 
 
 def test_declared_ui_denominator_is_complete_and_unique() -> None:

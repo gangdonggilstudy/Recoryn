@@ -341,3 +341,74 @@ FIX1-0003(실제 junction)은 `_winapi.CreateJunction`으로 링크를 만들고
 - G05R-04(S1, 기존): 다른 세션 journal 파일의 일시적 open 거부 한 번으로 진행 중 녹음 중단(주입 재현, HEAD 동일, 빈도 낮음). G-P15 색인 범위에 포함하기를 권고한다.
 
 CRASH fixture 재시도는 시험 파일에 한정되며 제품 결함을 가리지 않는다. 수정·수용과 G05R-02·04의 처리 단위는 C00이 결정한다.
+
+## RECHECK 2 (G-P05b) — 2026-11-23, G05R-05·06 후속 재확인
+
+같은 검토자(Claude 하위 에이전트)가 G-P05 push(133b010) 뒤 후속 G-P05b를 짧게 확인했다. 위 내용은 이력으로 보존한다.
+
+**요약: G05R-05 RECHECKED, G05R-06 RECHECKED.** 새 문구 분기는 다른 결과 상태(예외·세대 충돌·이력 확인 불가·NOT_FOUND·확인 전 목록·stale)에서 잘못된 문구를 만들지 않는다. 새 분기가 alert를 덮는 경로도 없다. **새 OPEN 1 (S3 1) — G05R-07**: 새 분기 두 곳의 'alert 중 덮지 않음'을 시험이 고정하지 못한다. 현재 동작은 정상이다.
+
+### R2-1. 입력
+
+- 대상 tree `490a01ab5aeaa13fdfed64eea1fff237566140f8`(tree)이고 기준 HEAD는 `133b010`이다. `git diff --stat 133b010 490a01ab`는 3파일 171+/6-다.
+- 3파일 LF SHA256은 C00 지정 값과 같다.
+  - `ui/main.py` `941e9af34a165a75135ed883153e07493d59326ec6e15aabc258853ebc718ae9`
+  - `tests/ui/test_pending_deletion_ui.py` `07900e6ea877a03a1302500b46f378dbe9ca34638f491753b0aa2e74e25095bb`
+  - 계약 문서 `2255dac8a1308e2f5661c3a5de9fc40857b850f3038b84764dce164ad2fda7cd`
+- library.py·cli.py는 diff 0이다.
+- 추출: `git -c core.autocrlf=false archive 490a01ab | tar -x -C build/review-trees/g05c`. probe는 `g05c-probe/`, 변이 사본은 `g05c-mut/`에 두었다. 작업 트리(G-P15·G-P06 변경 공존)는 쓰지 않았다. 작성자 증거는 열지 않았다.
+
+### R2-2. 실행
+
+| # | 명령(사본 `g05c`) | 결과 |
+| --- | --- | --- |
+| L1 | `pytest -q -p no:cacheprovider -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning --basetemp <고유 TEMP> tests/ui` + G05 시험 4파일(unit·property·integration·e2e; UI 파일은 tests/ui에 포함), offscreen·HF offline, `PYTHONPATH=g05c/src` | **767 passed / failure·error·skip 0, 115.57s, exit 0**(tests/ui 444, unit 141, property 6, integration 137, CLI 39). `run.xml` LF `fb436d1e…54a0` |
+| L2 | `ui_branch_probe.py ../g05c`(LF `d6837aab…f3c5`, 결과 `d0274f15…9555`) | R2-4 |
+| L3 | `mutate3.py ../g05c ../g05c-mut mutations3.json`(LF `71776571…d3bc`, 결과 `3b860195…4023`) | R2-3 |
+
+### R2-3. G05R-05·06 판정 — RECHECKED
+
+| 변이(한 곳 변경, 대상 tests/ui/test_pending_deletion_ui.py + test_live_ui.py) | 결과 | 검출 node |
+| --- | --- | --- |
+| R05 G05R-05 되돌림(`pending = not deleted`) | KILLED | G05-FIX2-0000 |
+| F2 alert 없는 tick이 대기 안내를 `warning`에 씀 | KILLED | G05-FIX2-0001 |
+| F4 저장 실패 경고가 `_alert`를 우회 | KILLED | G05-FIX2-0002 |
+| F5 첫 삭제 완료 문구가 `_announce`를 우회 | KILLED | G05-FIX2-0003 |
+| R05c 대기(행 있음)의 `warning` 알림 제거 | KILLED | test_live_ui `test_delete_pending_keeps_visible_reason…` |
+| R05b NOT_FOUND 문구가 `_announce`를 우회 | **SURVIVED**(82 passed) | G05R-07 |
+| R05d 대기(행 없음) 문구가 `_announce`를 우회 | **SURVIVED**(82 passed) | G05R-07 |
+
+`_delete_result`(main.py:797-811)는 세 경우로 갈린다. `DELETED_LOCAL`은 완료 문구다. `DELETE_PENDING`은 목록 행이 있으면 대기 목록 알림, 없으면 "삭제 대기 · 사유 …"다. 그 밖(`delete_session`이 돌려줄 수 있는 나머지는 `NOT_FOUND`뿐)은 기존 거부 문구다. 모두 `_announce`를 거친다.
+
+### R2-4. 다른 결과 상태(L2)
+
+| 경우 | `warning` | `deletion_status` / 기록 |
+| --- | --- | --- |
+| E1 `delete_session`이 `StateConflict("DELETE_HISTORY_CONFLICT")` | "작업 실패: OPERATION_FAILED_MEDIA_PRESERVED · …" | 비어 있음, 기록 0 |
+| E2 `ValidationError("DELETION_HISTORY_UNAVAILABLE")` / E3 OSError / E4 실제 journal `.tmp-` | 같은 일반 실패 문구 | 같음 |
+| E1~E3을 장치 alert 표시 중에 | **일반 실패 문구가 장치 alert를 대체**(관찰 R2-O1) | 같음 |
+| E5 폴더만 있는 항목(NOT_FOUND), 장치 alert 중 | 장치 alert 유지 | 기록 0 |
+| E5b 같은 경우, alert 없음 | "세션을 찾을 수 없습니다. 목록을 새로 고쳤습니다." | 기록 0 |
+| E6 `DELETE_PENDING` 결과 + 목록 조회 실패(확인 전 목록) | "삭제 대기 · 원본 파일 제거 실패 · 아직 삭제되지 않았습니다…" | "삭제 이력 확인 불가 · 마지막으로 확인한 목록을…" |
+| E7 표시 세대가 stale인 재시도 | 새 세대 행의 대기 안내(자동 재시도 없음, 새 세대 g+1 반영) | 대기 1건 |
+
+- 예외 결과는 새 분기를 지나지 않고 기존 공통 `operation` 실패 처리(main.py:353)로 간다. 삭제 관련 문구가 틀리게 나오는 경우는 없다.
+- E7에서는 이번 실행의 `STALE_DELETE_GENERATION` 사유가 옛 세대와 함께 버려진다. 그래서 "목록이 바뀌었습니다…" 대신 일반 대기 안내가 보인다. G-P05 본 단위부터의 동작이고, 계약 요구("자동으로 새 세대에 재시도하지 않고 재조회")는 지킨다(관찰).
+
+### R2-5. 새 발견
+
+#### G05R-07 / S3 / OPEN — 새 분기 두 곳의 'alert 표시 중 덮지 않음'이 시험으로 고정되지 않았다
+
+- **근거**: NOT_FOUND 거부 문구(main.py:811)와 대기(목록 행 없음) 문구(:805-807)가 `_announce` 대신 `warning.setText`를 써도 tests/ui 관련 82 node가 모두 통과한다(R05b·R05d). 계약 문서 §13은 NOT_FOUND 문구도 "녹음·장치 alert가 표시 중이면 덮지 않는다"고 적었고 작성자 보고는 세 경우 모두라고 했지만, 시험이 고정한 것은 완료(FIX2-0003)와 대기·행 있음(FIX1-0008)뿐이다.
+- **현재 동작**: L2 E5에서 NOT_FOUND는 장치 alert를 유지했다. 코드상 두 분기 모두 `_announce`를 쓴다.
+- **기대**: alert 표시 중 NOT_FOUND 1행과 alert 표시 중 대기(목록 반영 전) 1행을 추가한다.
+- **등급**: 시험 충분성 공백, S3.
+
+### R2-6. 관찰(결함으로 세지 않음, G-P05b 변경과 무관)
+
+- **R2-O1**: 공통 `operation` 실패 처리(main.py:353)는 `warning`에 직접 쓴다. 그래서 삭제를 포함한 모든 UI 작업의 예외가 표시 중인 일회성 장치 alert를 대체한다. 유실·저장 실패 alert는 녹음 객체가 남아 있으면 다음 tick에 돌아온다. 삭제 이력 코드는 `Task.SAFE_CODES`에 없어 일반 코드로 표시되고, 실패한 삭제 뒤 대기 목록을 다시 조회하지 않는다. G-P05 이전부터의 공통 구조다. C00 결정("경고 항상 우선")을 작업 실패 문구에도 적용할지는 C00이 정한다.
+- **R2-O2**: 창이 열린 상태에서 삭제 이력이 손상되면(E4의 `.tmp-`) `_session_selected`(main.py:592, G-P04 코드)의 `get_session`이 Qt slot 안에서 처리되지 않은 `ValidationError`를 stderr에 남긴다. 화면은 계속 동작했다.
+
+### R2-7. 결론
+
+**G05R-05 RECHECKED / G05R-06 RECHECKED. 새 OPEN 1 (S0 0 / S1 0 / S2 0 / S3 1) — G05R-07(새 분기 두 곳의 alert 우선 미고정, 동작은 정상).** G05R-02·04(기존 S1)는 G-P15 범위로 그대로 OPEN이다. 전체 회귀는 C00이 최종 tree로 실행한다.

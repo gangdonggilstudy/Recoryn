@@ -73,7 +73,7 @@ G-P04와 G-P05는 둘 다 `storage/library.py`와 `ui/main.py`를 바꾼다. 동
 | G-P13 | 수동 로컬 모델 digest 고정·표시 F-MOD02 | 위 결정 반영 |
 | G-P14 | 보존 정책 엔진(G01BR-22), 진단 연결 GF-12·F-OBS | 소유권은 단위 시작 때 확정 |
 | G-P15 | 청크 seal의 root mutex 보유 축소(S2, G-P04 검증에서 발견) | 녹음 writer가 `storage/chunks.py`의 seal에서 root mutex를 잡은 채 fsync 3회·scan_prefix·rename·verify_bundle(재해시)을 한다. 부하 시 1초 이상 보유해 큐가 넘치며 블록 거부가 날 수 있다(G-P04 정확한 tree 검증 중 동시 부하에서 관측, 단독 실행은 유실 0). fsync·검증은 mutex 밖, rename과 catalog 기록만 mutex 안으로 옮기는 방향. 삭제·복구·확정 claim과의 불변식을 함께 검증 |
-| 이후 | GF-02 고아 채택, GF-06 clock domain과 미확정 세션 재개(G-P04에서 분리), GF-07 정렬 연결, GF-10 inventory, GF-14 동기화 폴더, 사전 할당 버퍼, UI의 요약 후보 선택(G-P03 검토에서 확인: 지금은 API로만 고를 수 있음), 실제 유료 가격 catalog 항목(G-P06 뒤, 공식 출처 고정), 고아 reader 종료 증명 자동화와 별도 library.sqlite의 DB-only 삭제 기록을 ConsentStore가 직접 보지 못하는 경계(G-P05 계약에서 분리), S3 묶음(GF-15~18, G01BR-11~17, G02B-01 세션 전환 뒤 동의 상태 문구 잔류) | 선행 단위 뒤 |
+| 이후 | GF-02 고아 채택, GF-06 clock domain과 미확정 세션 재개(G-P04에서 분리), GF-07 정렬 연결, GF-10 inventory, GF-14 동기화 폴더, 사전 할당 버퍼, UI의 요약 후보 선택(G-P03 검토에서 확인: 지금은 API로만 고를 수 있음), 실제 유료 가격 catalog 항목(G-P06 뒤, 공식 출처 고정. G06R-07: billing profile version·최소 청구량·증분, 텍스트 상한 모델, Gemini 음성 과금 표현을 첫 항목 전 게이트로), 고아 reader 종료 증명 자동화와 별도 library.sqlite의 DB-only 삭제 기록을 ConsentStore가 직접 보지 못하는 경계(G-P05 계약에서 분리), S3 묶음(GF-15~18, G01BR-11~17, G02B-01 세션 전환 뒤 동의 상태 문구 잔류, G05R-07 삭제 결과 문구의 _announce 우회 시험 공백, G-P05b 관찰: UI 공통 실패 처리가 일회성 장치 경고를 지움·삭제 이력 손상 시 _session_selected slot 예외) | 선행 단위 뒤 |
 
 ### C00 단위
 
