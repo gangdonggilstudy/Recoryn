@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import uuid
 from typing import Any
 
@@ -15,17 +16,25 @@ from recoryn.capture import BoundedCaptureQueue
 from recoryn.domain import AudioFormat, PCMBlock, SessionState, ValidationError
 from recoryn.storage import ChunkWriter, Library
 
+# Full chunks waiting for the sealer (about 8 s of audio at the default size).
+# When it is full the consumer waits; the capture queue records any drops.
+SEAL_CAPACITY = 4
+_STOP = object()
+
 
 class RecordingError(RuntimeError):
     """A safe application error, separate from the underlying diagnostic cause."""
 
 
 class RecordingService:
-    """Own the capture gate and one writer thread for a local session.
+    """Own the capture gate, a consumer thread and a sealer thread for a session.
 
     Control calls (start/pause/resume/stop) must be serialized by the caller.
-    submit may be called by multiple producers. Pause waits for accepted blocks
-    to be sealed before acknowledging; resuming always creates fresh epochs.
+    submit may be called by multiple producers. The consumer only appends blocks;
+    full chunks go through a bounded FIFO to the sealer, which verifies, publishes
+    and registers them in order, so sealing never stops the capture queue from
+    draining. Pause waits for accepted blocks to be sealed and registered before
+    acknowledging; resuming always creates fresh epochs.
     """
 
     def __init__(
@@ -50,6 +59,9 @@ class RecordingService:
         self._accepting = False
         self._queue: BoundedCaptureQueue | None = None
         self._thread: threading.Thread | None = None
+        self._sealer: threading.Thread | None = None
+        self._seals: queue.Queue[Any] | None = None
+        self._error_lock = threading.Lock()
         self._writer_error: Exception | None = None
         self._epochs: dict[str, str] = {}
         self._history: list[dict[str, Any]] = []
@@ -59,13 +71,12 @@ class RecordingService:
         library.register_live_owner(self.session_id, self)
 
     def is_live(self) -> bool:
-        """Accepting input or still draining the writer.
+        """Accepting input, or a consumer or sealer still holds unregistered chunks.
 
         Library calls this under its root mutex, so it reads state without taking
         the capture gate (whose holders may wait for that mutex).
         """
-        thread = self._thread
-        return self._accepting or (thread is not None and thread.is_alive())
+        return self._accepting or self.worker_alive
 
     @property
     def epochs(self) -> dict[str, str]:
@@ -74,7 +85,17 @@ class RecordingService:
 
     @property
     def worker_alive(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return any(
+            thread is not None and thread.is_alive() for thread in (self._thread, self._sealer)
+        )
+
+    def _fail(self, error: Exception) -> None:
+        """Keep the first storage failure and stop accepting input."""
+        with self._error_lock:
+            if self._writer_error is None:
+                self._writer_error = error
+        with self._gate:
+            self._accepting = False
 
     def health_snapshot(self) -> dict[str, Any]:
         """Nonpersistent health for UI observation; durable totals are sealed on drain."""
@@ -123,9 +144,17 @@ class RecordingService:
                 for track, epoch in self._epochs.items()
             }
             self._writer_error = None
+            self._seals = queue.Queue(maxsize=SEAL_CAPACITY)
+            self._sealer = threading.Thread(
+                target=self._seal_loop,
+                args=(self._seals,),
+                name=f"recoryn-sealer-{self.session_id}",
+                daemon=False,
+            )
             self._thread = threading.Thread(
                 target=self._consume, name=f"recoryn-writer-{self.session_id}", daemon=False
             )
+            self._sealer.start()
             self._thread.start()
             try:
                 self._transition(SessionState.RECORDING)
@@ -133,6 +162,7 @@ class RecordingService:
                 # No input is admitted before the durable start acknowledgement.
                 self._queue.close()
                 self._thread.join()
+                self._sealer.join()
                 raise
             self._accepting = True
 
@@ -174,13 +204,27 @@ class RecordingService:
                     health["gap_detail_truncated"] = True
             return accepted
 
+    def _hand_off(self, seals: queue.Queue[Any], writer: ChunkWriter) -> None:
+        """Give a full chunk to the sealer; wait while its FIFO is full."""
+        while True:
+            if self._writer_error is not None:
+                raise RecordingError("SEALER_FAILED")
+            try:
+                seals.put(writer, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
     def _consume(self) -> None:
         writers: dict[tuple[str, str], ChunkWriter] = {}
         frames: dict[tuple[str, str], int] = {}
         pending = self._queue
-        assert pending is not None
+        seals = self._seals
+        assert pending is not None and seals is not None
         try:
             while True:
+                if self._writer_error is not None:
+                    raise RecordingError("SEALER_FAILED")
                 try:
                     block = pending.get(timeout=0.1)
                 except queue.Empty:
@@ -197,16 +241,16 @@ class RecordingService:
                     frames[key] >= self.chunk_frames
                     and block.fragment_index + 1 == block.fragment_count
                 ):
-                    # Retain ownership until seal and catalog registration succeed.
-                    self.library.register_chunk(writers[key].seal())
+                    # The sealer owns it from here; the writer stays active until
+                    # its catalog registration, so a delete waits for it.
+                    self._hand_off(seals, writers[key])
                     del writers[key]
                     frames.pop(key)
-            for writer in writers.values():
-                self.library.register_chunk(writer.seal())
+            for key in list(writers):
+                self._hand_off(seals, writers[key])
+                del writers[key]
         except Exception as error:
-            self._writer_error = error
-            with self._gate:
-                self._accepting = False
+            self._fail(error)
             pending.close()
             for writer in writers.values():
                 try:
@@ -220,17 +264,59 @@ class RecordingService:
                 # A failed metadata store/deletion intent must not restart capture.
                 # health_snapshot still reports the in-memory storage failure.
                 pass
+        finally:
+            # The sealer drains everything handed off before this marker.
+            seals.put(_STOP)
+
+    def _seal_loop(self, seals: queue.Queue[Any]) -> None:
+        """Verify, publish and register handed-off chunks in FIFO order."""
+        failed = False
+        while True:
+            item = seals.get()
+            if item is _STOP:
+                return
+            if failed or self._writer_error is not None:
+                try:
+                    item.abort()  # staging stays for recovery
+                except Exception:
+                    pass
+                continue
+            item.hold()
+            try:
+                descriptor = item.seal()
+                # The held writer's capability lets registration skip a second full
+                # verification of the bundle this sealer verified once.
+                self.library.register_chunk(item.capability or descriptor)
+            except Exception as error:
+                failed = True
+                self._fail(error)
+                try:
+                    item.abort()  # idempotent; an unsealed staging stays for recovery
+                except Exception:
+                    pass
+                try:
+                    self._mark_interrupted()
+                except Exception:
+                    pass
+            finally:
+                item.unhold()
+
+    def _join_workers(self, timeout: float | None) -> None:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for thread in (self._thread, self._sealer):
+            if thread is None:
+                continue
+            thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+            if thread.is_alive():
+                # Keep storage ownership until the caller has joined the writer.
+                raise RecordingError("WRITER_ACK_PENDING")
 
     def _drain(self, timeout: float | None) -> None:
         with self._gate:
             self._accepting = False
             if self._queue is not None:
                 self._queue.close()
-        if self._thread is not None:
-            self._thread.join(timeout)
-            if self._thread.is_alive():
-                # Keep storage ownership until the caller has joined the writer.
-                raise RecordingError("WRITER_ACK_PENDING")
+        self._join_workers(timeout)
         if self._queue is not None:
             self._history.append({"tracks": self._track_health, "queue": self._queue.snapshot()})
             self._queue = None
@@ -288,5 +374,4 @@ class RecordingService:
             self._accepting = False
             if self._queue is not None:
                 self._queue.close()
-        if self._thread is not None:
-            self._thread.join()
+        self._join_workers(None)

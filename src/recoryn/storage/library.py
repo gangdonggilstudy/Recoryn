@@ -7,6 +7,7 @@ import os
 import sqlite3
 import sys
 import threading
+import time
 import uuid
 import weakref
 from collections.abc import Callable, Iterator
@@ -24,7 +25,7 @@ from recoryn.domain import (
     transition_session,
 )
 
-from ._coordination import root_mutex
+from ._coordination import register_intent_check, root_mutex, unregister_intent_check
 from ._safe import (
     atomic_json,
     canonical,
@@ -45,11 +46,14 @@ from .chunks import (
     ChunkDescriptor,
     ChunkWriter,
     JournalPrefix,
+    SealedChunk,
     has_active_writer,
+    issued_descriptor,
     scan_prefix,
     verify_bundle,
 )
 
+_Listing = tuple[tuple[int, int, int], frozenset[str], bool, bool]
 _UNFINISHED = frozenset(
     {
         SessionState.CREATED,
@@ -61,6 +65,10 @@ _UNFINISHED = frozenset(
 )
 _DELETION_STATUSES = frozenset({"DELETE_PENDING", "DELETED_LOCAL"})
 _HISTORY_UNAVAILABLE = "DELETION_HISTORY_UNAVAILABLE"
+# A directory mtime ticks coarsely (0.5-1 ms measured on NTFS here, 2 s on FAT), so
+# two changes in one tick share a stamp. A listing settles the stamp only when it was
+# observed longer than this after that mtime; every later change lands in a later tick.
+_STAMP_SETTLE_NS = 2_500_000_000
 
 
 class LiveOwner(Protocol):
@@ -113,6 +121,16 @@ class Library:
         # Bumped under root_mutex before this Library writes a deletion journal,
         # so a journal read outside the mutex can be validated cheaply.
         self._history_version = 0
+        # Validated journal (session -> generation) and the journal directory stamp
+        # it was read at. Updated in the same root_mutex section that publishes an
+        # intent; any other change to the directory forces a full re-validation.
+        self._intent_journal: dict[str, int] | None = None
+        self._intent_stamp: tuple[int, int, int] | None = None
+        self._intent_names: frozenset[str] = frozenset()  # entry names the index implies
+        self._intent_settled = False  # a settled listing at _intent_stamp matched them
+        # Capture-path listing (stamp, names, unfinished, settled) while the index is
+        # not current. It never opens an entry.
+        self._journal_listing: _Listing | None = None
         mkdir(self.root)
         self.db_path = safe_path(self.root, "library.sqlite")
         for suffix in ("-wal", "-shm", "-journal"):
@@ -160,6 +178,12 @@ class Library:
         except BaseException:
             self.close()
             raise
+        with self._mutex:
+            try:
+                self._refresh_intent_index()  # once at open; no other thread waits yet
+            except (ValueError, OSError):
+                self._intent_journal = None  # every intent query fails closed until valid
+        register_intent_check(self.root, self._append_check)
 
     def _acquire_lock(self) -> None:
         path = safe_path(self.root, ".writer.lock")
@@ -239,19 +263,156 @@ class Library:
         except (ValueError, OSError):
             return version, None  # the locked re-read reports the failure
 
+    def _journal_stamp(self) -> tuple[int, int, int]:
+        status = os.stat(safe_path(self.root, "deletion-journal"))
+        return (status.st_dev, status.st_ino, status.st_mtime_ns)
+
+    def _list_journal(self, stamp: tuple[int, int, int]) -> tuple[frozenset[str], bool]:
+        """Root mutex held: entry names (no entry is opened) and whether stamp settled."""
+        observed = time.time_ns()
+        journal = safe_path(self.root, "deletion-journal")
+        check_path(journal)
+        with os.scandir(journal) as entries:
+            names = frozenset(entry.name for entry in entries)
+        settled = observed - stamp[2] > _STAMP_SETTLE_NS and self._journal_stamp() == stamp
+        return names, settled
+
+    def _set_index(self, journal: dict[str, int], stamp: tuple[int, int, int]) -> None:
+        self._intent_journal, self._intent_stamp = journal, stamp
+        self._intent_names = frozenset(f"{sid}.json" for sid in journal)
+        self._intent_settled = False
+
+    def _index_current(self) -> bool:
+        """Root mutex held: the validated index still describes the journal's entries.
+
+        One stat once the stamp has settled; until then one listing of entry names, so
+        a second change in the same mtime tick is still seen. In-place rewrites of an
+        entry change neither; the management paths validate contents in full.
+        """
+        if self._intent_journal is None:
+            return False
+        stamp = self._journal_stamp()
+        if stamp != self._intent_stamp:
+            return False
+        if self._intent_settled:
+            return True
+        names, settled = self._list_journal(stamp)
+        if names != self._intent_names:
+            return False
+        self._intent_settled = settled
+        return True
+
+    def _refresh_intent_index(self) -> dict[str, int]:
+        """Root mutex held: fully re-validate the journal (at open or after an outside change)."""
+        self._intent_journal = None
+        if self._missing_deletion_history:
+            raise ValidationError(_HISTORY_UNAVAILABLE)
+        before = self._journal_stamp()
+        journal = self._read_journal()
+        if self._journal_stamp() != before:
+            raise ValidationError(_HISTORY_UNAVAILABLE)  # changed while reading
+        self._set_index(journal, before)
+        return journal
+
+    def _indexed_journal(self) -> dict[str, int]:
+        """Root mutex held: the validated journal, re-read only when its entries changed.
+
+        A new .tmp, an unknown entry or an added or removed intent changes the entry
+        names, so it is always re-validated in full (fail closed).
+        """
+        try:
+            if self._missing_deletion_history:
+                raise ValidationError(_HISTORY_UNAVAILABLE)
+            if self._index_current() and self._intent_journal is not None:
+                return self._intent_journal
+            return self._refresh_intent_index()
+        except (ValueError, OSError):
+            self._intent_journal = None
+            raise ValidationError(_HISTORY_UNAVAILABLE) from None
+
+    def _db_intent(self, session_id: str) -> bool:
+        """Root mutex held: this session's DB deletion record only, validated."""
+        row = self._db.execute(
+            "SELECT generation,status FROM deleted_sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        integer(row[0], minimum=1)
+        if row[1] not in _DELETION_STATUSES:
+            raise ValidationError("Unsupported deletion status")
+        return True
+
+    def _writer_intent(self, session_id: str) -> bool:
+        """Deletion intent of this one session for the capture path (G05R-04).
+
+        Used by catalog registration of a sealed chunk and, through _coordination, by
+        every append and seal. It looks only at entry names and this session's DB row
+        and never opens a journal file, so an I/O error on another session's intent
+        cannot stop a recording. If the answer for this session cannot be established,
+        the write is refused with a ValidationError (I1).
+        """
+        identifier(session_id)
+        with self._mutex:
+            connection = self._db  # a closed Library reports itself
+            try:
+                if self._missing_deletion_history:
+                    raise ValidationError(_HISTORY_UNAVAILABLE)
+                self._check_version()
+                names = self._writer_names()
+                row = connection.execute(
+                    "SELECT 1 FROM deleted_sessions WHERE session_id=?", (session_id,)
+                ).fetchone()
+            except ValidationError as exc:
+                if exc.args == ("Incomplete deletion intent",):
+                    raise
+                raise ValidationError("Cannot verify writer deletion intent") from None
+            except (ValueError, OSError, sqlite3.Error):
+                raise ValidationError("Cannot verify writer deletion intent") from None
+            return f"{session_id}.json" in names or row is not None
+
+    def _writer_names(self) -> frozenset[str]:
+        """Root mutex held: journal entry names for the capture path."""
+        if self._index_current():
+            return self._intent_names
+        # Changed outside this Library's own writes: names only, cached once settled.
+        stamp = self._journal_stamp()
+        cached = self._journal_listing
+        if cached is not None and cached[0] == stamp and cached[3]:
+            _, names, unfinished, _ = cached
+        else:
+            names, settled = self._list_journal(stamp)
+            unfinished = any(name.startswith(".tmp-") for name in names)
+            self._journal_listing = (stamp, names, unfinished, settled)
+        if unfinished:
+            # An unfinished publication may be this session's intent (as before G15).
+            raise ValidationError("Incomplete deletion intent")
+        return names
+
+    def _append_check(self, session_id: str) -> bool | None:
+        """_coordination callback; None once closed, so the writer checks durably."""
+        with self._mutex:
+            if self._connection is None:
+                return None
+            return self._writer_intent(session_id)
+
     def _deletion_history(
         self, prefetched: tuple[int, dict[str, int] | None] | None = None
     ) -> tuple[dict[str, tuple[int, str]], dict[str, int]]:
-        """Root mutex held: validated DB rows and journal. Corruption is never absence."""
+        """Root mutex held: validated DB rows and journal. Corruption is never absence.
+
+        With a prefetch the journal is read and validated in full on every call (the
+        management paths); without one the stamp-checked index is used.
+        """
         connection = self._db
         try:
             if self._missing_deletion_history:
                 raise ValidationError(_HISTORY_UNAVAILABLE)
-            journal = None
-            if prefetched is not None and prefetched[0] == self._history_version:
-                journal = prefetched[1]
-            if journal is None:
-                journal = self._read_journal()
+            if prefetched is not None:
+                journal = prefetched[1] if prefetched[0] == self._history_version else None
+                if journal is None:
+                    journal = self._read_journal()  # re-read so the failure is reported
+            else:
+                journal = self._indexed_journal()
             rows: dict[str, tuple[int, str]] = {}
             for sid, generation, status in connection.execute(
                 "SELECT session_id,generation,status FROM deleted_sessions"
@@ -265,13 +426,26 @@ class Library:
             raise ValidationError(_HISTORY_UNAVAILABLE) from None
         return rows, journal
 
-    def _deletion_intents(self) -> set[str]:
-        rows, journal = self._deletion_history()
+    def _deletion_intents(
+        self, prefetched: tuple[int, dict[str, int] | None] | None = None
+    ) -> set[str]:
+        rows, journal = self._deletion_history(prefetched)
         return set(rows) | set(journal)
 
     def _live(self, session_id: str) -> None:
+        """Root mutex held: refuse a session with a deletion intent, in O(1).
+
+        Uses the stamp-checked journal index and this session's DB record only, so
+        frequent calls (get_session, chunks, create_session) no longer read every
+        journal file under the mutex. History that cannot be validated fails closed.
+        """
         identifier(session_id)
-        if session_id in self._deletion_intents():
+        self._db  # noqa: B018 - a closed Library reports itself, not a history error
+        try:
+            intent = session_id in self._indexed_journal() or self._db_intent(session_id)
+        except (ValueError, OSError, sqlite3.Error):
+            raise ValidationError(_HISTORY_UNAVAILABLE) from None
+        if intent:
             raise StateConflict("Session has a deletion intent")
 
     def register_live_owner(self, session_id: str, owner: LiveOwner) -> None:
@@ -324,8 +498,10 @@ class Library:
             return Session(session_id, SessionState(row[0]), row[1])
 
     def list_sessions(self) -> list[Session]:
+        # Full journal validation on every call, read outside the root mutex.
+        prefetched = self._journal_prefetch()
         with self._mutex:
-            deleted = self._deletion_intents()
+            deleted = self._deletion_intents(prefetched)
             return [
                 Session(row[0], SessionState(row[1]), row[2])
                 for row in self._db.execute(
@@ -355,11 +531,12 @@ class Library:
         session_id: str,
         operation: str,
         expected_version: int | None,
+        prefetched: tuple[int, dict[str, int] | None] | None = None,
     ) -> bool:
         """Root mutex held: decide every refusal before publishing any claim."""
         if expected_version is not None:
             integer(expected_version)
-        if session_id in self._deletion_intents():
+        if session_id in self._deletion_intents(prefetched):
             if operation == "recover":
                 return False  # Preserve recover's read-only DELETE_PENDING result.
             raise StateConflict("DELETE_PENDING")
@@ -416,10 +593,12 @@ class Library:
         # Waiting is deliberately outside root_mutex. Nested recovery/manifest
         # operations on the same thread retain the original claim.
         with lock:
+            # Admission validates the whole journal, read outside the root mutex.
+            prefetched = self._journal_prefetch() if admission is not None else None
             with self._mutex:
                 nested = session_id in self._claims
                 admitted = admission is None or self._admit_session(
-                    session_id, admission, expected_version
+                    session_id, admission, expected_version, prefetched
                 )
                 self._check_claim(session_id)
                 if admitted:
@@ -467,17 +646,37 @@ class Library:
                 self._event(connection, session_id, changed.state.value, changed.state_version)
             return changed
 
-    def register_chunk(self, descriptor: ChunkDescriptor) -> None:
-        # Hashing a sealed chunk must not stall another session's capture writer.
-        path = safe_path(self.root, descriptor.relative_path)
-        if verify_bundle(path) != descriptor:
-            raise ValidationError("Catalog descriptor differs from verified bundle")
+    def register_chunk(self, descriptor: ChunkDescriptor | SealedChunk) -> None:
+        """Catalog a sealed bundle; all hashing runs outside the root mutex.
+
+        A SealedChunk issued by this process's sealer for this root was verified on
+        disk exactly once while sealing; it gets a cheap identity check (descriptor
+        bytes and PCM size) and a deletion test of its own session only, so another
+        session's journal cannot stop a recording. Everything else (recovery
+        adoption, external callers, a released or copied capability) is fully
+        verified and uses the management deletion check, as before.
+        """
+        sealed = issued_descriptor(descriptor, self.root)
+        if sealed is not None:
+            descriptor = sealed
+            self._check_sealed_identity(safe_path(self.root, descriptor.relative_path), sealed)
+        else:
+            if isinstance(descriptor, SealedChunk):
+                descriptor = descriptor.descriptor
+            path = safe_path(self.root, descriptor.relative_path)
+            if verify_bundle(path) != descriptor:
+                raise ValidationError("Catalog descriptor differs from verified bundle")
+        session_id = descriptor.session_id
         with self._mutex:
             # Admission must never create an exclusive claim over a live
             # recorder. Even if that invariant is broken, preserve its writer.
-            if not self._is_live(descriptor.session_id):
-                self._check_claim(descriptor.session_id)
-            self._live(descriptor.session_id)
+            if not self._is_live(session_id):
+                self._check_claim(session_id)
+            if sealed is not None:
+                if self._writer_intent(session_id):
+                    raise StateConflict("Session has a deletion intent")
+            else:
+                self._live(session_id)
             with self._transaction() as connection:
                 existing = connection.execute(
                     "SELECT descriptor FROM chunks WHERE chunk_id=?", (descriptor.chunk_id,)
@@ -487,17 +686,31 @@ class Library:
                     if existing[0] != encoded:
                         raise StateConflict("Conflicting chunk identity")
                     return
-                session = self.get_session(descriptor.session_id)
-                if session.state == SessionState.FINALIZED:
+                row = connection.execute(
+                    "SELECT state FROM sessions WHERE session_id=?", (session_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(session_id)
+                if row[0] == SessionState.FINALIZED.value:
                     raise StateConflict("Finalized original list is immutable")
-                for previous in self.chunks(descriptor.session_id):
-                    if (
-                        previous.track_id == descriptor.track_id
-                        and previous.epoch_id == descriptor.epoch_id
-                        and previous.first_sequence <= descriptor.last_sequence
-                        and descriptor.first_sequence <= previous.last_sequence
-                    ):
-                        raise StateConflict("Overlapping source sequence ranges")
+                # Only rows of the same track and epoch can overlap. SQLite evaluates
+                # this in C instead of decoding every catalog row of the session.
+                overlap = connection.execute(
+                    "SELECT 1 FROM chunks WHERE session_id=? "
+                    "AND json_extract(descriptor,'$.track_id')=? "
+                    "AND json_extract(descriptor,'$.epoch_id')=? "
+                    "AND json_extract(descriptor,'$.first_sequence')<=? "
+                    "AND ?<=json_extract(descriptor,'$.last_sequence') LIMIT 1",
+                    (
+                        session_id,
+                        descriptor.track_id,
+                        descriptor.epoch_id,
+                        descriptor.last_sequence,
+                        descriptor.first_sequence,
+                    ),
+                ).fetchone()
+                if overlap is not None:
+                    raise StateConflict("Overlapping source sequence ranges")
                 connection.execute(
                     "INSERT INTO chunks VALUES(?,?,?,?)",
                     (descriptor.chunk_id, descriptor.session_id, descriptor.relative_path, encoded),
@@ -507,6 +720,17 @@ class Library:
                     "WHERE session_id=?",
                     (descriptor.session_id,),
                 )
+
+    @staticmethod
+    def _check_sealed_identity(path: Path, descriptor: ChunkDescriptor) -> None:
+        """The bundle a sealer just published is still that bundle (no re-hash)."""
+        expected = canonical(descriptor.to_dict()) + b"\n"
+        with open_file(path / "descriptor.json", "rb") as stream:
+            if stream.read(len(expected) + 1) != expected:
+                raise ValidationError("Sealed chunk changed before registration")
+        with open_file(path / "audio.pcm", "rb") as stream:
+            if os.fstat(stream.fileno()).st_size != descriptor.byte_count:
+                raise ValidationError("Sealed chunk changed before registration")
 
     def chunks(self, session_id: str) -> list[ChunkDescriptor]:
         with self._mutex:
@@ -754,9 +978,10 @@ class Library:
 
     def recover_session(self, session_id: str) -> dict[str, Any]:
         with self._session_operation(session_id, admission="recover"):
+            prefetched = self._journal_prefetch()
             with self._mutex:
                 identifier(session_id)
-                intents = self._deletion_intents()
+                intents = self._deletion_intents(prefetched)
                 if session_id in intents:
                     return {
                         "session_id": session_id,
@@ -956,8 +1181,9 @@ class Library:
             raise StateConflict(entry["inspection_error"])
 
     def _inventory(self) -> tuple[list[dict[str, Any]], int]:
+        prefetched = self._journal_prefetch()
         with self._mutex:
-            deleted = self._deletion_intents()
+            deleted = self._deletion_intents(prefetched)
             rows = self._db.execute(
                 "SELECT session_id,state,state_version FROM sessions ORDER BY session_id"
             ).fetchall()
@@ -1025,11 +1251,12 @@ class Library:
         with self._session_operation(
             session_id, admission="finalize", expected_version=expected_version
         ):
+            prefetched = self._journal_prefetch()
             with self._mutex:
                 identifier(session_id)
                 if expected_version is not None:
                     integer(expected_version)
-                if session_id in self._deletion_intents():
+                if session_id in self._deletion_intents(prefetched):
                     raise StateConflict("DELETE_PENDING")
                 if self._is_live(session_id):
                     raise StateConflict("SESSION_LIVE")
@@ -1243,8 +1470,20 @@ class Library:
         return None
 
     def _publish_intent(self, session_id: str, generation: int) -> None:
-        """Root mutex held: atomically publish the minimal journal intent at generation."""
+        """Root mutex held: atomically publish the minimal journal intent at generation.
+
+        The journal index is updated in this same root_mutex section, so no append,
+        seal or registration can pass its deletion check between the published
+        intent and the index (I1). The index is invalid while the file is written;
+        a failed write leaves it invalid and the next query re-validates in full.
+        """
         self._history_version += 1
+        try:
+            current = self._index_current()
+        except (ValueError, OSError):
+            current = False
+        snapshot = dict(self._intent_journal) if current and self._intent_journal else {}
+        self._intent_journal = None
         atomic_json(
             safe_path(self.root, f"deletion-journal/{session_id}.json"),
             {
@@ -1254,6 +1493,13 @@ class Library:
                 "state": "DELETE_REQUESTED",
             },
         )
+        if current:
+            snapshot[session_id] = generation
+            try:
+                # Not settled: the next query lists the entry names once more.
+                self._set_index(snapshot, self._journal_stamp())
+            except OSError:
+                pass  # stays invalid; the next query re-validates
 
     def _deletion_complete(self, session_id: str, generation: int) -> bool:
         """Root mutex held: tombstone at generation, no catalog row and no folder."""
@@ -1506,6 +1752,8 @@ class Library:
         )
 
     def close(self) -> None:
+        # Writers fall back to the durable check once this Library is gone.
+        unregister_intent_check(self.root, self._append_check)
         with self._mutex:
             try:
                 if self._connection is not None:

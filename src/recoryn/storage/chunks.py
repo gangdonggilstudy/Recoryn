@@ -41,9 +41,11 @@ _writers_lock = threading.Lock()
 
 
 def has_active_writer(root: Path, session_id: str) -> bool:
+    """An open writer, or one sealing until its catalog registration is released."""
     with _writers_lock:
         return any(
-            w.root == root and w.session_id == session_id and w._pcm is not None for w in _writers
+            w.root == root and w.session_id == session_id and (w._pcm is not None or w._sealing)
+            for w in _writers
         )
 
 
@@ -268,6 +270,11 @@ def scan_prefix(path: Path, *, strict: bool = False) -> JournalPrefix:
 
 def verify_bundle(path: Path) -> ChunkDescriptor:
     path = root_path(path)
+    return _verified(path, path)
+
+
+def _verified(path: Path, location: Path) -> ChunkDescriptor:
+    """Full journal verification of the bundle at path as if it lived at location."""
     descriptor = ChunkDescriptor.from_dict(read_json(path / "descriptor.json"))
     prefix = scan_prefix(path, strict=True)
     if (
@@ -295,9 +302,55 @@ def verify_bundle(path: Path) -> ChunkDescriptor:
     ):
         raise ValidationError("Descriptor identity mismatch")
     # A copied descriptor cannot redirect registration to another bundle path.
-    if tuple(path.parts[-6:]) != tuple(Path(descriptor.relative_path).parts):
+    if tuple(location.parts[-6:]) != tuple(Path(descriptor.relative_path).parts):
         raise ValidationError("Bundle location does not match identity")
     return descriptor
+
+
+# Capabilities issued by a sealing ChunkWriter of this process. A SealedChunk is
+# accepted only if it is this exact registered object, so neither a descriptor nor
+# a copied object can stand in for a chunk this process verified and published.
+_issued: weakref.WeakSet[SealedChunk] = weakref.WeakSet()
+
+
+class SealedChunk:
+    """A chunk this process verified once and published; its writer stays active.
+
+    The writer counts as active (deletion waits) until release(), so a caller can
+    register the chunk in the catalog before a delete may remove it.
+    """
+
+    __slots__ = ("__weakref__", "_writer", "descriptor")
+
+    def __init__(self, writer: ChunkWriter, descriptor: ChunkDescriptor) -> None:
+        self._writer = writer
+        self.descriptor = descriptor
+
+    def release(self) -> None:
+        self._writer._release(self)
+
+
+def is_issued(candidate: object) -> bool:
+    """True only for a live capability returned by ChunkWriter.seal_chunk here."""
+    with _writers_lock:
+        return (
+            type(candidate) is SealedChunk
+            and candidate in _issued
+            and candidate._writer._capability is candidate
+        )
+
+
+def issued_descriptor(candidate: object, root: Path) -> ChunkDescriptor | None:
+    """The descriptor of a live capability issued here for root; None otherwise."""
+    with _writers_lock:
+        if (
+            type(candidate) is SealedChunk
+            and candidate in _issued
+            and candidate._writer._capability is candidate
+            and candidate._writer.root == root
+        ):
+            return candidate.descriptor
+    return None
 
 
 class ChunkWriter:
@@ -323,6 +376,10 @@ class ChunkWriter:
         self._hash = hashlib.sha256()
         self._closed = False
         self._failed = False
+        # SEALING: from seal start until release() after registration, or failure.
+        self._sealing = False
+        self._held = False
+        self._capability: SealedChunk | None = None
 
     def _open(self) -> None:
         check_write_allowed(self.root, self.session_id)
@@ -393,15 +450,83 @@ class ChunkWriter:
         self._previous = block
 
     def seal(self) -> ChunkDescriptor:
+        """Seal and publish.
+
+        The writer is inactive again when this returns, unless the owner called
+        hold() first: then it stays active, with its capability, until unhold().
+        """
+        sealed = self.seal_chunk()
+        if not self._held:
+            sealed.release()
+        return sealed.descriptor
+
+    def hold(self) -> None:
+        """Keep this writer active across seal() until unhold() (catalog handoff)."""
+        with _writers_lock:
+            self._held = True
+
+    def unhold(self) -> None:
+        with _writers_lock:
+            self._held = False
+            sealed = self._capability
+        if sealed is not None:
+            sealed.release()
+
+    @property
+    def capability(self) -> SealedChunk | None:
+        """The live SealedChunk of a held, sealed writer; None otherwise."""
+        with _writers_lock:
+            return self._capability
+
+    def seal_chunk(self) -> SealedChunk:
+        """Verify outside the root mutex, then publish in a short critical section.
+
+        Inside the mutex: the deletion check and the start/stop of SEALING, then the
+        final deletion check, mkdir and rename. The fsyncs, the descriptor and the
+        single journal verification run outside it while the writer stays active,
+        so a delete waits (DELETE_PENDING) instead of removing a chunk mid-seal.
+        """
         with root_mutex(self.root):
             check_write_allowed(self.root, self.session_id)
-            return self._seal()
+            self._check_sealable()
+            with _writers_lock:
+                self._sealing = True
+        try:
+            descriptor = self._prepare()
+            with root_mutex(self.root):
+                # A deletion intent committed while verifying wins: nothing is published.
+                check_write_allowed(self.root, self.session_id)
+                self._publish()
+                sealed = SealedChunk(self, descriptor)
+                with _writers_lock:
+                    self._capability = sealed
+                    _issued.add(sealed)
+            return sealed
+        except BaseException:
+            self._fail_seal()
+            raise
 
-    def _seal(self) -> ChunkDescriptor:
+    def _release(self, sealed: SealedChunk) -> None:
+        with _writers_lock:
+            if self._capability is sealed:
+                self._capability = None
+                _issued.discard(sealed)
+                self._sealing = False
+
+    def _fail_seal(self) -> None:
+        with _writers_lock:
+            self._sealing = False
+        self.abort()
+
+    def _check_sealable(self) -> None:
         if self._closed or self._failed or self._previous is None:
             raise ValueError("Cannot seal empty, closed or failed writer")
         if self._previous.fragment_index + 1 != self._previous.fragment_count:
             raise ValidationError("Cannot seal incomplete packet fragments")
+
+    def _prepare(self) -> ChunkDescriptor:
+        """Make the staging durable and verify it once; no root mutex needed."""
+        assert self._previous is not None
         descriptor = ChunkDescriptor(
             self.session_id,
             self.track_id,
@@ -416,22 +541,37 @@ class ChunkWriter:
             self._previous.sequence,
             self._count,
         )
+        assert self._pcm is not None and self._journal is not None
+        sync(self._pcm)
+        sync(self._journal)
+        with open_file(self.staging_path / "descriptor.json", "xb") as stream:
+            write_all(stream, canonical(descriptor.to_dict()) + b"\n")
+            sync(stream)
+        self.abort()  # closes the files; SEALING still marks the writer active
+        # The one disk read-back of this chunk: journal, payload hashes, descriptor
+        # and the final location. A rename cannot change these bytes afterwards.
+        if _verified(self.staging_path, self.path) != descriptor:
+            raise ValidationError("Sealed chunk differs from its writer")
+        return descriptor
+
+    def _publish(self) -> None:
+        mkdir(self.path.parent)
+        check_path(self.path)
+        if self.path.exists():
+            raise FileExistsError("Final bundle already exists")
+        # A unique nonempty directory cannot be replaced by this rename.
+        self.staging_path.rename(self.path)
+
+    def _seal(self) -> ChunkDescriptor:
+        """Unlocked full seal for a caller that owns the session exclusively.
+
+        Recovery uses this for its private salvage writer under a session claim.
+        """
+        self._check_sealable()
         try:
-            assert self._pcm is not None and self._journal is not None
-            sync(self._pcm)
-            sync(self._journal)
-            with open_file(self.staging_path / "descriptor.json", "xb") as stream:
-                write_all(stream, canonical(descriptor.to_dict()) + b"\n")
-                sync(stream)
-            self.abort()
-            scan_prefix(self.staging_path, strict=True)
-            mkdir(self.path.parent)
-            check_path(self.path)
-            if self.path.exists():
-                raise FileExistsError("Final bundle already exists")
-            # A unique nonempty directory cannot be replaced by this rename.
-            self.staging_path.rename(self.path)
-            return verify_bundle(self.path)
+            descriptor = self._prepare()
+            self._publish()
+            return descriptor
         except BaseException:
             self.abort()
             raise
