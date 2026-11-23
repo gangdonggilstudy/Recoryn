@@ -25,6 +25,7 @@ from recoryn.security import (
 )
 from recoryn.security._core import Endpoint
 from recoryn.storage import Library
+from tests.unit.test_cost_cap import fixture_balance, fixture_reservation, fixture_wire
 
 pytestmark = pytest.mark.integration
 URL = "https://api.example.test/v1"
@@ -70,7 +71,7 @@ def test_default_gateway_blocks_before_dns(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("boundary", (1, 2, 3, 4, None))
 def test_dispatch_guard_checks_open_each_write_and_final_result(
-    tmp_path: Path, boundary: int | None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: int | None
 ) -> None:
     calls: list[SendPermit] = []
     transport = FakeTransport()
@@ -92,7 +93,14 @@ def test_dispatch_guard_checks_open_each_write_and_final_result(
             scope=_fixture_grant_scope(policy),
             policy_version=2,
         )
-        reservation = ledger.reserve("p", "guarded-request", 60, 100)
+        reservation = fixture_reservation(
+            ledger,
+            monkeypatch,
+            fixture_wire("p", URL, "audio", b"abcd"),
+            60,
+            100,
+            "guarded-request",
+        )
         gateway = _fixture_gateway(
             policy,
             ledger=ledger,
@@ -118,7 +126,9 @@ def test_dispatch_guard_checks_open_each_write_and_final_result(
         assert transport.opens == (0 if boundary == 1 else 1)
         expected_writes = [] if boundary in (1, 2) else [b"ab"] if boundary == 3 else [b"ab", b"cd"]
         assert transport.connection.writes == expected_writes
-        assert ledger.snapshot("p")["reserved" if boundary in (1, 2) else "unknown_exposure"] == 60
+        assert (
+            fixture_balance(ledger)["reserved" if boundary in (1, 2) else "unknown_exposure"] == 60
+        )
         assert transport.connection.closed is (boundary != 1)
 
 
@@ -221,7 +231,7 @@ def test_owner_guard_holds_through_handoff_and_blocks_later_result(tmp_path: Pat
 
 @pytest.mark.parametrize("exit_behavior", ("suppress", "raise"))
 def test_guard_exit_cannot_hide_failed_handoff_or_unknown_cost(
-    tmp_path: Path, exit_behavior: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_behavior: str
 ) -> None:
     transport = FakeTransport()
     transport.connection.fail_write = True
@@ -245,12 +255,14 @@ def test_guard_exit_cannot_hide_failed_handoff_or_unknown_cost(
             scope=_fixture_grant_scope(policy),
             policy_version=2,
         )
-        reservation = ledger.reserve("p", "request", 60, 100)
+        reservation = fixture_reservation(
+            ledger, monkeypatch, fixture_wire("p", URL, "audio", b"abcd"), 60, 100, "request"
+        )
         gateway = _fixture_gateway(policy, ledger=ledger, transport=transport, dispatch_guard=guard)
         with pytest.raises(SecurityError, match="REMOTE_OUTCOME_UNKNOWN") as failure:
             gateway.request("p", URL, "audio", b"abcd", reservation_id=reservation)
         assert not failure.value.outcome_known
-        assert ledger.snapshot("p")["unknown_exposure"] == 60
+        assert fixture_balance(ledger)["unknown_exposure"] == 60
         assert transport.connection.closed
 
 
@@ -290,7 +302,9 @@ def test_revoke_before_first_or_second_handoff_blocks_unsent_bytes(
             scope=_fixture_grant_scope(policy),
             policy_version=2,
         )
-        reservation = ledger.reserve("p", "r", 60, 100)
+        reservation = fixture_reservation(
+            ledger, monkeypatch, fixture_wire("p", URL, "audio", b"abcd"), 60, 100, "r"
+        )
         gateway = _fixture_gateway(
             policy, ledger=ledger, transport=transport, chunk_bytes=2, session_id="s"
         )
@@ -322,7 +336,7 @@ def test_revoke_before_first_or_second_handoff_blocks_unsent_bytes(
         assert transport.connection.writes == ([] if boundary == 1 else [b"ab"])
         assert transport.connection.closed
         expected = "reserved" if boundary == 1 else "unknown_exposure"
-        assert ledger.snapshot("p")[expected] == 60
+        assert fixture_balance(ledger)[expected] == 60
 
 
 def test_write_first_finishes_before_revoke_commit_without_blocking_media_db(
@@ -384,7 +398,9 @@ def test_write_first_finishes_before_revoke_commit_without_blocking_media_db(
         assert order == ["write", "revoke"]
 
 
-def test_unknown_cost_survives_failed_write_restart_and_session_delete(tmp_path: Path) -> None:
+def test_unknown_cost_survives_failed_write_restart_and_session_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db = tmp_path / "library.sqlite"
     transport = FakeTransport()
     transport.connection.fail_write = True
@@ -398,7 +414,9 @@ def test_unknown_cost_survives_failed_write_restart_and_session_delete(tmp_path:
             scope=_fixture_grant_scope(policy),
             policy_version=2,
         )
-        reservation = ledger.reserve("p", "request", 80, 100)
+        reservation = fixture_reservation(
+            ledger, monkeypatch, fixture_wire("p", URL, "audio", b"dummy"), 80, 100, "request"
+        )
         gateway = _fixture_gateway(policy, ledger=ledger, transport=transport, session_id="session")
         with pytest.raises(SecurityError, match="REMOTE_OUTCOME_UNKNOWN") as error:
             gateway.request("p", URL, "audio", b"dummy", reservation_id=reservation)
@@ -407,8 +425,8 @@ def test_unknown_cost_survives_failed_write_restart_and_session_delete(tmp_path:
         policy.revoke_session("session")
         assert library.delete_session("session")["deleted"]
     with CostLedger(db) as restarted:
-        assert restarted.snapshot("p")["unknown_exposure"] == 80
-        assert restarted.snapshot("p")["available"] == 20
+        assert fixture_balance(restarted)["unknown_exposure"] == 80
+        assert fixture_balance(restarted)["available"] == 20
         with pytest.raises(SecurityError):
             restarted.release(reservation)
 
@@ -527,7 +545,9 @@ def test_deadline_and_cancel_preserve_unsent_or_unknown_cost(
             scope=_fixture_grant_scope(policy),
             policy_version=2,
         )
-        reservation = ledger.reserve("p", "r", 80, 100)
+        reservation = fixture_reservation(
+            ledger, monkeypatch, fixture_wire("p", URL, "audio", b"synthetic"), 80, 100, "r"
+        )
         with pytest.raises(SecurityError) as caught:
             _fixture_gateway(policy, ledger=ledger, transport=transport).request(
                 "p", URL, "audio", b"synthetic", cancel=cancel, reservation_id=reservation
@@ -537,7 +557,7 @@ def test_deadline_and_cancel_preserve_unsent_or_unknown_cost(
         assert caught.value.outcome_known is (when == "before")
         assert transport.connection.writes == ([] if when == "before" else [b"synthetic"])
         assert transport.connection.closed
-        assert ledger.snapshot("p")["reserved" if when == "before" else "unknown_exposure"] == 80
+        assert fixture_balance(ledger)["reserved" if when == "before" else "unknown_exposure"] == 80
 
 
 def test_budget_and_header_failures_never_open_transport(tmp_path: Path) -> None:
@@ -623,7 +643,9 @@ with ConsentStore(Path(sys.argv[1])) as policy, CostLedger(Path(sys.argv[1])) as
     assert balance["unknown_exposure"] == 80 and balance["available"] == 20
 
 
-def test_frozen_gateway_rejects_regrant_after_reservation_before_permit(tmp_path: Path) -> None:
+def test_frozen_gateway_rejects_regrant_after_reservation_before_permit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db = tmp_path / "security.sqlite"
     transport = FakeTransport()
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
@@ -650,7 +672,14 @@ def test_frozen_gateway_rejects_regrant_after_reservation_before_permit(tmp_path
             session_id="session",
         )
         policy.validate_binding(bindings[0])
-        reservation = ledger.reserve("p", "validated-old-plan", 80, 100)
+        reservation = fixture_reservation(
+            ledger,
+            monkeypatch,
+            fixture_wire("p", URL, "audio", b"old-plan"),
+            80,
+            100,
+            "validated-old-plan",
+        )
         policy.revoke(
             "p", URL, "audio", capability="stt", scope=ConsentScope.library(), policy_version=2
         )
@@ -664,7 +693,7 @@ def test_frozen_gateway_rejects_regrant_after_reservation_before_permit(tmp_path
         )
         with pytest.raises(SecurityError, match="PERMIT_REVOKED"):
             gateway.request("p", URL, "audio", b"old-plan", reservation_id=reservation)
-        assert transport.opens == 0 and ledger.snapshot("p")["reserved"] == 80
+        assert transport.opens == 0 and fixture_balance(ledger)["reserved"] == 80
         policy.grant(
             "p",
             URL,

@@ -1,4 +1,4 @@
-"""Explicit, separate STT/summary consent, credential, and USD budget controls."""
+"""Explicit consent, credentials and scoped, quoted remote cost controls."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -38,10 +38,14 @@ from recoryn.security import (
     ConsentScope,
     ConsentStore,
     CostLedger,
+    CostPolicy,
+    CostQuote,
+    CostRequest,
     CredentialVault,
     Gateway,
     SecurityError,
     SendPermit,
+    cost_catalog,
 )
 from recoryn.security._core import endpoint as parse_endpoint
 
@@ -76,6 +80,7 @@ class _Snapshot:
     cap: int
     limit: int
     config_key: str
+    cost_policy: CostPolicy | None
 
 
 class _Controls(QGroupBox):
@@ -128,7 +133,31 @@ class _Controls(QGroupBox):
             spin.setDecimals(6)
             spin.setRange(0, 1_000_000)
             spin.setPrefix("USD ")
-        self.apply_budget = QPushButton("제공업체 USD 한도 적용")
+        self.apply_budget = QPushButton("제공업체·통화·기간 한도 적용")
+        self.reset_clock = QPushButton("시계 기준 재설정 (확인 필요)")
+        self.cost_mode = QComboBox()
+        self.cost_mode.addItem("엄격 예산 (기본)", "strict")
+        self.cost_mode.addItem("일반 — 미검증 cap 위험 확인 필요", "general")
+        self.general_acknowledged = False
+        self.currency = QLineEdit("USD")
+        self.currency.setMaxLength(3)
+        self.currency.setPlaceholderText("ISO 통화 코드")
+        start = int(time.time()) // 86400 * 86400
+        self.period_start = QLineEdit(
+            datetime.fromtimestamp(start, UTC).isoformat(timespec="seconds")
+        )
+        self.period_end = QLineEdit(
+            datetime.fromtimestamp(start + 86400, UTC).isoformat(timespec="seconds")
+        )
+        for edit in (self.period_start, self.period_end):
+            edit.setMaxLength(32)
+        self.period_info = QLabel("UTC 반개구간 — 새 기간은 명시적으로 적용하세요")
+        self.period_info.setWordWrap(True)
+        self.quote_info = QLabel(
+            "요청 생성 전 — 상한 미계산 / 검증 가격 없음 / strict는 미확인 유료 전송을 차단합니다"
+        )
+        self.quote_info.setWordWrap(True)
+        self.adopt_legacy = QPushButton("이전 비용 이력의 통화·기간 확인 후 승계")
         self.allow, self.revoke = (
             QPushButton("선택한 데이터 범위만 허용"),
             QPushButton("선택 범위 철회"),
@@ -161,9 +190,17 @@ class _Controls(QGroupBox):
             ("새 BYOK 키", self.key),
             ("키 저장", self.save_key),
             ("키 폐기", self.delete_key),
+            ("비용 모드", self.cost_mode),
+            ("비용 통화", self.currency),
+            ("기간 시작 UTC (포함)", self.period_start),
+            ("기간 종료 UTC (미포함)", self.period_end),
+            ("기간 현지 시각", self.period_info),
             ("제공업체 전체 한도", self.total),
             ("요청 1회 비용 상한", self.per_request),
             ("예산", self.apply_budget),
+            ("시계 복구", self.reset_clock),
+            ("이전 이력", self.adopt_legacy),
+            ("요청 상한·가격 근거", self.quote_info),
             ("동의", self.allow),
             ("철회", self.revoke),
             ("권한 상태", self.status),
@@ -180,6 +217,8 @@ class _Controls(QGroupBox):
 
 
 class PrivacyPanel(QWidget):
+    quote_ready = Signal(str, object)
+
     def __init__(
         self,
         consents: ConsentStore,
@@ -204,6 +243,8 @@ class PrivacyPanel(QWidget):
             "summary": set(),
         }
         self.controls = {kind: _Controls(kind) for kind in ("stt", "summary")}
+        self._request_info: dict[str, list[dict[str, object]]] = {"stt": [], "summary": []}
+        self.quote_ready.connect(self._quote_display)
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel("외부 전송은 기본 거부입니다. 음성 전사와 요약은 독립적으로 허용하세요.")
@@ -226,10 +267,24 @@ class PrivacyPanel(QWidget):
             controls.apply_budget.clicked.connect(
                 lambda checked=False, k=kind: self._action(k, "budget")
             )
+            controls.reset_clock.clicked.connect(
+                lambda checked=False, k=kind: self._action(k, "reset_clock")
+            )
             controls.refresh.clicked.connect(
                 lambda checked=False, k=kind: self._action(k, "refresh")
             )
             controls.settle.clicked.connect(lambda checked=False, k=kind: self._action(k, "settle"))
+            controls.requests.currentIndexChanged.connect(
+                lambda index, k=kind: self._request_currency(k)
+            )
+            controls.adopt_legacy.clicked.connect(
+                lambda checked=False, k=kind: self._action(k, "adopt")
+            )
+            controls.cost_mode.currentIndexChanged.connect(
+                lambda index, k=kind: self._mode_changed(k)
+            )
+            for edit in (controls.currency, controls.period_start, controls.period_end):
+                edit.textChanged.connect(lambda text, k=kind: self._cost_changed(k))
             controls.provider.currentIndexChanged.connect(lambda index, k=kind: self._changed(k))
             controls.endpoint.textChanged.connect(lambda text, k=kind: self._changed(k))
             controls.model.textChanged.connect(lambda text, k=kind: self._changed(k))
@@ -245,6 +300,7 @@ class PrivacyPanel(QWidget):
             ):
                 setting.valueChanged.connect(lambda value, k=kind: self._changed(k))
             self._show_scope(kind)
+            self._cost_unavailable(kind)
 
     def select_session(self, session_id: str | None) -> None:
         previous = self._selection_origin if self._selection_pending else self._selected_session
@@ -466,8 +522,6 @@ class PrivacyPanel(QWidget):
             config.local_attestation.artifact_sha256 if config.local_attestation else None,
             config.context_window_tokens,
             config.max_output_tokens,
-            _micros(self.controls[kind].per_request),
-            _micros(self.controls[kind].total),
             kind,
             session_id,
         ]
@@ -494,6 +548,7 @@ class PrivacyPanel(QWidget):
             _micros(control.per_request),
             _micros(control.total),
             key,
+            None if config.provider_id == "ollama" else self._cost_policy(kind),
         )
 
     def prepare_execution(
@@ -540,23 +595,42 @@ class PrivacyPanel(QWidget):
         headers = {header: ("Bearer " + secret if config.provider_id == "openai" else secret)}
         provider, target = config.provider_id, config.endpoint
 
-        def reserve(
-            actual_provider: str, actual_endpoint: str, data_type: str, body_size: int
-        ) -> str:
+        cost_policy = snapshot.cost_policy
+        if cost_policy is None:
+            raise SecurityError("COST_REQUEST_INVALID")
+        notify = self.quote_ready.emit
+
+        def reserve(request: CostRequest) -> str:
             if (
-                actual_provider != provider
-                or parse_endpoint(actual_endpoint).url != target
-                or data_type not in types
-                or type(body_size) is not int
-                or body_size < 0
+                type(request) is not CostRequest
+                or request.provider_id != provider
+                or request.endpoint != target
+                or request.model_revision != config.model
+                or request.operation != snapshot.request.capability
+                or request.data_type not in types
             ):
                 raise SecurityError("BUDGET_SCOPE_MISMATCH")
-            binding = next((item for item in bindings if item.data_type == data_type), None)
+            binding = next((item for item in bindings if item.data_type == request.data_type), None)
             if binding is None:
                 raise SecurityError("CONSENT_REQUIRED")
             with policy.coordinator.hold():
                 policy.validate_binding(binding)
-                return ledger.reserve(provider, uuid.uuid4().hex, cap, limit)
+                try:
+                    quoted = ledger.quote_request(request, cost_policy)
+                    reservation = ledger.reserve_quote(
+                        uuid.uuid4().hex, quoted, cost_policy, request
+                    )
+                except SecurityError as error:
+                    try:
+                        notify(snapshot.request.capability, error.code)
+                    except RuntimeError:
+                        pass  # Closing the display must not change cost admission.
+                    raise
+                try:
+                    notify(snapshot.request.capability, quoted)
+                except RuntimeError:
+                    pass
+                return reservation
 
         return ExecutionContext(cancel=cancel, headers=headers, reservation_factory=reserve)
 
@@ -613,12 +687,155 @@ class PrivacyPanel(QWidget):
             policy_version=snapshot.request.policy_version,
         )
 
+    def _period(self, kind: str) -> tuple[int, int]:
+        control = self._controls(kind)
+        values: list[int] = []
+        try:
+            for text in (control.period_start.text(), control.period_end.text()):
+                value = datetime.fromisoformat(text)
+                if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+                    raise ValueError
+                stamp = value.timestamp()
+                if stamp < 0 or int(stamp) != stamp:
+                    raise ValueError
+                values.append(int(stamp))
+            if values[1] <= values[0]:
+                raise ValueError
+        except (ValueError, OverflowError, OSError):
+            raise SecurityError("COST_PERIOD_CHANGED") from None
+        return values[0], values[1]
+
+    def _cost_policy(self, kind: str, *, advance: bool = False) -> CostPolicy:
+        control = self._controls(kind)
+        provider, _, _ = self._scope(kind)
+        start, end = self._period(kind)
+        code = control.currency.text()
+        old = self.ledger.account(provider, code, start, end)
+        version = int(old["policy_version"]) + int(advance) if old else 1
+        return CostPolicy(
+            str(control.cost_mode.currentData()),
+            code,
+            start,
+            end,
+            _micros(control.per_request),
+            _micros(control.total),
+            version,
+            cost_catalog.load_catalog().sha256,
+            control.general_acknowledged,
+        )
+
+    def _confirm_general(self, kind: str) -> bool:
+        return (
+            QMessageBox.question(
+                self,
+                "미검증 비용 위험 확인",
+                "일반 모드는 가격 또는 요청 상한을 검증하지 못해도 사용자 cap을 예약할 수 있습니다.\n"
+                "USER_CAP은 실제 최대 청구액의 보장이 아니며 strict 합격 근거가 아닙니다. "
+                "미확인 비용은 철회·재시작으로 해제되지 않습니다. 중복 청구 위험이 있습니다. "
+                "이 선택은 전송 동의를 대신하지 않습니다. 일반 모드를 직접 선택하시겠습니까?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+
+    def _mode_changed(self, kind: str) -> None:
+        control = self._controls(kind)
+        general = control.cost_mode.currentData() == "general"
+        control.general_acknowledged = bool(general and self._confirm_general(kind))
+        if general and not control.general_acknowledged:
+            previous = control.cost_mode.blockSignals(True)
+            control.cost_mode.setCurrentIndex(0)
+            control.cost_mode.blockSignals(previous)
+        self._cost_changed(kind)
+
+    def _cost_changed(self, kind: str) -> None:
+        control = self._controls(kind)
+        code = control.currency.text()
+        for spin in (control.total, control.per_request):
+            spin.setPrefix(code + " ")
+        try:
+            start, end = self._period(kind)
+            control.period_info.setText(
+                f"현지 [{_local_expiry(start)}, {_local_expiry(end)}) / UTC 기간은 자동 갱신하지 않습니다"
+            )
+        except SecurityError as error:
+            control.period_info.setText(error.code + " — 명시 UTC 기간을 확인하세요")
+        control.quote_info.setText(
+            "요청 생성 전 — 상한 미계산 / "
+            + (
+                "일반 모드: 미검증 USER_CAP 가능"
+                if control.general_acknowledged
+                else "strict: 검증 가격·상한이 없으면 전송 차단"
+            )
+        )
+        self._changed(kind)
+
+    def _quote_display(self, kind: str, value: object) -> None:
+        control = self._controls(kind)
+        if not isinstance(value, CostQuote):
+            control.quote_info.setText(str(value) + " — 요청 차단, 상한 검증 미완료")
+            return
+        policy = value.policy
+        facts = (
+            f"마지막 요청 기준(현재 설정과 다를 수 있음): {value.kind} / 모드 {policy.mode} / 통화 {policy.currency} / "
+            f"예약 U {_usd(value.amount)} / 사용자 cap C {_usd(policy.cap)} / "
+            f"입력 상한 {value.input_upper if value.input_upper is not None else '미상'} / "
+            f"출력 상한 {value.output_upper if value.output_upper is not None else '미상'} / "
+            f"비용 정책 version {policy.policy_version} / 가격표 {policy.catalog_digest}"
+        )
+        if value.price_as_of_utc is None:
+            facts += " / 가격 기준·만료 미상 / 미검증 사유 " + str(value.reason)
+        else:
+            facts += f" / 가격 기준 {_local_expiry(value.price_as_of_utc)} / 만료 {_local_expiry(value.valid_until_utc)} / 근거 {value.profile_id}"
+        control.quote_info.setText(facts)
+
+    def _cost_unavailable(self, kind: str) -> bool:
+        control = self.controls[kind]
+        unavailable = self.ledger.availability()
+        control.reset_clock.setEnabled(unavailable == "COST_CLOCK_INVALID")
+        if unavailable is not None:
+            control.balance.setText(
+                (
+                    "시계 확인 필요 — "
+                    if unavailable == "COST_CLOCK_INVALID"
+                    else "비용 이력 확인 필요 — "
+                )
+                + unavailable
+                + " / 유료 원격 전송 차단; 녹음·로컬 기능은 계속 사용할 수 있습니다"
+            )
+            return True
+        return False
+
     def _refresh(self, kind: str) -> None:
         control = self.controls[kind]
+        if self._cost_unavailable(kind):
+            return
         provider, _, _ = self._scope(kind)
-        balance = self.ledger.snapshot(provider)
+        start, end = self._period(kind)
+        code = control.currency.text()
+        balance = self.ledger.account_snapshot(provider, code, start, end)
+        account = self.ledger.account(provider, code, start, end)
+        legacy = self.ledger.legacy_unscoped(provider)
+        control.adopt_legacy.setEnabled(legacy)
+        records = self.ledger.reservations(provider)
+        other = sum(
+            1
+            for row in records
+            if row["state"] in {"RESERVED", "UNKNOWN"}
+            and (row.get("currency"), row.get("period_start_utc"), row.get("period_end_utc"))
+            != (code, start, end)
+        )
         control.balance.setText(
-            "USD 확정 "
+            (
+                "COST_PLAN_UNDERESTIMATED — 과소 예약 이력: 신규 지출 차단 / "
+                if account is not None and account["blocked"]
+                else ""
+            )
+            + ("예산 미적용 — 제공업체·통화·기간 한도 적용 필요 / " if account is None else "")
+            + ("LEGACY_UNSCOPED — 통화·기간 명시 승계 전 신규 지출 차단 / " if legacy else "")
+            + code
+            + " 확정 "
             + _usd(balance["confirmed"])
             + " / 예약 "
             + _usd(balance["reserved"])
@@ -626,17 +843,63 @@ class PrivacyPanel(QWidget):
             + _usd(balance["unknown_exposure"])
             + " / 잔여 "
             + _usd(balance["available"])
+            + f" / UTC [{start}, {end})"
+            + (f" / 다른 통화·기간 미정산 {other}건 — 신규 지출 보류" if other else "")
         )
+        self._request_info[kind] = records
         control.requests.clear()
-        for request in self.ledger.reservations(provider):
+        for request in records:
             control.requests.addItem(
-                str(request["request_id"]) + " / " + str(request["state"]),
+                str(request["request_id"])
+                + " / "
+                + str(request["state"])
+                + " / "
+                + str(request.get("quote_kind"))
+                + " / "
+                + str(request.get("currency") or "통화 미확정")
+                + f" / UTC [{request.get('period_start_utc')}, {request.get('period_end_utc')})",
                 str(request["reservation_id"]),
             )
+        self._request_currency(kind)
+
+    def _request_currency(self, kind: str) -> None:
+        control = self.controls[kind]
+        current = next(
+            (
+                r
+                for r in self._request_info[kind]
+                if r["reservation_id"] == control.requests.currentData()
+            ),
+            None,
+        )
+        code = current.get("currency") if current else control.currency.text()
+        control.actual.setPrefix("확인 금액 " + str(code or "통화 미확정") + " ")
+        control.confirm_actual.setChecked(False)
 
     def _action(self, kind: str, action: str) -> None:
         control = self._controls(kind)
         try:
+            if action == "reset_clock":
+                if (
+                    QMessageBox.question(
+                        self,
+                        "시계 기준 재설정 확인",
+                        "운영체제의 현재 시각을 확인하셨습니까? 시계 기준 변경은 감사 이력에 남습니다. "
+                        "기존 예약·UNKNOWN·확정 지출은 줄어들지 않습니다. 모든 기간의 같은 제공업체·통화 "
+                        "확정액을 현재 예산에 보수적으로 합산합니다. 재설정하시겠습니까?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    != QMessageBox.StandardButton.Yes
+                ):
+                    return
+                self.ledger.reset_clock(confirmed=True)
+                for target_kind, target_control in self.controls.items():
+                    if not self._cost_unavailable(target_kind):
+                        target_control.balance.setText(
+                            "시계 기준 재설정 완료 — 기존 지출을 보존합니다"
+                        )
+                return
             provider, target, data_type = self._scope(kind)
             if action == "grant":
                 config = self.provider_config(kind)
@@ -689,7 +952,23 @@ class PrivacyPanel(QWidget):
                 self.vault.delete(self._vault_key(provider, target))
                 self._changed(kind)
             elif action == "budget":
-                self.ledger.set_limit(provider, _micros(control.total))
+                self.ledger.apply_policy(provider, self._cost_policy(kind, advance=True))
+            elif action == "adopt":
+                policy = self._cost_policy(kind)
+                if (
+                    QMessageBox.question(
+                        self,
+                        "이전 비용 이력 승계 확인",
+                        f"이전 이력은 통화·기간 근거가 없습니다. 제공업체 {provider}의 이력을 "
+                        f"{policy.currency}, UTC [{policy.period_start_utc}, {policy.period_end_utc})로 "
+                        "직접 확인하여 승계합니까? UNKNOWN과 예약 노출은 그대로 유지합니다.",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    != QMessageBox.StandardButton.Yes
+                ):
+                    return
+                self.ledger.adopt_legacy(provider, policy, confirmed=True)
             elif action == "settle":
                 if not control.confirm_actual.isChecked() or not control.requests.currentData():
                     raise SecurityError("SETTLEMENT_CONFIRMATION_REQUIRED")

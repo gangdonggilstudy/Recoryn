@@ -37,6 +37,8 @@ from recoryn.security import (
 )
 from recoryn.security._core import Endpoint
 from recoryn.ui.privacy import PrivacyPanel
+from tests.ui.test_cost_cap_ui import fixture_panel_balance, fixture_panel_catalog
+from tests.unit.test_cost_cap import fixture_wire
 
 URL = "https://scope.example.test/v1"
 ACTION = list(
@@ -125,7 +127,11 @@ def panel(
     backend, wire = Backend(), Wire()
     db = tmp_path / "scope.db"
     options = {"clock": clock} if clock is not None else {}
-    with ConsentStore(db, **options) as policy, CostLedger(db) as ledger:
+    with (
+        ConsentStore(db, **options) as policy,
+        CostLedger(db) as ledger,
+        pytest.MonkeyPatch.context() as pricing,
+    ):
         widget = PrivacyPanel(
             policy,
             ledger,
@@ -162,6 +168,8 @@ def panel(
             for control, previous in blocked:
                 control.blockSignals(previous)
         widget._changed(kind)
+        fixture_panel_catalog(widget, pricing)
+        widget._action(kind, "budget")
         yield widget, backend, wire
         widget.close()
 
@@ -329,10 +337,18 @@ def test_scope_snapshot_is_fixed(app: QApplication, tmp_path: Path, row: tuple[A
         assert reserve is not None
         if change == "policy" and when == "after":
             with pytest.raises(SecurityError, match="CONSENT_POLICY_CHANGED"):
-                reserve("openai", URL, data, 1)
+                reserve(
+                    fixture_wire(
+                        "openai", URL, data, b"a", operation=kind, model=execution.config.model
+                    )
+                )
             assert widget.ledger.reservations("openai") == []
         else:
-            reservation = reserve("openai", URL, data, 1)
+            reservation = reserve(
+                fixture_wire(
+                    "openai", URL, data, b"a", operation=kind, model=execution.config.model
+                )
+            )
             execution.gateway.request("openai", URL, data, b"a", reservation_id=reservation)
             assert wire.opens == 1 and wire.writes == [b"a"]
         assert backend.reads == 1
@@ -412,7 +428,11 @@ def test_bridge_submission_keeps_one_fixed_session_snapshot(
             context = options["context_factory"](threading.Event())
             assert context.reservation_factory is prepared[0].context.reservation_factory
             assert context.reservation_factory is not None
-            reservation = context.reservation_factory("openai", URL, data, 1)
+            reservation = context.reservation_factory(
+                fixture_wire(
+                    "openai", URL, data, b"a", operation=kind, model=prepared[0].config.model
+                )
+            )
             provider.gateway.request("openai", URL, data, b"a", reservation_id=reservation)
             return "fake-job"
 
@@ -658,7 +678,9 @@ def test_navigation_returns_while_remote_write_still_holds_policy(
         factory = execution.context.reservation_factory
         assert execution.gateway is not None and factory is not None
         data = "audio" if kind == "stt" else "transcript"
-        reservation = factory("openai", URL, data, 1)
+        reservation = factory(
+            fixture_wire("openai", URL, data, b"x", operation=kind, model=execution.config.model)
+        )
         original_write = wire.write
 
         def stalled_write(data: bytes, timeout: float) -> None:
@@ -1011,7 +1033,7 @@ def test_deleted_selection_preserves_unrelated_privacy_controls(
             control.total.setValue(2)
             assert control.apply_budget.isEnabled()
             control.apply_budget.click()
-            assert widget.ledger.snapshot("openai")["limit"] == 2_000_000
+            assert fixture_panel_balance(widget, kind)["limit"] == 2_000_000
         elif action == "settle":
             reservation = widget.ledger.reserve("openai", "pending", 1000, 1_000_000)
             widget.ledger.mark_unknown(reservation)

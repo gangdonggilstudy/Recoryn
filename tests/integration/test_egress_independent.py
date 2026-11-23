@@ -35,6 +35,8 @@ from recoryn.security import (
 from recoryn.security._core import Endpoint
 from recoryn.summarization import OllamaSummarizer, OpenAISummarizer
 from recoryn.transcription import OpenAITranscriber
+from tests.ui.test_cost_cap_ui import fixture_panel_balance, fixture_panel_catalog
+from tests.unit.test_cost_cap import fixture_balance, fixture_reservation, fixture_wire
 
 pytestmark = pytest.mark.integration
 URL = "https://api.example.test/v1/audio"
@@ -104,6 +106,7 @@ def _panel(tmp_path: Path):
     with (
         ConsentStore(tmp_path / "security.sqlite") as policy,
         CostLedger(tmp_path / "security.sqlite") as ledger,
+        pytest.MonkeyPatch.context() as prices,
     ):
         panel = PrivacyPanel(
             policy,
@@ -111,6 +114,7 @@ def _panel(tmp_path: Path):
             CredentialVault(backend=backend, namespace="BR23-fake"),
             gateway=Gateway(policy, ledger=ledger, transport=transport),
         )
+        panel._g06_prices = lambda: fixture_panel_catalog(panel, prices)
         # These older model/transport cases explicitly choose the former library scope.
         panel.select_session("session")
         panel._confirm_library = lambda *args: True
@@ -137,6 +141,7 @@ def _configure(panel, kind: str = "stt"):
         )  # explicit fixture model bound; never a guessed default
     control.total.setValue(1)
     control.per_request.setValue(0.1)
+    panel._g06_prices()
     control.key.setText("BR23-FAKE-KEY-A")
     panel._action(kind, "save")
     panel._action(kind, "budget")
@@ -263,15 +268,19 @@ def test_ui_budget_and_headers_are_immutable_but_revocation_blocks_worker(
         assert context.reservation_factory is not None
         with ThreadPoolExecutor(max_workers=1) as workers:
             reservation = workers.submit(
-                context.reservation_factory, "openai", URL, "audio", 80
+                context.reservation_factory,
+                fixture_wire("openai", URL, "audio", b"x" * 80, model="model-A"),
             ).result(timeout=5)
-        assert reservation and panel.ledger.snapshot("openai")["reserved"] == 100_000
+        assert reservation and fixture_panel_balance(panel)["reserved"] == 50_000
         control.per_request.setValue(0.9)  # new contract: changing budget invalidates old plan
         control.key.setText("UNSAVED-DIFFERENT-KEY")
         assert context.headers["authorization"] == "Bearer BR23-FAKE-KEY-A"
         with ThreadPoolExecutor(max_workers=1) as workers:
             with pytest.raises(SecurityError):
-                workers.submit(context.reservation_factory, "openai", URL, "audio", 80).result(5)
+                workers.submit(
+                    context.reservation_factory,
+                    fixture_wire("openai", URL, "audio", b"x" * 80, model="model-A"),
+                ).result(5)
 
 
 @pytest.mark.parametrize("scope", ["provider", "path", "port", "data", "session"])
@@ -330,7 +339,7 @@ def test_default_transport_no_consent_never_reaches_network_guard(tmp_path: Path
 
 @pytest.mark.parametrize("session_revoke", [False, True])
 def test_committed_revocation_before_first_write_sends_no_body(
-    tmp_path: Path, session_revoke: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_revoke: bool
 ) -> None:
     waiting, release = threading.Event(), threading.Event()
 
@@ -341,7 +350,10 @@ def test_committed_revocation_before_first_write_sends_no_body(
             return super()._write(*args, **kwargs)
 
     fake = _Transport()
-    with ConsentStore(tmp_path / "security.sqlite") as policy:
+    with (
+        ConsentStore(tmp_path / "security.sqlite") as policy,
+        CostLedger(tmp_path / "security.sqlite") as ledger,
+    ):
         policy.grant(
             "openai",
             URL,
@@ -351,10 +363,20 @@ def test_committed_revocation_before_first_write_sends_no_body(
             policy_version=2,
         )
         policy.bind_session("session")
-        gateway = _fixture_gateway(policy, transport=fake, factory=HandoffGate)
+        reservation = fixture_reservation(
+            ledger,
+            monkeypatch,
+            fixture_wire("openai", URL, "audio", b"CANARY"),
+            80,
+            100,
+            "first-write",
+        )
+        gateway = _fixture_gateway(policy, ledger=ledger, transport=fake, factory=HandoffGate)
         assert gateway.session_id == "session"
         with ThreadPoolExecutor(max_workers=1) as workers:
-            sent = workers.submit(gateway.request, "openai", URL, "audio", b"CANARY")
+            sent = workers.submit(
+                gateway.request, "openai", URL, "audio", b"CANARY", reservation_id=reservation
+            )
             try:
                 assert waiting.wait(5)
                 if session_revoke:
@@ -379,7 +401,7 @@ def test_committed_revocation_before_first_write_sends_no_body(
 
 @pytest.mark.parametrize("session_revoke", [False, True])
 def test_write_before_revocation_cannot_send_next_chunk_after_commit(
-    tmp_path: Path, session_revoke: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_revoke: bool
 ) -> None:
     first_write, release, committed = (threading.Event() for _ in range(3))
 
@@ -416,7 +438,14 @@ def test_write_before_revocation_cannot_send_next_chunk_after_commit(
             policy_version=2,
         )
         policy.bind_session("session")
-        reservation = ledger.reserve("openai", "request", 80, 100)
+        reservation = fixture_reservation(
+            ledger,
+            monkeypatch,
+            fixture_wire("openai", URL, "audio", b"abcdef"),
+            80,
+            100,
+            "request",
+        )
         gateway = _fixture_gateway(
             policy, ledger=ledger, transport=fake, chunk_bytes=3, factory=SecondHandoffGate
         )
@@ -450,7 +479,7 @@ def test_write_before_revocation_cannot_send_next_chunk_after_commit(
                 sent.result(timeout=5)
         assert not error.value.outcome_known
         assert fake.connections[0].writes == [b"abc"] and fake.connections[0].closed
-        assert ledger.snapshot("openai")["unknown_exposure"] == 80
+        assert fixture_balance(ledger, "openai")["unknown_exposure"] == 80
 
 
 def test_unknown_exposure_is_reserved_once_and_settlement_is_idempotent(tmp_path: Path) -> None:
@@ -691,7 +720,7 @@ def test_regrant_between_reservation_and_permit_cannot_reauthorize_old_request(
         )
         assert not result.complete and result.outcome_known
         assert transport.connections == []
-        assert panel.ledger.snapshot("openai")["unknown_exposure"] == 0
+        assert fixture_panel_balance(panel)["unknown_exposure"] == 0
 
 
 def test_local_ollama_gateway_binding_blocks_old_model_after_regrant(app, tmp_path: Path) -> None:
@@ -733,7 +762,9 @@ def test_previously_ungranted_context_scope_cannot_widen_existing_gateway(
         )
         assert context.reservation_factory is not None
         with pytest.raises(SecurityError):
-            context.reservation_factory("openai", URL, "context", 3)
+            context.reservation_factory(
+                fixture_wire("openai", URL, "context", b"ctx", operation="summary", model="model-A")
+            )
         with pytest.raises(SecurityError):
             gateway.request("openai", URL, "context", b"ctx")
         assert not transport.connections
@@ -760,6 +791,7 @@ def test_unverified_summary_context_stays_blocked_with_no_dispatch(app, tmp_path
 @pytest.mark.parametrize("failure_side", ["enter", "exit"])
 def test_dispatch_guard_faults_preserve_exact_handoff_and_cost(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     boundary: str,
     failure_side: str,
 ) -> None:
@@ -812,7 +844,14 @@ def test_dispatch_guard_faults_preserve_exact_handoff_and_cost(
             scope=_fixture_grant_scope(policy),
             policy_version=2,
         )
-        reservation = ledger.reserve("p", "independent-guard", 80, 100)
+        reservation = fixture_reservation(
+            ledger,
+            monkeypatch,
+            fixture_wire("p", URL, "audio", b"abcd"),
+            80,
+            100,
+            "independent-guard",
+        )
         gateway = _fixture_gateway(
             policy,
             ledger=ledger,
@@ -836,7 +875,7 @@ def test_dispatch_guard_faults_preserve_exact_handoff_and_cost(
         }[(boundary, failure_side)]
         assert writes == delivered
         assert failure.value.outcome_known is (not delivered)
-        state = ledger.snapshot("p")
+        state = fixture_balance(ledger)
         assert state["unknown_exposure"] == (80 if delivered else 0)
         assert state["reserved"] == (0 if delivered else 80)
         assert closed is not (boundary == "open" and failure_side == "enter")

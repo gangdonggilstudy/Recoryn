@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from recoryn.security.cost import COST_CODES, CostRequest, cost_headers, wire_api_version
+
 from .contracts import (
     ExecutionContext,
     GatewayLike,
@@ -183,6 +185,8 @@ class Run:
         data_type: str,
         body: bytes,
         headers: dict[str, str] | None = None,
+        *,
+        operation: str,
     ) -> dict[str, Any]:
         self.check()
         if self.calls >= self.config.max_requests:
@@ -192,10 +196,27 @@ class Run:
         reservation: str | None = None
         if self.context.reservation_factory is not None:
             try:
-                reservation = self.context.reservation_factory(
-                    self.config.provider_id, endpoint, data_type, len(body)
+                cost_request = CostRequest(
+                    self.config.provider_id,
+                    endpoint,
+                    self.config.model,
+                    wire_api_version(self.config.provider_id, endpoint, headers),
+                    operation,
+                    data_type,
+                    body,
+                    cost_headers(headers),
                 )
-            except Exception:
+                reservation = self.context.reservation_factory(cost_request)
+            except Exception as exc:
+                code = getattr(exc, "code", None)
+                if code in COST_CODES or code in {
+                    "BUDGET_REQUIRED",
+                    "BUDGET_EXCEEDED",
+                    "BUDGET_POLICY_CHANGED",
+                    "RESERVATION_CONFLICT",
+                    "LEDGER_ROLLBACK_DETECTED",
+                }:
+                    raise ProviderError(str(code), outcome_known=True) from None
                 raise ProviderError("BUDGET_BLOCKED") from None
         if reservation is not None:
             if (
@@ -244,6 +265,10 @@ class Run:
                 "RESERVATION_NOT_DISPATCHABLE",
             }
             code = getattr(exc, "code", None)
+            safe_codes.update(COST_CODES)
+            safe_codes.update(
+                {"BUDGET_POLICY_CHANGED", "RESERVATION_CONFLICT", "SETTLEMENT_CONFLICT"}
+            )
             if isinstance(code, str) and code in safe_codes:
                 raise ProviderError(
                     code, outcome_known=getattr(exc, "outcome_known", False) is True

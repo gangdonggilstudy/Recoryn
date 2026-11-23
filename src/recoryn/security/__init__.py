@@ -9,6 +9,7 @@ from .consent import (
     ConsentStore,
     SendPermit,
 )
+from .cost import CostCatalog, CostPolicy, CostQuote, CostRequest, PriceEntry, quote
 from .gateway import Gateway
 from .ledger import CostLedger
 from .transport import Connection, Transport
@@ -22,6 +23,12 @@ __all__ = [
     "ConsentScope",
     "CONSENT_POLICY_VERSION",
     "CostLedger",
+    "CostCatalog",
+    "CostPolicy",
+    "CostQuote",
+    "CostRequest",
+    "PriceEntry",
+    "quote",
     "CredentialVault",
     "Gateway",
     "SecurityError",

@@ -24,6 +24,8 @@ from recoryn.providers import LocalModelAttestation, ProviderError
 from recoryn.security import ConsentStore, CostLedger, CredentialVault, Gateway, SecurityError
 from recoryn.security._core import Endpoint
 from recoryn.ui.privacy import PrivacyPanel
+from tests.ui.test_cost_cap_ui import fixture_panel_balance, fixture_panel_catalog
+from tests.unit.test_cost_cap import fixture_wire
 
 pytestmark = pytest.mark.ui
 
@@ -57,10 +59,15 @@ def app() -> QApplication:
 def panel(app: QApplication, tmp_path: Path) -> Iterator[tuple[PrivacyPanel, DummyVault]]:
     backend = DummyVault()
     db = tmp_path / "p.sqlite"
-    with ConsentStore(db) as consents, CostLedger(db) as ledger:
+    with (
+        ConsentStore(db) as consents,
+        CostLedger(db) as ledger,
+        pytest.MonkeyPatch.context() as pricing,
+    ):
         widget = PrivacyPanel(
             consents, ledger, CredentialVault(backend=backend, namespace="B14-test")
         )
+        widget._g06_prices = lambda: fixture_panel_catalog(widget, pricing)
         yield widget, backend
         widget.close()
 
@@ -75,6 +82,9 @@ def configure(widget: PrivacyPanel, kind: str = "stt", provider: str = "openai")
     controls.model.setText("user-selected-test-model")
     controls.total.setValue(1)
     controls.per_request.setValue(0.1)
+    widget._g06_prices()
+    if provider != "ollama":
+        widget._action(kind, "budget")
 
 
 def click(button: object) -> None:
@@ -213,26 +223,40 @@ def test_worker_reservation_factory_uses_frozen_gui_values(
     assert context.reservation_factory is not None
     with ThreadPoolExecutor(max_workers=1) as worker:
         reservation = worker.submit(
-            context.reservation_factory, "openai", "https://api.example.test/stt", "audio", 5
+            context.reservation_factory,
+            fixture_wire(
+                "openai",
+                "https://api.example.test/stt",
+                "audio",
+                b"hello",
+                model="user-selected-test-model",
+            ),
         ).result(timeout=5)
     assert reservation
-    assert widget.ledger.snapshot("openai")["reserved"] == 100_000
+    assert fixture_panel_balance(widget)["reserved"] == 50_000
     control.per_request.setValue(0.9)
     with ThreadPoolExecutor(max_workers=1) as worker:
         with pytest.raises(SecurityError):
             worker.submit(
-                context.reservation_factory, "openai", "https://api.example.test/stt", "audio", 5
+                context.reservation_factory,
+                fixture_wire(
+                    "openai",
+                    "https://api.example.test/stt",
+                    "audio",
+                    b"hello",
+                    model="user-selected-test-model",
+                ),
             ).result(timeout=5)
     widget.ledger.mark_unknown(reservation)
     click(control.refresh)
-    assert "UNKNOWN 0.100000" in control.balance.text()
+    assert "UNKNOWN 0.050000" in control.balance.text()
     control.actual.setValue(0.04)
     widget._action("stt", "settle")
     assert control.status.text() == "SETTLEMENT_CONFIRMATION_REQUIRED"
     control.confirm_actual.setChecked(True)
     click(control.settle)
-    assert widget.ledger.snapshot("openai")["confirmed"] == 40_000
-    assert widget.ledger.snapshot("openai")["unknown_exposure"] == 0
+    assert fixture_panel_balance(widget)["confirmed"] == 40_000
+    assert fixture_panel_balance(widget)["unknown_exposure"] == 0
 
 
 def test_zero_cloud_cap_is_blocked_and_ollama_requires_attestation(
@@ -265,10 +289,21 @@ def test_execution_settings_change_key_and_revoke_old_plan(
     assert old_context.reservation_factory is not None
     control = getattr(controls, setting)
     control.setValue(control.value() + 1)
-    assert key != widget.config_key("summary", session_id="session")
+    assert (key != widget.config_key("summary", session_id="session")) is (
+        setting in {"context_window", "max_output"}
+    )
     click(controls.allow)
     with pytest.raises(SecurityError, match="PERMIT_REVOKED"):
-        old_context.reservation_factory("openai", controls.endpoint.text(), "transcript", 10)
+        old_context.reservation_factory(
+            fixture_wire(
+                "openai",
+                controls.endpoint.text(),
+                "transcript",
+                b"0123456789",
+                operation="summary",
+                model="user-selected-test-model",
+            )
+        )
 
 
 def test_summary_context_limit_is_explicit_and_unknown_by_default(
@@ -328,12 +363,24 @@ def test_frozen_worker_scope_cannot_widen_or_outlive_revocation(
         ("openai", controls.endpoint.text(), "audio", -1),
     ):
         with pytest.raises(SecurityError, match="BUDGET_SCOPE_MISMATCH"):
-            reserve(provider, target, kind, size)
-    assert widget.ledger.snapshot("openai")["reserved"] == 0
+            reserve(
+                fixture_wire(provider, target, kind, b"hello", model="user-selected-test-model")
+                if size >= 0
+                else None
+            )
+    assert fixture_panel_balance(widget)["reserved"] == 0
     click(controls.revoke)
     with pytest.raises(SecurityError, match="CONSENT_REQUIRED"):
-        reserve("openai", controls.endpoint.text(), "audio", 5)
-    assert widget.ledger.snapshot("openai")["reserved"] == 0
+        reserve(
+            fixture_wire(
+                "openai",
+                controls.endpoint.text(),
+                "audio",
+                b"hello",
+                model="user-selected-test-model",
+            )
+        )
+    assert fixture_panel_balance(widget)["reserved"] == 0
 
 
 def test_expired_local_proof_and_changed_model_cannot_grant_loopback(

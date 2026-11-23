@@ -115,7 +115,7 @@ class MainWindow(QMainWindow):
         from recoryn.ui.privacy import PrivacyPanel
 
         self.consents = ConsentStore(library.root / "security.sqlite")
-        self.ledger = CostLedger(library.root / "security.sqlite")
+        self.ledger = CostLedger.open_for_ui(library.root / "security.sqlite")
         self.privacy_panel = PrivacyPanel(self.consents, self.ledger, CredentialVault())
         self.ai_bridge.attach_privacy(self.privacy_panel)
         from recoryn.ui.models import ModelPanel

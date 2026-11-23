@@ -157,7 +157,9 @@ class _Summarizer:
             or len(encoded) + config.max_output_tokens > config.context_window_tokens
         ):
             raise ProviderError("CONTEXT_LIMIT")
-        response = run.request(self.gateway, self.endpoint, data_type, encoded, headers)
+        response = run.request(
+            self.gateway, self.endpoint, data_type, encoded, headers, operation="summary"
+        )
         try:
             if self.provider_id == "ollama":
                 if (

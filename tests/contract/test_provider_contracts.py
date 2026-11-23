@@ -18,10 +18,19 @@ from recoryn.providers import (
     TranscriptSegment,
 )
 from recoryn.providers._common import encode
-from recoryn.security import ConsentRequest, ConsentScope, ConsentStore, Gateway, SecurityError
+from recoryn.security import (
+    ConsentRequest,
+    ConsentScope,
+    ConsentStore,
+    CostLedger,
+    CostRequest,
+    Gateway,
+    SecurityError,
+)
 from recoryn.storage import Library
 from recoryn.summarization import AnthropicSummarizer, GeminiSummarizer, OpenAISummarizer
 from recoryn.transcription import GeminiTranscriber, OpenAITranscriber
+from tests.unit.test_cost_cap import fixture_reservation
 
 pytestmark = pytest.mark.contract
 
@@ -190,6 +199,7 @@ class Transport:
 
 def test_session_bound_real_gateway_blocks_without_consent_then_uses_fake_transport(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     response = encode(
         {
@@ -208,28 +218,40 @@ def test_session_bound_real_gateway_blocks_without_consent_then_uses_fake_transp
         }
     )
     transport = Transport(response)
-    with Library(tmp_path) as library, ConsentStore(library.db_path) as consents:
+    with (
+        Library(tmp_path) as library,
+        ConsentStore(library.db_path) as consents,
+        CostLedger(library.db_path) as ledger,
+    ):
         library.create_session("session")
-        gateway = _fixture_gateway(consents, transport=transport, session_id="session")
+
+        def reserve(wire: CostRequest) -> str:
+            return fixture_reservation(ledger, monkeypatch, wire, 1, 100, "summary-wire")
+
+        context = ExecutionContext(reservation_factory=reserve)
+        gateway = _fixture_gateway(
+            consents, ledger=ledger, transport=transport, session_id="session", capability="summary"
+        )
         adapter = OpenAISummarizer(gateway, configured("openai"))
-        denied = adapter.summarize(request())
+        denied = adapter.summarize(request(), context)
         assert denied.error_code == "CONSENT_REQUIRED" and not transport.connections
         consents.grant(
             "openai",
             adapter.endpoint,
             "transcript",
-            capability="stt",
+            capability="summary",
             scope=_fixture_grant_scope(consents),
             policy_version=2,
         )
-        assert adapter.summarize(request()).error_code == "CONSENT_REQUIRED"
+        assert adapter.summarize(request(), context).error_code == "CONSENT_REQUIRED"
         adapter = OpenAISummarizer(
-            _fixture_gateway(consents, transport=transport), configured("openai")
+            _fixture_gateway(consents, ledger=ledger, transport=transport, capability="summary"),
+            configured("openai"),
         )
-        assert adapter.summarize(request()).complete
+        assert adapter.summarize(request(), context).complete
         assert len(transport.connections) == 1
         consents.revoke_session("session")
-        revoked = adapter.summarize(request())
+        revoked = adapter.summarize(request(), context)
         assert revoked.error_code in {"SESSION_REVOKED", "CONSENT_REQUIRED"}
         assert len(transport.connections) == 1
 
@@ -288,15 +310,17 @@ def _fixture_gateway(
     *,
     session_id: str = "session",
     generation: int = 0,
+    capability: str = "stt",
     factory=Gateway,
     **kwargs,
 ):
     root = factory(policy, **kwargs)
-    request = _fixture_request(policy, session_id)
+    request = _fixture_request(policy, session_id, capability)
     if "expected_grants" not in kwargs:
         bindings = []
         rows = policy._db.execute(
-            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability='stt' AND scope_kind='library' AND scope_id='' AND policy_version=2"
+            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability=? AND scope_kind='library' AND scope_id='' AND policy_version=2",
+            (capability,),
         ).fetchall()
         for provider, endpoint, data_type in rows:
             bindings.extend(
@@ -307,5 +331,9 @@ def _fixture_gateway(
         kwargs["expected_grants"] = tuple(bindings)
         root = factory(policy, **kwargs)
     return root.for_session(
-        session_id, generation, capability="stt", scope=ConsentScope.library(), policy_version=2
+        session_id,
+        generation,
+        capability=capability,
+        scope=ConsentScope.library(),
+        policy_version=2,
     )

@@ -29,12 +29,14 @@ from recoryn.security import (
     ConsentScope,
     ConsentStore,
     CostLedger,
+    CostRequest,
     Gateway,
     SecurityError,
 )
 from recoryn.security._core import Endpoint
 from recoryn.summarization import OllamaSummarizer, OpenAISummarizer
 from recoryn.transcription import FasterWhisperProvider, OpenAITranscriber
+from tests.unit.test_cost_cap import fixture_balance, fixture_reservation
 
 pytestmark = pytest.mark.integration
 STT_ENDPOINT = "https://api.example.test/audio"
@@ -183,6 +185,7 @@ def test_stt_exact_scope_and_deleted_session_deny_before_transport(
 def test_failed_handoff_preserves_unknown_and_only_safe_error(
     tmp_path: Path,
     audio: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake = Transport(b"", fail=True)
     db = tmp_path / "security.sqlite"
@@ -197,10 +200,14 @@ def test_failed_handoff_preserves_unknown_and_only_safe_error(
         )
         reservations: list[str] = []
 
-        def reserve(provider: str, target: str, kind: str, size: int) -> str:
-            assert (provider, target, kind) == ("openai", STT_ENDPOINT, "audio")
-            assert size > 44
-            reservation = ledger.reserve(provider, "one-call", 70, 100)
+        def reserve(request: CostRequest) -> str:
+            assert (request.provider_id, request.endpoint, request.data_type) == (
+                "openai",
+                STT_ENDPOINT,
+                "audio",
+            )
+            assert len(request.body) > 44 and request.operation == "stt"
+            reservation = fixture_reservation(ledger, monkeypatch, request, 70, 100, "one-call")
             reservations.append(reservation)
             return reservation
 
@@ -216,12 +223,12 @@ def test_failed_handoff_preserves_unknown_and_only_safe_error(
         )
         assert result.error_code == "REMOTE_OUTCOME_UNKNOWN" and not result.outcome_known
         assert len(reservations) == len(fake.connections) == 1
-        assert ledger.snapshot("openai")["unknown_exposure"] == 70
+        assert fixture_balance(ledger, "openai")["unknown_exposure"] == 70
         assert "CANARY" not in str(result.error_code)
         assert b"B14-PRIVATE-PATH-CANARY" not in b"".join(fake.connections[0].writes)
         assert fake.connections[0].closed
     with CostLedger(db) as restarted:
-        assert restarted.snapshot("openai")["available"] == 30
+        assert fixture_balance(restarted, "openai")["available"] == 30
 
 
 def test_cloud_without_reservation_is_blocked_by_injected_real_ledger(
@@ -427,6 +434,7 @@ def test_missing_tokenizer_is_denied_before_optional_model_import(
 
 def test_multi_core_synthesis_needs_separate_context_consent_and_resumes_only_synthesis(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class GeneratedConnection(Connection):
         def __init__(self) -> None:
@@ -469,17 +477,27 @@ def test_multi_core_synthesis_needs_separate_context_consent_and_resumes_only_sy
         ),
     )
     db = tmp_path / "security.sqlite"
-    with ConsentStore(db) as policy:
+    with ConsentStore(db) as policy, CostLedger(db) as ledger:
+        calls = 0
+
+        def reserve(wire: CostRequest) -> str:
+            nonlocal calls
+            calls += 1
+            return fixture_reservation(ledger, monkeypatch, wire, 1, 100, f"summary-{calls}")
+
+        context = ExecutionContext(reservation_factory=reserve)
         policy.grant(
             "openai",
             SUMMARY_ENDPOINT,
             "transcript",
-            capability="stt",
+            capability="summary",
             scope=_fixture_grant_scope(policy),
             policy_version=2,
         )
-        adapter = OpenAISummarizer(_fixture_gateway(policy, transport=fake), config())
-        partial = adapter.summarize(request)
+        adapter = OpenAISummarizer(
+            _fixture_gateway(policy, ledger=ledger, transport=fake, capability="summary"), config()
+        )
+        partial = adapter.summarize(request, context)
         assert not partial.complete and partial.error_code == "CONSENT_REQUIRED"
         assert partial.coverage and not partial.missing
         calls_before = len(fake.connections)
@@ -488,24 +506,26 @@ def test_multi_core_synthesis_needs_separate_context_consent_and_resumes_only_sy
             "openai",
             SUMMARY_ENDPOINT,
             "context",
-            capability="stt",
+            capability="summary",
             scope=_fixture_grant_scope(policy),
             policy_version=2,
         )
         assert (
-            adapter.summarize(replace(request, checkpoint=partial.checkpoint)).error_code
+            adapter.summarize(replace(request, checkpoint=partial.checkpoint), context).error_code
             == "CONSENT_REQUIRED"
         )
         assert len(fake.connections) == calls_before
-        adapter = OpenAISummarizer(_fixture_gateway(policy, transport=fake), config())
-        resumed = adapter.summarize(replace(request, checkpoint=partial.checkpoint))
+        adapter = OpenAISummarizer(
+            _fixture_gateway(policy, ledger=ledger, transport=fake, capability="summary"), config()
+        )
+        resumed = adapter.summarize(replace(request, checkpoint=partial.checkpoint), context)
         assert resumed.complete and not resumed.missing
         assert len(fake.connections) == calls_before + 1
         synthesis_body = b"".join(fake.connections[-1].writes)
         assert b"PRIVATE-RAW-" not in synthesis_body
         assert all(c.status == "uncertain" for c in resumed.claims)
         changed = adapter.summarize(
-            replace(request, template="tasks", checkpoint=partial.checkpoint)
+            replace(request, template="tasks", checkpoint=partial.checkpoint), context
         )
         assert changed.error_code == "CHECKPOINT_MISMATCH" and not changed.complete
         assert len(fake.connections) == calls_before + 1
@@ -533,15 +553,17 @@ def _fixture_gateway(
     *,
     session_id: str = "session",
     generation: int = 0,
+    capability: str = "stt",
     factory=Gateway,
     **kwargs,
 ):
     root = factory(policy, **kwargs)
-    request = _fixture_request(policy, session_id)
+    request = _fixture_request(policy, session_id, capability)
     if "expected_grants" not in kwargs:
         bindings = []
         rows = policy._db.execute(
-            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability='stt' AND scope_kind='library' AND scope_id='' AND policy_version=2"
+            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability=? AND scope_kind='library' AND scope_id='' AND policy_version=2",
+            (capability,),
         ).fetchall()
         for provider, endpoint, data_type in rows:
             bindings.extend(
@@ -552,5 +574,9 @@ def _fixture_gateway(
         kwargs["expected_grants"] = tuple(bindings)
         root = factory(policy, **kwargs)
     return root.for_session(
-        session_id, generation, capability="stt", scope=ConsentScope.library(), policy_version=2
+        session_id,
+        generation,
+        capability=capability,
+        scope=ConsentScope.library(),
+        policy_version=2,
     )

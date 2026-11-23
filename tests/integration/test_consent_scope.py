@@ -20,6 +20,7 @@ from recoryn.security import (
     SecurityError,
 )
 from recoryn.security._core import Endpoint
+from tests.unit.test_cost_cap import fixture_balance, fixture_reservation, fixture_wire
 
 URL = "https://scope.example.test/v1"
 FEATURES = ("stt", "summary", "diarization")
@@ -98,11 +99,11 @@ def test_original_p1_session_denies_b_and_explicit_library_allows_both(tmp_path:
         assert wire.opens == 3 and wire.writes == [b"A", b"all", b"all"]
 
 
-@pytest.fixture(scope="module")
-def frozen_stores(tmp_path_factory: pytest.TempPathFactory):
+@pytest.fixture
+def frozen_stores(tmp_path: Path):
     # Independent consent rows are reset in one setup transaction. Separate
     # provider IDs isolate cost accounts, keeping previous UNKNOWN exposure.
-    db = tmp_path_factory.mktemp("frozen-stores") / "policy.db"
+    db = tmp_path / "policy.db"
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
         yield policy, ledger
 
@@ -198,16 +199,37 @@ def test_captured_request_cannot_be_retargeted(
             assert ledger.reservations(provider) == []
         else:
             attempt()
-            reservation = ledger.reserve(provider, "frozen", 7, 10)
+            reservation = fixture_reservation(
+                ledger,
+                monkeypatch,
+                fixture_wire(provider, URL, data, b"a", operation=feature),
+                7,
+                10,
+                "frozen",
+            )
     elif boundary == "open":
-        reservation = ledger.reserve(provider, "frozen", 7, 10)
+        reservation = fixture_reservation(
+            ledger,
+            monkeypatch,
+            fixture_wire(provider, URL, data, b"a", operation=feature),
+            7,
+            10,
+            "frozen",
+        )
         if change:
             with pytest.raises(SecurityError):
                 attempt()
         else:
             attempt()
     else:
-        reservation = ledger.reserve(provider, "frozen", 7, 10)
+        reservation = fixture_reservation(
+            ledger,
+            monkeypatch,
+            fixture_wire(provider, URL, data, b"a", operation=feature),
+            7,
+            10,
+            "frozen",
+        )
         original = gateway._write
 
         def before_write(*args: Any, **kwargs: Any) -> None:
@@ -247,7 +269,14 @@ def test_invalidation_handoff_orders(
     ):
         policy.grant("p", URL, "audio", capability=feature, scope=scope, policy_version=2)
         gateway = view(policy, wire, scope, request, "audio", ledger=ledger, chunk_bytes=1)
-        reservation = ledger.reserve("p", "request", 7, 10)
+        reservation = fixture_reservation(
+            ledger,
+            monkeypatch,
+            fixture_wire("p", URL, "audio", b"ab", operation=feature),
+            7,
+            10,
+            "request",
+        )
         go, committed = threading.Event(), threading.Event()
         failures: list[BaseException] = []
 
@@ -313,6 +342,6 @@ def test_invalidation_handoff_orders(
         assert not worker.is_alive() and not failures
         assert wire.opens == (0 if position == 0 else 1)
         assert len(wire.writes) == (0, 0, 1, 2, 2)[position]
-        balance = ledger.snapshot("p")
+        balance = fixture_balance(ledger, "p")
         assert balance["unknown_exposure"] == (0 if position < 2 else 7)
         assert balance["reserved"] == (7 if position < 2 else 0)

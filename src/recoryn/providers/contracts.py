@@ -13,6 +13,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol
 
+from recoryn.security.cost import CostRequest
+
 
 class ProviderError(ValueError):
     """Safe machine code only; never retain a provider body in the message."""
@@ -144,7 +146,7 @@ class ProgressEvent:
     unit: str
 
 
-ReservationFactory = Callable[[str, str, str, int], str | None]
+ReservationFactory = Callable[[CostRequest], str | None]
 
 
 @dataclass(frozen=True)

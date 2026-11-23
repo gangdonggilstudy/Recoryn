@@ -30,6 +30,7 @@ from recoryn.providers import (
     SummaryRequest,
     TranscriptSegment,
 )
+from recoryn.security.cost import CostRequest
 from recoryn.storage import Library
 from recoryn.storage._safe import safe_path
 from recoryn.storage.chunks import scan_prefix, verify_bundle
@@ -157,10 +158,10 @@ class AIService:
     ) -> ExecutionContext:
         original = supplied.reservation_factory
 
-        def reserve(provider: str, endpoint: str, data_type: str, body_size: int) -> str | None:
+        def reserve(request: CostRequest) -> str | None:
             if original is None:
                 return None
-            reservation_id = original(provider, endpoint, data_type, body_size)
+            reservation_id = original(request)
             if reservation_id is not None:
                 # This commits before the provider can call Gateway. A crash
                 # anywhere after this point cannot blindly resend the attempt.

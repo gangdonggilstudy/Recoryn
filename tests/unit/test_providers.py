@@ -234,8 +234,16 @@ def test_long_context_core_overlap_and_synthesis_have_original_refs() -> None:
     gateway = FakeGateway()
     reservations: list[str] = []
 
-    def reserve(provider: str, endpoint: str, kind: str, byte_count: int) -> str:
-        assert provider == "openai" and endpoint.startswith("https://") and byte_count > 0
+    def reserve(request: Any) -> str:
+        from recoryn.security import CostRequest
+
+        assert isinstance(request, CostRequest)
+        assert (
+            request.provider_id == "openai"
+            and request.endpoint.startswith("https://")
+            and len(request.body) > 0
+        )
+        assert request.operation == "summary" and request.data_type in {"transcript", "context"}
         value = "r" + str(len(reservations))
         reservations.append(value)
         return value
@@ -651,7 +659,11 @@ def test_safe_gateway_codes_budget_callback_and_exact_response_bounds() -> None:
         decode("not bytes", 100)  # type: ignore[arg-type]
     with pytest.raises(ProviderError, match="INPUT_TOO_LARGE"):
         Run(config(), None).request(
-            FakeGateway(), "https://example.com/a", "text", b"x" * (20 * 1024 * 1024 + 1)
+            FakeGateway(),
+            "https://example.com/a",
+            "text",
+            b"x" * (20 * 1024 * 1024 + 1),
+            operation="summary",
         )
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 
@@ -177,6 +178,8 @@ class Gateway:
         deadline = time.monotonic() + self.timeout
         connection: Connection | None = None
         handed_off = False
+        dispatch_id = uuid.uuid4().hex
+        write_end = 0
 
         def remaining() -> float:
             if cancel is not None and cancel.is_set():
@@ -191,6 +194,24 @@ class Gateway:
                     outcome_known=not handed_off,
                 )
             return result
+
+        def write_remaining() -> float:
+            # _write calls this under consent -> ledger locks, before owner guard.
+            if self.ledger is not None:
+                assert reservation_id is not None and self._request is not None
+                self.ledger.validate_dispatch(
+                    reservation_id,
+                    provider_id,
+                    target_endpoint.url,
+                    body,
+                    data_type=data_type,
+                    operation=self._request.capability,
+                    headers=safe_headers,
+                    dispatch_id=dispatch_id,
+                    phase="write",
+                    bytes_sent=write_end,
+                )
+            return remaining()
 
         try:
             if self._request is None or self._scope is None or not self.expected_grants:
@@ -222,21 +243,43 @@ class Gateway:
                 self.ledger.check_reservation(reservation_id, provider_id)
             elif reservation_id is not None:
                 raise SecurityError("LEDGER_REQUIRED")
-            with self.consents.coordinator.hold():
+            elif provider_id in {"openai", "anthropic", "gemini"}:
+                raise SecurityError("LEDGER_REQUIRED")
+            with (
+                self.consents.coordinator.hold(),
+                self.ledger.coordinator.hold() if self.ledger is not None else nullcontext(),
+            ):
                 self.consents.validate(permit)
+                if self.ledger is not None:
+                    assert reservation_id is not None
+                    self.ledger.validate_dispatch(
+                        reservation_id,
+                        provider_id,
+                        target_endpoint.url,
+                        body,
+                        data_type=data_type,
+                        operation=self._request.capability,
+                        headers=safe_headers,
+                        dispatch_id=dispatch_id,
+                    )
                 with self._execution_guard(permit):
                     connection = self.transport.open(
                         target_endpoint, safe_headers, len(body), remaining()
                     )
-            pieces = range(0, len(body), self.chunk_bytes) if body else (0,)
+            chunk_bytes = self.chunk_bytes
+            sent_bytes = 0
+            pieces = range(0, len(body), chunk_bytes) if body else (0,)
             for offset in pieces:
+                piece = body[offset : offset + chunk_bytes]
+                write_end = sent_bytes + len(piece)
                 self._write(
                     connection,
                     permit,
-                    body[offset : offset + self.chunk_bytes],
-                    remaining,
+                    piece,
+                    write_remaining,
                     first=not handed_off,
                 )
+                sent_bytes = write_end
                 handed_off = True
             output = bytearray()
             while True:
@@ -264,6 +307,8 @@ class Gateway:
                 outcome_known=not handed_off,
             ) from None
         finally:
+            if self.ledger is not None:
+                self.ledger.finish_dispatch(dispatch_id)
             if connection is not None:
                 try:
                     connection.close()

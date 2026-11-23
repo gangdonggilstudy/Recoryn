@@ -24,12 +24,14 @@ from recoryn.security import (
     ConsentScope,
     ConsentStore,
     CostLedger,
+    CostRequest,
     Gateway,
     SecurityError,
 )
 from recoryn.security._core import Endpoint
 from recoryn.storage import Library
 from recoryn.summarization import OpenAISummarizer
+from tests.unit.test_cost_cap import fixture_balance, fixture_reservation
 
 pytestmark = pytest.mark.integration
 
@@ -374,6 +376,7 @@ def test_remote_marker_is_attempt_specific_and_not_inherited_after_known_failure
 @pytest.mark.parametrize("marker_failure", (False, True))
 def test_real_ai_reservation_wrapper_commits_marker_before_gateway(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     marker_failure: bool,
 ) -> None:
     target = "https://api.example.test/summary"
@@ -389,7 +392,7 @@ def test_real_ai_reservation_wrapper_commits_marker_before_gateway(
             "openai",
             target,
             "transcript",
-            capability="stt",
+            capability="summary",
             scope=_fixture_grant_scope(policy),
             policy_version=2,
         )
@@ -441,9 +444,16 @@ def test_real_ai_reservation_wrapper_commits_marker_before_gateway(
                 opened.append(True)
                 return Connection()
 
-        def reserve(provider: str, endpoint: str, data_type: str, size: int) -> str:
-            assert (provider, endpoint, data_type) == ("openai", target, "transcript")
-            reservation = ledger.reserve(provider, "one-paid-request", 10, 100)
+        def reserve(request: CostRequest) -> str:
+            assert (
+                request.provider_id,
+                request.endpoint,
+                request.data_type,
+                request.operation,
+            ) == ("openai", target, "transcript", "summary")
+            reservation = fixture_reservation(
+                ledger, monkeypatch, request, 10, 100, "one-paid-request"
+            )
             reservations.append(reservation)
             return reservation
 
@@ -454,7 +464,9 @@ def test_real_ai_reservation_wrapper_commits_marker_before_gateway(
                     observer.execute("""CREATE TRIGGER br24_marker_failure BEFORE INSERT ON job_remote_intents
                         BEGIN SELECT RAISE(ABORT, 'BR24_MARKER_FAILURE'); END""")
             provider = OpenAISummarizer(
-                _fixture_gateway(policy, ledger=ledger, transport=Transport()),
+                _fixture_gateway(
+                    policy, ledger=ledger, transport=Transport(), capability="summary"
+                ),
                 ProviderConfig("openai", "test-model", endpoint=target, context_window_tokens=8192),
             )
             job_id = service.summarize(
@@ -474,10 +486,10 @@ def test_real_ai_reservation_wrapper_commits_marker_before_gateway(
             result = service.jobs.get(job_id)
             if marker_failure:
                 assert not opened and result.error_code == "BUDGET_BLOCKED"
-                assert ledger.snapshot("openai")["reserved"] == 10
+                assert fixture_balance(ledger, "openai")["reserved"] == 10
             else:
                 assert opened == [True] and result.state == JobState.SUCCEEDED
-                assert ledger.snapshot("openai")["unknown_exposure"] == 10
+                assert fixture_balance(ledger, "openai")["unknown_exposure"] == 10
         finally:
             service.close()
 
@@ -504,15 +516,17 @@ def _fixture_gateway(
     *,
     session_id: str = "session",
     generation: int = 0,
+    capability: str = "stt",
     factory=Gateway,
     **kwargs,
 ):
     root = factory(policy, **kwargs)
-    request = _fixture_request(policy, session_id)
+    request = _fixture_request(policy, session_id, capability)
     if "expected_grants" not in kwargs:
         bindings = []
         rows = policy._db.execute(
-            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability='stt' AND scope_kind='library' AND scope_id='' AND policy_version=2"
+            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability=? AND scope_kind='library' AND scope_id='' AND policy_version=2",
+            (capability,),
         ).fetchall()
         for provider, endpoint, data_type in rows:
             bindings.extend(
@@ -523,5 +537,9 @@ def _fixture_gateway(
         kwargs["expected_grants"] = tuple(bindings)
         root = factory(policy, **kwargs)
     return root.for_session(
-        session_id, generation, capability="stt", scope=ConsentScope.library(), policy_version=2
+        session_id,
+        generation,
+        capability=capability,
+        scope=ConsentScope.library(),
+        policy_version=2,
     )

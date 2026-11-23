@@ -25,6 +25,7 @@ from recoryn.security import (
     SendPermit,
 )
 from recoryn.security._core import Endpoint
+from tests.unit.test_cost_cap import fixture_balance, fixture_reservation, fixture_wire
 
 pytestmark = pytest.mark.property
 URL = "https://q24.example.test/chat"
@@ -140,7 +141,10 @@ def test_declared_finite_manifest_has_no_missing_or_duplicate_rows() -> None:
 
 @pytest.mark.parametrize("row", ADMISSION, ids=CASE_IDS["admit"])
 def test_admission_case_space(
-    tmp_path: Path, request: pytest.FixtureRequest, row: tuple[bool, ...]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    row: tuple[bool, ...],
 ) -> None:
     provider_match, endpoint_match, data_match, regrant, revoked, live, reserved = row
     owner, wire = Owner(live), Wire()
@@ -161,7 +165,9 @@ def test_admission_case_space(
             scope=ConsentScope.library(),
             request=_fixture_request(policy, "session", "stt", 0),
         )
-        reservation = ledger.reserve("p", "request", 7, 10)
+        reservation = fixture_reservation(
+            ledger, monkeypatch, fixture_wire("p", URL, "transcript", b"abcd"), 7, 10, "request"
+        )
         if not reserved:
             ledger.mark_unknown(reservation)
         if regrant:
@@ -236,7 +242,7 @@ def test_admission_case_space(
         assert wire.writes == ([] if safe_errors else [b"ab", b"cd"])
         assert wire.closed is (not safe_errors)
         unknown = not reserved or not safe_errors
-        assert ledger.snapshot("p") == {
+        assert fixture_balance(ledger) == {
             "confirmed": 0,
             "reserved": 0 if unknown else 7,
             "unknown_exposure": 7 if unknown else 0,
@@ -267,7 +273,9 @@ def test_handoff_case_space(
             scope=_fixture_grant_scope(policy),
             policy_version=2,
         )
-        reservation = ledger.reserve("p", "request", 7, 10)
+        reservation = fixture_reservation(
+            ledger, monkeypatch, fixture_wire("p", URL, "transcript", b"abcd"), 7, 10, "request"
+        )
 
         def interrupt() -> None:
             if revoke:
@@ -329,9 +337,9 @@ def test_handoff_case_space(
             request.node.user_properties.append(("diagnostic", "SUCCESS"))
         assert wire.opens == 1 and wire.closed
         unknown = boundary == "first" or not any(row)
-        assert ledger.snapshot("p")["unknown_exposure"] == (7 if unknown else 0)
-        assert ledger.snapshot("p")["reserved"] == (0 if unknown else 7)
-        assert ledger.snapshot("p")["available"] == 3
+        assert fixture_balance(ledger)["unknown_exposure"] == (7 if unknown else 0)
+        assert fixture_balance(ledger)["reserved"] == (0 if unknown else 7)
+        assert fixture_balance(ledger)["available"] == 3
 
 
 @pytest.mark.parametrize("kind,delta", TIMES, ids=CASE_IDS["time"])

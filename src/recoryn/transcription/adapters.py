@@ -257,6 +257,7 @@ class OpenAITranscriber:
                 "audio",
                 b"".join(pieces),
                 {"Content-Type": "multipart/form-data; boundary=" + boundary},
+                operation="stt",
             )
             if self.timestamps:
                 raw_segments = response.get("segments")
@@ -355,7 +356,12 @@ class GeminiTranscriber:
             run.progress("transcribing", 0, duration, "ms")
             text = gemini_text(
                 run.request(
-                    self.gateway, self.endpoint, "audio", body, {"Content-Type": "application/json"}
+                    self.gateway,
+                    self.endpoint,
+                    "audio",
+                    body,
+                    {"Content-Type": "application/json"},
+                    operation="stt",
                 )
             )
             if text:
