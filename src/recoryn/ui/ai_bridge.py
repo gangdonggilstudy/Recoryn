@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from PySide6.QtCore import QThreadPool
+from PySide6.QtCore import QThreadPool, QTimer
 from PySide6.QtWidgets import QMessageBox
 
 from recoryn.app.ai import AIService
@@ -104,12 +104,29 @@ class DesktopAI:
         self.privacy = panel
         self.window.tabs.addTab(panel, "제공업체 · 동의 · 비용")
 
+        def selected(current: Any, previous: Any) -> None:
+            session_id = self.window.selected_session()
+            if session_id is None:
+                panel.selection_pending()
+                # clear/rebuild/select is one logical refresh, not an A→None→A
+                # user transition. Real deselection still settles to None.
+                QTimer.singleShot(
+                    0, panel, lambda: panel.select_session(self.window.selected_session())
+                )
+            else:
+                panel.select_session(session_id)
+
+        self.window.sessions.currentItemChanged.connect(selected)
+        panel.select_session(self.window.selected_session())
+
     def _service(self) -> AIService:
         if self.service is None:
             self.service = AIService(self.window.library, self.store)
         return self.service
 
     def selection(self, session_id: str) -> None:
+        if self.privacy is not None:
+            self.privacy.select_session(session_id)
         self.panel.load(session_id)
 
     @staticmethod
@@ -138,18 +155,12 @@ class DesktopAI:
         if provisional and (not chunks or self._live_snapshots.get(session_id) == chunks):
             return
         try:
-            config = self.privacy.provider_config("stt") if self.privacy else None
-            context = (
-                self.privacy.execution_context("stt", threading.Event())
-                if self.privacy and config is not None and config.provider_id != "faster_whisper"
-                else ExecutionContext()
-            )
-            config_key = self.privacy.config_key("stt") if self.privacy else "local"
-            gateway = (
-                self.privacy.gateway_for(session_id, kind="stt")
-                if self.privacy and config is not None and config.provider_id != "faster_whisper"
-                else None
-            )
+            if self.privacy is not None:
+                execution = self.privacy.prepare_execution("stt", fixed_session, threading.Event())
+                config, context = execution.config, execution.context
+                config_key, gateway = execution.config_key, execution.gateway
+            else:
+                config, context, config_key, gateway = None, ExecutionContext(), "local", None
         except Exception:
             self.panel.job_status.setText("전사 제공업체·권한·예산 설정을 확인하세요.")
             if provisional:
@@ -272,10 +283,9 @@ class DesktopAI:
                 and self.privacy.controls["summary"].provider.currentData() == "ollama"
             ):
                 self.window.model_panel.checked_attestation()
-            config = self.privacy.provider_config("summary")
-            context = self.privacy.execution_context("summary", threading.Event())
-            config_key = self.privacy.config_key("summary")
-            gateway = self.privacy.gateway_for(session_id, kind="summary")
+            execution = self.privacy.prepare_execution("summary", session_id, threading.Event())
+            config, context = execution.config, execution.context
+            config_key, gateway = execution.config_key, execution.gateway
         except Exception:
             self.panel.job_status.setText("요약 제공업체·권한·예산 설정을 확인하세요.")
             return

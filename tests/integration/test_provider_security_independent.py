@@ -24,7 +24,14 @@ from recoryn.providers import (
     SummaryRequest,
     TranscriptSegment,
 )
-from recoryn.security import ConsentStore, CostLedger, Gateway
+from recoryn.security import (
+    ConsentRequest,
+    ConsentScope,
+    ConsentStore,
+    CostLedger,
+    Gateway,
+    SecurityError,
+)
 from recoryn.security._core import Endpoint
 from recoryn.summarization import OllamaSummarizer, OpenAISummarizer
 from recoryn.transcription import FasterWhisperProvider, OpenAITranscriber
@@ -148,8 +155,15 @@ def test_stt_exact_scope_and_deleted_session_deny_before_transport(
         provider = "gemini" if wrong_scope == "provider" else "openai"
         target = SUMMARY_ENDPOINT if wrong_scope == "endpoint" else STT_ENDPOINT
         datatype = "transcript" if wrong_scope == "data_type" else "audio"
-        policy.grant(provider, target, datatype)
-        gateway = Gateway(policy, transport=fake).for_session("session")
+        policy.grant(
+            provider,
+            target,
+            datatype,
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        gateway = _fixture_gateway(policy, transport=fake, session_id="session")
         if wrong_scope == "session":
             policy.revoke_session("session")
         result = OpenAITranscriber(
@@ -173,7 +187,14 @@ def test_failed_handoff_preserves_unknown_and_only_safe_error(
     fake = Transport(b"", fail=True)
     db = tmp_path / "security.sqlite"
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
-        policy.grant("openai", STT_ENDPOINT, "audio")
+        policy.grant(
+            "openai",
+            STT_ENDPOINT,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         reservations: list[str] = []
 
         def reserve(provider: str, target: str, kind: str, size: int) -> str:
@@ -184,7 +205,7 @@ def test_failed_handoff_preserves_unknown_and_only_safe_error(
             return reservation
 
         result = OpenAITranscriber(
-            Gateway(policy, ledger=ledger, transport=fake),
+            _fixture_gateway(policy, ledger=ledger, transport=fake),
             ProviderConfig("openai", "test-model", endpoint=STT_ENDPOINT),
         ).transcribe(
             STTRequest(audio),
@@ -210,9 +231,16 @@ def test_cloud_without_reservation_is_blocked_by_injected_real_ledger(
     fake = Transport(b'{"text":"unused"}')
     db = tmp_path / "security.sqlite"
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
-        policy.grant("openai", STT_ENDPOINT, "audio")
+        policy.grant(
+            "openai",
+            STT_ENDPOINT,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         adapter = OpenAITranscriber(
-            Gateway(policy, ledger=ledger, transport=fake),
+            _fixture_gateway(policy, ledger=ledger, transport=fake),
             ProviderConfig("openai", "test-model", endpoint=STT_ENDPOINT),
         )
         result = adapter.transcribe(STTRequest(audio))
@@ -442,14 +470,34 @@ def test_multi_core_synthesis_needs_separate_context_consent_and_resumes_only_sy
     )
     db = tmp_path / "security.sqlite"
     with ConsentStore(db) as policy:
-        policy.grant("openai", SUMMARY_ENDPOINT, "transcript")
-        adapter = OpenAISummarizer(Gateway(policy, transport=fake), config())
+        policy.grant(
+            "openai",
+            SUMMARY_ENDPOINT,
+            "transcript",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        adapter = OpenAISummarizer(_fixture_gateway(policy, transport=fake), config())
         partial = adapter.summarize(request)
         assert not partial.complete and partial.error_code == "CONSENT_REQUIRED"
         assert partial.coverage and not partial.missing
         calls_before = len(fake.connections)
         assert calls_before > 1
-        policy.grant("openai", SUMMARY_ENDPOINT, "context")
+        policy.grant(
+            "openai",
+            SUMMARY_ENDPOINT,
+            "context",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        assert (
+            adapter.summarize(replace(request, checkpoint=partial.checkpoint)).error_code
+            == "CONSENT_REQUIRED"
+        )
+        assert len(fake.connections) == calls_before
+        adapter = OpenAISummarizer(_fixture_gateway(policy, transport=fake), config())
         resumed = adapter.summarize(replace(request, checkpoint=partial.checkpoint))
         assert resumed.complete and not resumed.missing
         assert len(fake.connections) == calls_before + 1
@@ -461,3 +509,48 @@ def test_multi_core_synthesis_needs_separate_context_consent_and_resumes_only_sy
         )
         assert changed.error_code == "CHECKPOINT_MISMATCH" and not changed.complete
         assert len(fake.connections) == calls_before + 1
+
+
+# The older tests exercise revocation/transport, with an explicitly chosen library
+# grant. G02's separate cases exercise the default session-only permission.
+def _fixture_request(
+    policy: ConsentStore, session_id: str = "session", capability: str = "stt", generation: int = 0
+) -> ConsentRequest:
+    try:
+        policy.bind_session(session_id, generation)
+    except SecurityError:
+        pass  # Registration grants nothing; the tested API still checks the fence.
+    return ConsentRequest(session_id, generation, capability, 2)
+
+
+def _fixture_grant_scope(policy: ConsentStore) -> ConsentScope:
+    _fixture_request(policy)
+    return ConsentScope.library()
+
+
+def _fixture_gateway(
+    policy: ConsentStore,
+    *,
+    session_id: str = "session",
+    generation: int = 0,
+    factory=Gateway,
+    **kwargs,
+):
+    root = factory(policy, **kwargs)
+    request = _fixture_request(policy, session_id)
+    if "expected_grants" not in kwargs:
+        bindings = []
+        rows = policy._db.execute(
+            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability='stt' AND scope_kind='library' AND scope_id='' AND policy_version=2"
+        ).fetchall()
+        for provider, endpoint, data_type in rows:
+            bindings.extend(
+                policy.capture_bindings(
+                    provider, endpoint, (data_type,), scope=ConsentScope.library(), request=request
+                )
+            )
+        kwargs["expected_grants"] = tuple(bindings)
+        root = factory(policy, **kwargs)
+    return root.for_session(
+        session_id, generation, capability="stt", scope=ConsentScope.library(), policy_version=2
+    )

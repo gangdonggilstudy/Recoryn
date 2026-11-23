@@ -23,7 +23,15 @@ from recoryn.providers import (
     SummaryRequest,
     TranscriptSegment,
 )
-from recoryn.security import ConsentStore, CostLedger, CredentialVault, Gateway, SecurityError
+from recoryn.security import (
+    ConsentRequest,
+    ConsentScope,
+    ConsentStore,
+    CostLedger,
+    CredentialVault,
+    Gateway,
+    SecurityError,
+)
 from recoryn.security._core import Endpoint
 from recoryn.summarization import OllamaSummarizer, OpenAISummarizer
 from recoryn.transcription import OpenAITranscriber
@@ -103,6 +111,11 @@ def _panel(tmp_path: Path):
             CredentialVault(backend=backend, namespace="BR23-fake"),
             gateway=Gateway(policy, ledger=ledger, transport=transport),
         )
+        # These older model/transport cases explicitly choose the former library scope.
+        panel.select_session("session")
+        panel._confirm_library = lambda *args: True
+        for control in panel.controls.values():
+            control.scope.setCurrentIndex(1)
         try:
             yield panel, backend, transport
         finally:
@@ -111,6 +124,9 @@ def _panel(tmp_path: Path):
 
 
 def _configure(panel, kind: str = "stt"):
+    panel.select_session("session")
+    panel._confirm_library = lambda *args: True
+    panel.controls[kind].scope.setCurrentIndex(panel.controls[kind].scope.findData("library"))
     control = panel.controls[kind]
     control.provider.setCurrentIndex(control.provider.findData("openai"))
     control.endpoint.setText(URL)
@@ -162,19 +178,25 @@ def test_privacy_summary_supplies_explicit_bounded_context(app, tmp_path: Path) 
         ).encode()
         config = panel.provider_config("summary")
         assert config.context_window_tokens == 8192
-        before = panel.config_key("summary")
+        before = panel.config_key("summary", session_id="session")
         # Caller-facing DTO must be usable without patching a private Qt control.
         result = OpenAISummarizer(
             panel.gateway_for("summary-session", kind="summary"), config
         ).summarize(
             SummaryRequest("revision", (TranscriptSegment("s", 0, 10, "Synthetic source"),)),
-            panel.execution_context("summary", threading.Event()),
+            panel.execution_context("summary", threading.Event(), session_id="session"),
         )
         assert result.complete and result.claims[0].segment_ids == ("s",)
         assert transport.connections
         panel.controls["summary"].context_window.setValue(16384)
-        assert panel.config_key("summary") != before
-        assert not panel.consents.allowed("openai", URL, "transcript")
+        assert panel.config_key("summary", session_id="session") != before
+        assert not panel.consents.allowed(
+            "openai",
+            URL,
+            "transcript",
+            scope=ConsentScope.library(),
+            request=_fixture_request(panel.consents, "session", _fixture_feature("transcript"), 0),
+        )
 
 
 @pytest.mark.parametrize("change", ["model", "key"])
@@ -184,7 +206,7 @@ def test_new_grant_cannot_revive_old_model_or_key_context(
     with _panel(tmp_path) as (panel, _, transport):
         control = _configure(panel)
         old_config = panel.provider_config("stt")
-        old_context = panel.execution_context("stt", threading.Event())
+        old_context = panel.execution_context("stt", threading.Event(), session_id="session")
         old_gateway = panel.gateway_for("old-job", kind="stt")
         if change == "model":
             control.model.setText("model-B")
@@ -192,9 +214,21 @@ def test_new_grant_cannot_revive_old_model_or_key_context(
             panel._action("stt", "delete")
             control.key.setText("BR23-FAKE-KEY-B")
             panel._action("stt", "save")
-        assert not panel.consents.allowed("openai", URL, "audio")
+        assert not panel.consents.allowed(
+            "openai",
+            URL,
+            "audio",
+            scope=ConsentScope.library(),
+            request=_fixture_request(panel.consents, "session", _fixture_feature("audio"), 0),
+        )
         panel._action("stt", "grant")  # a new plan can run; old plan remains revoked
-        assert panel.consents.allowed("openai", URL, "audio")
+        assert panel.consents.allowed(
+            "openai",
+            URL,
+            "audio",
+            scope=ConsentScope.library(),
+            request=_fixture_request(panel.consents, "session", _fixture_feature("audio"), 0),
+        )
         result = OpenAITranscriber(old_gateway, old_config).transcribe(
             STTRequest(audio), old_context
         )
@@ -205,7 +239,10 @@ def test_new_grant_cannot_revive_old_model_or_key_context(
         assert not transport.connections
         fresh = OpenAITranscriber(
             panel.gateway_for("new-job", kind="stt"), panel.provider_config("stt")
-        ).transcribe(STTRequest(audio), panel.execution_context("stt", threading.Event()))
+        ).transcribe(
+            STTRequest(audio),
+            panel.execution_context("stt", threading.Event(), session_id="session"),
+        )
         assert fresh.complete and len(transport.connections) == 1
         assert (b"model-B" if change == "model" else b"model-A") in b"".join(
             transport.connections[0].writes
@@ -221,7 +258,7 @@ def test_ui_budget_and_headers_are_immutable_but_revocation_blocks_worker(
     with _panel(tmp_path) as (panel, backend, _):
         assert backend.reads == 0 and not backend.values
         control = _configure(panel)
-        context = panel.execution_context("stt", threading.Event())
+        context = panel.execution_context("stt", threading.Event(), session_id="session")
         assert context.headers["authorization"] == "Bearer BR23-FAKE-KEY-A"
         assert context.reservation_factory is not None
         with ThreadPoolExecutor(max_workers=1) as workers:
@@ -241,8 +278,15 @@ def test_ui_budget_and_headers_are_immutable_but_revocation_blocks_worker(
 def test_mismatched_scope_blocks_before_transport(tmp_path: Path, scope: str) -> None:
     fake = _Transport()
     with ConsentStore(tmp_path / "security.sqlite") as policy:
-        policy.grant("openai", URL, "audio")
-        gateway = Gateway(policy, transport=fake).for_session("session")
+        policy.grant(
+            "openai",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        gateway = _fixture_gateway(policy, transport=fake, session_id="session")
         if scope == "session":
             policy.revoke_session("session")
         with pytest.raises(SecurityError):
@@ -298,10 +342,17 @@ def test_committed_revocation_before_first_write_sends_no_body(
 
     fake = _Transport()
     with ConsentStore(tmp_path / "security.sqlite") as policy:
-        policy.grant("openai", URL, "audio")
+        policy.grant(
+            "openai",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         policy.bind_session("session")
-        gateway = HandoffGate(policy, transport=fake)
-        gateway.session_id = "session"
+        gateway = _fixture_gateway(policy, transport=fake, factory=HandoffGate)
+        assert gateway.session_id == "session"
         with ThreadPoolExecutor(max_workers=1) as workers:
             sent = workers.submit(gateway.request, "openai", URL, "audio", b"CANARY")
             try:
@@ -309,7 +360,14 @@ def test_committed_revocation_before_first_write_sends_no_body(
                 if session_revoke:
                     policy.revoke_session("session")
                 else:
-                    policy.revoke("openai", URL, "audio")
+                    policy.revoke(
+                        "openai",
+                        URL,
+                        "audio",
+                        capability="stt",
+                        scope=ConsentScope.library(),
+                        policy_version=2,
+                    )
             finally:
                 release.set()
             with pytest.raises(SecurityError) as error:
@@ -349,17 +407,33 @@ def test_write_before_revocation_cannot_send_next_chunk_after_commit(
     fake = Transport()
     db = tmp_path / "security.sqlite"
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
-        policy.grant("openai", URL, "audio")
+        policy.grant(
+            "openai",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         policy.bind_session("session")
         reservation = ledger.reserve("openai", "request", 80, 100)
-        gateway = SecondHandoffGate(policy, ledger=ledger, transport=fake, chunk_bytes=3)
-        gateway.session_id = "session"
+        gateway = _fixture_gateway(
+            policy, ledger=ledger, transport=fake, chunk_bytes=3, factory=SecondHandoffGate
+        )
+        assert gateway.session_id == "session"
 
         def revoke() -> None:
             if session_revoke:
                 policy.revoke_session("session")
             else:
-                policy.revoke("openai", URL, "audio")
+                policy.revoke(
+                    "openai",
+                    URL,
+                    "audio",
+                    capability="stt",
+                    scope=ConsentScope.library(),
+                    policy_version=2,
+                )
             committed.set()
 
         with ThreadPoolExecutor(max_workers=2) as workers:
@@ -427,9 +501,16 @@ def test_rolled_back_cost_witness_blocks_before_transport(tmp_path: Path) -> Non
         stale = witness.read_bytes()
         reservation = ledger.reserve("openai", "r1", 80, 100)
         witness.write_bytes(stale)
-        policy.grant("openai", URL, "audio")
+        policy.grant(
+            "openai",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         with pytest.raises(SecurityError, match="LEDGER_ROLLBACK_DETECTED"):
-            Gateway(policy, ledger=ledger, transport=fake).request(
+            _fixture_gateway(policy, ledger=ledger, transport=fake).request(
                 "openai", URL, "audio", b"CANARY", reservation_id=reservation
             )
         assert fake.connections == []
@@ -448,9 +529,18 @@ def test_rolled_back_cost_witness_blocks_before_transport(tmp_path: Path) -> Non
 def test_untrusted_headers_are_denied_before_transport(tmp_path: Path, headers) -> None:
     fake = _Transport()
     with ConsentStore(tmp_path / "security.sqlite") as policy:
-        policy.grant("openai", URL, "audio")
+        policy.grant(
+            "openai",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         with pytest.raises(SecurityError, match="INVALID_HEADER"):
-            Gateway(policy, transport=fake).request("openai", URL, "audio", b"x", headers=headers)
+            _fixture_gateway(policy, transport=fake).request(
+                "openai", URL, "audio", b"x", headers=headers
+            )
         assert fake.connections == []
 
 
@@ -571,15 +661,29 @@ def test_regrant_between_reservation_and_permit_cannot_reauthorize_old_request(
     with _panel(tmp_path) as (panel, _, transport):
         _configure(panel)
         config = panel.provider_config("stt")
-        context = panel.execution_context("stt", threading.Event())
+        context = panel.execution_context("stt", threading.Event(), session_id="session")
         gateway = panel.gateway_for("session", kind="stt")
         reserve = context.reservation_factory
         assert reserve is not None
 
         def reserve_then_regrant(*args):
             reservation = reserve(*args)
-            panel.consents.revoke("openai", URL, "audio")
-            panel.consents.grant("openai", URL, "audio")
+            panel.consents.revoke(
+                "openai",
+                URL,
+                "audio",
+                capability=_fixture_feature("audio"),
+                scope=ConsentScope.library(),
+                policy_version=2,
+            )
+            panel.consents.grant(
+                "openai",
+                URL,
+                "audio",
+                capability=_fixture_feature("audio"),
+                scope=_fixture_grant_scope(panel.consents),
+                policy_version=2,
+            )
             return reservation
 
         result = OpenAITranscriber(gateway, config).transcribe(
@@ -600,7 +704,7 @@ def test_local_ollama_gateway_binding_blocks_old_model_after_regrant(app, tmp_pa
         control.context_window.setValue(8192)
         panel._action("summary", "grant")
         config = panel.provider_config("summary")
-        context = panel.execution_context("summary", threading.Event())
+        context = panel.execution_context("summary", threading.Event(), session_id="session")
         assert context.reservation_factory is None
         gateway = panel.gateway_for("old-local-job", kind="summary")
         panel.set_local_attestation(replace(proof, model="local-B", artifact_sha256="b" * 64))
@@ -616,11 +720,17 @@ def test_previously_ungranted_context_scope_cannot_widen_existing_gateway(
 ) -> None:
     with _panel(tmp_path) as (panel, _, transport):
         control = _configure(panel, "summary")
-        context = panel.execution_context("summary", threading.Event())
+        context = panel.execution_context("summary", threading.Event(), session_id="session")
         gateway = panel.gateway_for("session", kind="summary")
         control.data_type.setCurrentIndex(control.data_type.findData("context"))
         panel._action("summary", "grant")
-        assert panel.consents.allowed("openai", URL, "context")
+        assert panel.consents.allowed(
+            "openai",
+            URL,
+            "context",
+            scope=ConsentScope.library(),
+            request=_fixture_request(panel.consents, "session", _fixture_feature("context"), 0),
+        )
         assert context.reservation_factory is not None
         with pytest.raises(SecurityError):
             context.reservation_factory("openai", URL, "context", 3)
@@ -640,7 +750,7 @@ def test_unverified_summary_context_stays_blocked_with_no_dispatch(app, tmp_path
         assert config.context_window_tokens is None
         result = OpenAISummarizer(panel.gateway_for("unknown", kind="summary"), config).summarize(
             SummaryRequest("revision", (TranscriptSegment("s", 0, 10, "Synthetic"),)),
-            panel.execution_context("summary", threading.Event()),
+            panel.execution_context("summary", threading.Event(), session_id="session"),
         )
         assert result.error_code == "CONTEXT_LIMIT_UNKNOWN" and not result.complete
         assert not transport.connections
@@ -694,11 +804,23 @@ def test_dispatch_guard_faults_preserve_exact_handoff_and_cost(
             raise RuntimeError("PRIVATE-GUARD-CANARY")
 
     with ConsentStore(tmp_path / "policy.db") as policy, CostLedger(tmp_path / "cost.db") as ledger:
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         reservation = ledger.reserve("p", "independent-guard", 80, 100)
-        gateway = Gateway(
-            policy, ledger=ledger, transport=Transport(), chunk_bytes=2, dispatch_guard=guard
-        ).for_session("bound-session")
+        gateway = _fixture_gateway(
+            policy,
+            ledger=ledger,
+            transport=Transport(),
+            chunk_bytes=2,
+            dispatch_guard=guard,
+            session_id="bound-session",
+        )
         with pytest.raises(SecurityError, match="LOCAL_EXECUTION_UNVERIFIED") as failure:
             gateway.request("p", URL, "audio", b"abcd", reservation_id=reservation)
         assert "CANARY" not in str(failure.value)
@@ -743,8 +865,17 @@ def test_guard_cannot_suppress_partial_write_exception(tmp_path: Path) -> None:
 
     transport.open = opened
     with ConsentStore(tmp_path / "policy.db") as policy:
-        policy.grant("p", URL, "audio")
-        gateway = Gateway(policy, transport=transport, dispatch_guard=lambda permit: Suppressor())
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        gateway = _fixture_gateway(
+            policy, transport=transport, dispatch_guard=lambda permit: Suppressor()
+        )
         with pytest.raises(SecurityError) as failure:
             gateway.request("p", URL, "audio", b"ab")
         assert not failure.value.outcome_known and "CANARY" not in str(failure.value)
@@ -862,3 +993,52 @@ def test_static_attestation_compatibility_keeps_ttl_and_exception_semantics() ->
     with pytest.raises(ProviderError, match="LOCAL_EXECUTION_UNVERIFIED"):
         with replace(proof, cloud_disabled=False).execution_guard():
             pytest.fail("unverified execution admitted")
+
+
+# The older tests exercise revocation/transport, with an explicitly chosen library
+# grant. G02's separate cases exercise the default session-only permission.
+def _fixture_request(
+    policy: ConsentStore, session_id: str = "session", capability: str = "stt", generation: int = 0
+) -> ConsentRequest:
+    try:
+        policy.bind_session(session_id, generation)
+    except SecurityError:
+        pass  # Registration grants nothing; the tested API still checks the fence.
+    return ConsentRequest(session_id, generation, capability, 2)
+
+
+def _fixture_grant_scope(policy: ConsentStore) -> ConsentScope:
+    _fixture_request(policy)
+    return ConsentScope.library()
+
+
+def _fixture_gateway(
+    policy: ConsentStore,
+    *,
+    session_id: str = "session",
+    generation: int = 0,
+    factory=Gateway,
+    **kwargs,
+):
+    root = factory(policy, **kwargs)
+    request = _fixture_request(policy, session_id)
+    if "expected_grants" not in kwargs:
+        bindings = []
+        rows = policy._db.execute(
+            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability='stt' AND scope_kind='library' AND scope_id='' AND policy_version=2"
+        ).fetchall()
+        for provider, endpoint, data_type in rows:
+            bindings.extend(
+                policy.capture_bindings(
+                    provider, endpoint, (data_type,), scope=ConsentScope.library(), request=request
+                )
+            )
+        kwargs["expected_grants"] = tuple(bindings)
+        root = factory(policy, **kwargs)
+    return root.for_session(
+        session_id, generation, capability="stt", scope=ConsentScope.library(), policy_version=2
+    )
+
+
+def _fixture_feature(data_type: str) -> str:
+    return "stt" if data_type == "audio" else "summary"

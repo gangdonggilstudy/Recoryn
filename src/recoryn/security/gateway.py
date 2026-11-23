@@ -10,7 +10,7 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 
 from ._core import SecurityError, digest, duration
 from ._core import endpoint as parse_endpoint
-from .consent import ConsentBinding, ConsentStore, SendPermit
+from .consent import ConsentBinding, ConsentRequest, ConsentScope, ConsentStore, SendPermit
 from .ledger import CostLedger
 from .transport import Connection, DirectTransport, Transport
 
@@ -49,7 +49,7 @@ class Gateway:
             or any(not isinstance(binding, ConsentBinding) for binding in expected_grants)
         ):
             raise SecurityError("INVALID_CONSENT_BINDING")
-        self.expected_grants = expected_grants
+        self._expected_grants = expected_grants
         if dispatch_guard is not None and not callable(dispatch_guard):
             raise SecurityError("INVALID_DISPATCH_GUARD")
         self.dispatch_guard = dispatch_guard
@@ -63,12 +63,42 @@ class Gateway:
             max_response_bytes,
             chunk_bytes,
         )
-        self.session_id: str | None = None
-        self.session_generation = 0
+        self._request: ConsentRequest | None = None
+        self._scope: ConsentScope | None = None
 
-    def for_session(self, session_id: str, generation: int = 0) -> Gateway:
+    @property
+    def expected_grants(self) -> tuple[ConsentBinding, ...] | None:
+        return self._expected_grants
+
+    @property
+    def session_id(self) -> str | None:
+        return self._request.session_id if self._request else None
+
+    @property
+    def session_generation(self) -> int:
+        return self._request.session_generation if self._request else 0
+
+    def for_session(
+        self,
+        session_id: str,
+        generation: int = 0,
+        *,
+        capability: str,
+        scope: ConsentScope,
+        policy_version: int,
+    ) -> Gateway:
+        request = ConsentRequest(session_id, generation, capability, policy_version)
+        if type(scope) is not ConsentScope:
+            raise SecurityError("INVALID_CONSENT_SCOPE")
+        if (
+            self._request is not None and (self._request != request or self._scope != scope)
+        ) or any(
+            binding.request != request or binding.scope != scope
+            for binding in self.expected_grants or ()
+        ):
+            raise SecurityError("PERMIT_REVOKED")
         self.consents.bind_session(session_id, generation)
-        view = Gateway(
+        view = type(self)(
             self.consents,
             ledger=self.ledger,
             transport=self.transport,
@@ -79,7 +109,7 @@ class Gateway:
             expected_grants=self.expected_grants,
             dispatch_guard=self.dispatch_guard,
         )
-        view.session_id, view.session_generation = session_id, generation
+        view._request, view._scope = request, scope
         return view
 
     @contextmanager
@@ -163,26 +193,26 @@ class Gateway:
             return result
 
         try:
-            expected = None
-            if self.expected_grants is not None:
-                expected = next(
-                    (
-                        binding
-                        for binding in self.expected_grants
-                        if (binding.provider_id, binding.endpoint, binding.data_type)
-                        == (provider_id, target_endpoint.url, data_type)
-                    ),
-                    None,
-                )
-                if expected is None:
-                    raise SecurityError("CONSENT_REQUIRED")
+            if self._request is None or self._scope is None or not self.expected_grants:
+                raise SecurityError("CONSENT_REQUIRED")
+            expected = next(
+                (
+                    binding
+                    for binding in self.expected_grants
+                    if (binding.provider_id, binding.endpoint, binding.data_type)
+                    == (provider_id, target_endpoint.url, data_type)
+                ),
+                None,
+            )
+            if expected is None:
+                raise SecurityError("CONSENT_REQUIRED")
             permit = self.consents.permit(
                 provider_id,
                 target_endpoint.url,
                 data_type,
                 digest(body),
-                session_id=self.session_id,
-                session_generation=self.session_generation,
+                scope=self._scope,
+                request=self._request,
                 reservation_id=reservation_id,
                 expected_grant=expected,
             )

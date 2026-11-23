@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
+from recoryn.security import ConsentRequest, ConsentScope
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
@@ -64,7 +66,10 @@ def panel(app: QApplication, tmp_path: Path) -> Iterator[tuple[PrivacyPanel, Dum
 
 
 def configure(widget: PrivacyPanel, kind: str = "stt", provider: str = "openai") -> None:
+    widget.select_session("session")
+    widget._confirm_library = lambda *args: True
     controls = widget.controls[kind]
+    controls.scope.setCurrentIndex(controls.scope.findData("library"))
     controls.provider.setCurrentIndex(controls.provider.findData(provider))
     controls.endpoint.setText("https://api.example.test/" + kind)
     controls.model.setText("user-selected-test-model")
@@ -88,7 +93,13 @@ def test_constructor_default_denial_no_vault_read_and_summary_off(
     assert widget.provider_config("stt").provider_id == "faster_whisper"
     with pytest.raises(ProviderError, match="CAPABILITY_UNSUPPORTED"):
         widget.provider_config("summary")
-    assert not widget.consents.allowed("openai", "https://api.example.test/stt", "audio")
+    assert not widget.consents.allowed(
+        "openai",
+        "https://api.example.test/stt",
+        "audio",
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("audio"), 0),
+    )
     assert widget.controls["stt"].per_request.value() == 0
 
 
@@ -99,19 +110,61 @@ def test_exact_datatype_consent_independent_settings_and_endpoint_change(
     configure(widget)
     control = widget.controls["stt"]
     click(control.allow)
-    assert widget.consents.allowed("openai", control.endpoint.text(), "audio")
-    assert not widget.consents.allowed("openai", control.endpoint.text(), "transcript")
+    assert widget.consents.allowed(
+        "openai",
+        control.endpoint.text(),
+        "audio",
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("audio"), 0),
+    )
+    assert not widget.consents.allowed(
+        "openai",
+        control.endpoint.text(),
+        "transcript",
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("transcript"), 0),
+    )
     configure(widget, "summary")
     summary = widget.controls["summary"]
     click(summary.allow)
-    assert widget.consents.allowed("openai", summary.endpoint.text(), "transcript")
-    assert not widget.consents.allowed("openai", summary.endpoint.text(), "context")
+    assert widget.consents.allowed(
+        "openai",
+        summary.endpoint.text(),
+        "transcript",
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("transcript"), 0),
+    )
+    assert not widget.consents.allowed(
+        "openai",
+        summary.endpoint.text(),
+        "context",
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("context"), 0),
+    )
     summary.data_type.setCurrentIndex(summary.data_type.findData("context"))
     click(summary.allow)
-    assert widget.consents.allowed("openai", summary.endpoint.text(), "context")
+    assert widget.consents.allowed(
+        "openai",
+        summary.endpoint.text(),
+        "context",
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("context"), 0),
+    )
     control.endpoint.setText("https://other.example.test/stt")
-    assert not widget.consents.allowed("openai", "https://api.example.test/stt", "audio")
-    assert not widget.consents.allowed("openai", control.endpoint.text(), "audio")
+    assert not widget.consents.allowed(
+        "openai",
+        "https://api.example.test/stt",
+        "audio",
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("audio"), 0),
+    )
+    assert not widget.consents.allowed(
+        "openai",
+        control.endpoint.text(),
+        "audio",
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("audio"), 0),
+    )
 
 
 def test_credentials_are_endpoint_bound_fail_closed_and_never_in_config_key(
@@ -120,24 +173,30 @@ def test_credentials_are_endpoint_bound_fail_closed_and_never_in_config_key(
     widget, backend = panel
     configure(widget)
     control = widget.controls["stt"]
-    before = widget.config_key("stt")
+    before = widget.config_key("stt", session_id="session")
     control.key.setText("B14-UI-SECRET-CANARY")
     click(control.save_key)
     assert not control.key.text()
-    assert widget.config_key("stt") == before
+    assert widget.config_key("stt", session_id="session") == before
     assert len(backend.values) == 1
     assert all("CANARY" not in target for target in backend.values)
     control.endpoint.setText("https://other.example.test/stt")
     click(control.apply_budget)
     click(control.allow)
     with pytest.raises(SecurityError, match="AUTH_REQUIRED"):
-        widget.execution_context("stt", threading.Event())
+        widget.execution_context("stt", threading.Event(), session_id="session")
     backend.fail = True
     control.key.setText("B14-CANARY-PRIVATE")
     click(control.save_key)
     assert control.status.text() == "VAULT_WRITE_FAILED"
     assert "CANARY" not in control.status.text()
-    assert not widget.consents.allowed("openai", control.endpoint.text(), "audio")
+    assert not widget.consents.allowed(
+        "openai",
+        control.endpoint.text(),
+        "audio",
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("audio"), 0),
+    )
 
 
 def test_worker_reservation_factory_uses_frozen_gui_values(
@@ -150,7 +209,7 @@ def test_worker_reservation_factory_uses_frozen_gui_values(
     control.key.setText("dummy-key")
     click(control.save_key)
     click(control.allow)
-    context = widget.execution_context("stt", threading.Event())
+    context = widget.execution_context("stt", threading.Event(), session_id="session")
     assert context.reservation_factory is not None
     with ThreadPoolExecutor(max_workers=1) as worker:
         reservation = worker.submit(
@@ -201,12 +260,12 @@ def test_execution_settings_change_key_and_revoke_old_plan(
     click(controls.save_key)
     click(controls.apply_budget)
     click(controls.allow)
-    key = widget.config_key("summary")
-    old_context = widget.execution_context("summary", threading.Event())
+    key = widget.config_key("summary", session_id="session")
+    old_context = widget.execution_context("summary", threading.Event(), session_id="session")
     assert old_context.reservation_factory is not None
     control = getattr(controls, setting)
     control.setValue(control.value() + 1)
-    assert key != widget.config_key("summary")
+    assert key != widget.config_key("summary", session_id="session")
     click(controls.allow)
     with pytest.raises(SecurityError, match="PERMIT_REVOKED"):
         old_context.reservation_factory("openai", controls.endpoint.text(), "transcript", 10)
@@ -232,10 +291,21 @@ def test_summary_context_limit_is_explicit_and_unknown_by_default(
     widget.set_local_attestation(proof)
     click(widget.controls["summary"].allow)
     assert widget.provider_config("summary").local_attestation == proof
-    assert widget.execution_context("summary", threading.Event()).reservation_factory is None
+    assert (
+        widget.execution_context(
+            "summary", threading.Event(), session_id="session"
+        ).reservation_factory
+        is None
+    )
     assert widget.gateway_for("session", kind="summary").ledger is None
     widget.set_local_attestation(None)
-    assert not widget.consents.allowed("ollama", proof.endpoint, "transcript")
+    assert not widget.consents.allowed(
+        "ollama",
+        proof.endpoint,
+        "transcript",
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("transcript"), 0),
+    )
 
 
 def test_frozen_worker_scope_cannot_widen_or_outlive_revocation(
@@ -248,7 +318,7 @@ def test_frozen_worker_scope_cannot_widen_or_outlive_revocation(
     click(controls.save_key)
     click(controls.apply_budget)
     click(controls.allow)
-    context = widget.execution_context("stt", threading.Event())
+    context = widget.execution_context("stt", threading.Event(), session_id="session")
     reserve = context.reservation_factory
     assert reserve is not None
     for provider, target, kind, size in (
@@ -278,7 +348,13 @@ def test_expired_local_proof_and_changed_model_cannot_grant_loopback(
         widget.set_local_attestation(proof)
         click(widget.controls["summary"].allow)
         assert widget.controls["summary"].status.text() == "LOCAL_EXECUTION_UNVERIFIED"
-        assert not widget.consents.allowed("ollama", proof.endpoint, "transcript")
+        assert not widget.consents.allowed(
+            "ollama",
+            proof.endpoint,
+            "transcript",
+            scope=ConsentScope.library(),
+            request=_fixture_request(widget.consents, "session", _fixture_feature("transcript"), 0),
+        )
     proof = LocalModelAttestation(
         "http://127.0.0.1:11434/api/chat", "local", "a" * 64, True, time.monotonic() + 30
     )
@@ -357,7 +433,9 @@ def test_frozen_managed_proof_protects_every_privacy_gateway_boundary(
     widget._gateway = Gateway(
         widget.consents, transport=transport, chunk_bytes=2, dispatch_guard=base_guard
     )
-    gateway = widget.gateway_for("session", kind="summary").for_session("session")
+    gateway = widget.gateway_for("session", kind="summary").for_session(
+        "session", capability="summary", scope=ConsentScope.library(), policy_version=2
+    )
     if boundary == "none":
         assert gateway.request("ollama", proof.endpoint, "transcript", b"abcd") == b""
     else:
@@ -404,7 +482,23 @@ def test_gateway_guard_keeps_old_proof_and_rejects_wrong_scope(
     frozen = widget.gateway_for("session", kind="summary")
     guard = frozen.dispatch_guard
     assert guard is not None
-    permit = widget.consents.permit("ollama", proof.endpoint, "transcript", "b" * 64)
+    permit = widget.consents.permit(
+        "ollama",
+        proof.endpoint,
+        "transcript",
+        "b" * 64,
+        scope=ConsentScope.library(),
+        request=_fixture_request(widget.consents, "session", _fixture_feature("transcript"), 0),
+        expected_grant=_fixture_binding(
+            widget.consents,
+            "ollama",
+            proof.endpoint,
+            "transcript",
+            "session",
+            _fixture_feature("transcript"),
+            0,
+        ),
+    )
     for invalid in (
         replace(permit, provider_id="other"),
         replace(permit, endpoint="http://127.0.0.1:22222/api/chat"),
@@ -421,3 +515,37 @@ def test_gateway_guard_keeps_old_proof_and_rejects_wrong_scope(
             pytest.fail("old closure silently adopted a new proof")
     with pytest.raises(SecurityError):
         frozen.request("ollama", proof.endpoint, "transcript", b"synthetic")
+
+
+# The older tests exercise revocation/transport, with an explicitly chosen library
+# grant. G02's separate cases exercise the default session-only permission.
+def _fixture_request(
+    policy: ConsentStore, session_id: str = "session", capability: str = "stt", generation: int = 0
+) -> ConsentRequest:
+    try:
+        policy.bind_session(session_id, generation)
+    except SecurityError:
+        pass  # Registration grants nothing; the tested API still checks the fence.
+    return ConsentRequest(session_id, generation, capability, 2)
+
+
+def _fixture_binding(
+    policy: ConsentStore,
+    provider: str,
+    endpoint: str,
+    data_type: str,
+    session_id: str = "session",
+    capability: str = "stt",
+    generation: int = 0,
+):
+    request = _fixture_request(policy, session_id, capability, generation)
+    bindings = policy.capture_bindings(
+        provider, endpoint, (data_type,), scope=ConsentScope.library(), request=request
+    )
+    if not bindings:
+        raise SecurityError("CONSENT_REQUIRED")
+    return bindings[0]
+
+
+def _fixture_feature(data_type: str) -> str:
+    return "stt" if data_type == "audio" else "summary"

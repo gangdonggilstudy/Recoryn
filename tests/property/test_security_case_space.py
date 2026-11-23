@@ -15,7 +15,15 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from recoryn.security import ConsentStore, CostLedger, Gateway, SecurityError, SendPermit
+from recoryn.security import (
+    ConsentRequest,
+    ConsentScope,
+    ConsentStore,
+    CostLedger,
+    Gateway,
+    SecurityError,
+    SendPermit,
+)
 from recoryn.security._core import Endpoint
 
 pytestmark = pytest.mark.property
@@ -138,17 +146,51 @@ def test_admission_case_space(
     owner, wire = Owner(live), Wire()
     db = tmp_path / "cube.sqlite"
     with ConsentStore(db, clock=lambda: 1000.0) as policy, CostLedger(db) as ledger:
-        policy.grant("p", URL, "transcript")
-        binding = policy.capture_bindings("p", URL, ("transcript",))
+        policy.grant(
+            "p",
+            URL,
+            "transcript",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        binding = policy.capture_bindings(
+            "p",
+            URL,
+            ("transcript",),
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
         reservation = ledger.reserve("p", "request", 7, 10)
         if not reserved:
             ledger.mark_unknown(reservation)
         if regrant:
-            policy.revoke("p", URL, "transcript")
-            policy.grant("p", URL, "transcript")
+            policy.revoke(
+                "p",
+                URL,
+                "transcript",
+                capability="stt",
+                scope=ConsentScope.library(),
+                policy_version=2,
+            )
+            policy.grant(
+                "p",
+                URL,
+                "transcript",
+                capability="stt",
+                scope=_fixture_grant_scope(policy),
+                policy_version=2,
+            )
         if revoked:
-            policy.revoke("p", URL, "transcript")
-        gateway = Gateway(
+            policy.revoke(
+                "p",
+                URL,
+                "transcript",
+                capability="stt",
+                scope=ConsentScope.library(),
+                policy_version=2,
+            )
+        gateway = _fixture_gateway(
             policy,
             ledger=ledger,
             transport=wire,
@@ -217,12 +259,26 @@ def test_handoff_case_space(
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
     db = tmp_path / "handoff.sqlite"
     with ConsentStore(db, clock=lambda: 1000.0) as policy, CostLedger(db) as ledger:
-        policy.grant("p", URL, "transcript")
+        policy.grant(
+            "p",
+            URL,
+            "transcript",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         reservation = ledger.reserve("p", "request", 7, 10)
 
         def interrupt() -> None:
             if revoke:
-                policy.revoke("p", URL, "transcript")
+                policy.revoke(
+                    "p",
+                    URL,
+                    "transcript",
+                    capability="stt",
+                    scope=ConsentScope.library(),
+                    policy_version=2,
+                )
             if owner_revoke:
                 owner.live = False
             if cancel_now:
@@ -234,7 +290,7 @@ def test_handoff_case_space(
             wire.after_open = interrupt
         else:
             wire.after_first = interrupt
-        gateway = Gateway(
+        gateway = _fixture_gateway(
             policy,
             ledger=ledger,
             transport=wire,
@@ -290,9 +346,26 @@ def test_exact_time_boundaries(
         target = "http://127.0.0.1:39271/chat" if kind == "local" else URL
         if kind == "local":
             policy.approve_local_endpoint(target, "a" * 64, ttl_seconds=10)
-        policy.grant("p", target, "transcript")
+        policy.grant(
+            "p",
+            target,
+            "transcript",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         if kind == "permit":
-            permit = policy.permit("p", target, "transcript", "a" * 64)
+            permit = policy.permit(
+                "p",
+                target,
+                "transcript",
+                "a" * 64,
+                scope=ConsentScope.library(),
+                request=_fixture_request(policy, "session", "stt", 0),
+                expected_grant=_fixture_binding(
+                    policy, "p", target, "transcript", "session", "stt", 0
+                ),
+            )
             wall[0] = 1030 + delta
             if delta < 0:
                 policy.validate(permit)
@@ -304,7 +377,7 @@ def test_exact_time_boundaries(
             wire.after_open = lambda: mono.__setitem__(0, 110 + delta)
         else:
             wall[0] = 1010 + delta
-        gateway = Gateway(policy, transport=wire, timeout=10, chunk_bytes=2)
+        gateway = _fixture_gateway(policy, transport=wire, timeout=10, chunk_bytes=2)
         if delta < 0:
             assert gateway.request("p", target, "transcript", b"abcd") == b"OK"
             assert wire.writes == [b"ab", b"cd"]
@@ -407,3 +480,66 @@ def test_cost_partition_preserves_exposure(x: int, y: int, state: str) -> None:
                 snapshots.append(ledger.snapshot("p"))
         assert snapshots[0] == snapshots[1]
         assert snapshots[0]["available"] == 5
+
+
+# The older tests exercise revocation/transport, with an explicitly chosen library
+# grant. G02's separate cases exercise the default session-only permission.
+def _fixture_request(
+    policy: ConsentStore, session_id: str = "session", capability: str = "stt", generation: int = 0
+) -> ConsentRequest:
+    try:
+        policy.bind_session(session_id, generation)
+    except SecurityError:
+        pass  # Registration grants nothing; the tested API still checks the fence.
+    return ConsentRequest(session_id, generation, capability, 2)
+
+
+def _fixture_grant_scope(policy: ConsentStore) -> ConsentScope:
+    _fixture_request(policy)
+    return ConsentScope.library()
+
+
+def _fixture_binding(
+    policy: ConsentStore,
+    provider: str,
+    endpoint: str,
+    data_type: str,
+    session_id: str = "session",
+    capability: str = "stt",
+    generation: int = 0,
+):
+    request = _fixture_request(policy, session_id, capability, generation)
+    bindings = policy.capture_bindings(
+        provider, endpoint, (data_type,), scope=ConsentScope.library(), request=request
+    )
+    if not bindings:
+        raise SecurityError("CONSENT_REQUIRED")
+    return bindings[0]
+
+
+def _fixture_gateway(
+    policy: ConsentStore,
+    *,
+    session_id: str = "session",
+    generation: int = 0,
+    factory=Gateway,
+    **kwargs,
+):
+    root = factory(policy, **kwargs)
+    request = _fixture_request(policy, session_id)
+    if "expected_grants" not in kwargs:
+        bindings = []
+        rows = policy._db.execute(
+            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability='stt' AND scope_kind='library' AND scope_id='' AND policy_version=2"
+        ).fetchall()
+        for provider, endpoint, data_type in rows:
+            bindings.extend(
+                policy.capture_bindings(
+                    provider, endpoint, (data_type,), scope=ConsentScope.library(), request=request
+                )
+            )
+        kwargs["expected_grants"] = tuple(bindings)
+        root = factory(policy, **kwargs)
+    return root.for_session(
+        session_id, generation, capability="stt", scope=ConsentScope.library(), policy_version=2
+    )

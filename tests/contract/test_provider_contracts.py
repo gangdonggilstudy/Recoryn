@@ -18,7 +18,7 @@ from recoryn.providers import (
     TranscriptSegment,
 )
 from recoryn.providers._common import encode
-from recoryn.security import ConsentStore, Gateway
+from recoryn.security import ConsentRequest, ConsentScope, ConsentStore, Gateway, SecurityError
 from recoryn.storage import Library
 from recoryn.summarization import AnthropicSummarizer, GeminiSummarizer, OpenAISummarizer
 from recoryn.transcription import GeminiTranscriber, OpenAITranscriber
@@ -210,11 +210,22 @@ def test_session_bound_real_gateway_blocks_without_consent_then_uses_fake_transp
     transport = Transport(response)
     with Library(tmp_path) as library, ConsentStore(library.db_path) as consents:
         library.create_session("session")
-        gateway = Gateway(consents, transport=transport).for_session("session")
+        gateway = _fixture_gateway(consents, transport=transport, session_id="session")
         adapter = OpenAISummarizer(gateway, configured("openai"))
         denied = adapter.summarize(request())
         assert denied.error_code == "CONSENT_REQUIRED" and not transport.connections
-        consents.grant("openai", adapter.endpoint, "transcript")
+        consents.grant(
+            "openai",
+            adapter.endpoint,
+            "transcript",
+            capability="stt",
+            scope=_fixture_grant_scope(consents),
+            policy_version=2,
+        )
+        assert adapter.summarize(request()).error_code == "CONSENT_REQUIRED"
+        adapter = OpenAISummarizer(
+            _fixture_gateway(consents, transport=transport), configured("openai")
+        )
         assert adapter.summarize(request()).complete
         assert len(transport.connections) == 1
         consents.revoke_session("session")
@@ -253,3 +264,48 @@ def test_audio_header_cannot_claim_unbounded_or_missing_payload(tmp_path: Path) 
     gateway = WireGateway(b'{"text":"fake"}')
     result = OpenAITranscriber(gateway, configured("openai")).transcribe(STTRequest(path))
     assert result.error_code == "INPUT_INVALID" and not gateway.calls
+
+
+# The older tests exercise revocation/transport, with an explicitly chosen library
+# grant. G02's separate cases exercise the default session-only permission.
+def _fixture_request(
+    policy: ConsentStore, session_id: str = "session", capability: str = "stt", generation: int = 0
+) -> ConsentRequest:
+    try:
+        policy.bind_session(session_id, generation)
+    except SecurityError:
+        pass  # Registration grants nothing; the tested API still checks the fence.
+    return ConsentRequest(session_id, generation, capability, 2)
+
+
+def _fixture_grant_scope(policy: ConsentStore) -> ConsentScope:
+    _fixture_request(policy)
+    return ConsentScope.library()
+
+
+def _fixture_gateway(
+    policy: ConsentStore,
+    *,
+    session_id: str = "session",
+    generation: int = 0,
+    factory=Gateway,
+    **kwargs,
+):
+    root = factory(policy, **kwargs)
+    request = _fixture_request(policy, session_id)
+    if "expected_grants" not in kwargs:
+        bindings = []
+        rows = policy._db.execute(
+            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability='stt' AND scope_kind='library' AND scope_id='' AND policy_version=2"
+        ).fetchall()
+        for provider, endpoint, data_type in rows:
+            bindings.extend(
+                policy.capture_bindings(
+                    provider, endpoint, (data_type,), scope=ConsentScope.library(), request=request
+                )
+            )
+        kwargs["expected_grants"] = tuple(bindings)
+        root = factory(policy, **kwargs)
+    return root.for_session(
+        session_id, generation, capability="stt", scope=ConsentScope.library(), policy_version=2
+    )

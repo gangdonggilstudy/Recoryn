@@ -19,7 +19,14 @@ from recoryn.domain import StateConflict, ValidationError
 from recoryn.jobs import AttemptState, JobState, JobStore
 from recoryn.jobs.runner import BoundedRunner
 from recoryn.providers import ExecutionContext, ProviderConfig
-from recoryn.security import ConsentStore, CostLedger, Gateway
+from recoryn.security import (
+    ConsentRequest,
+    ConsentScope,
+    ConsentStore,
+    CostLedger,
+    Gateway,
+    SecurityError,
+)
 from recoryn.security._core import Endpoint
 from recoryn.storage import Library
 from recoryn.summarization import OpenAISummarizer
@@ -378,7 +385,14 @@ def test_real_ai_reservation_wrapper_commits_marker_before_gateway(
     ):
         library.create_session("session")
         content.create_transcript("session", one_segment())
-        policy.grant("openai", target, "transcript")
+        policy.grant(
+            "openai",
+            target,
+            "transcript",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         reservations: list[str] = []
         opened: list[bool] = []
 
@@ -440,7 +454,7 @@ def test_real_ai_reservation_wrapper_commits_marker_before_gateway(
                     observer.execute("""CREATE TRIGGER br24_marker_failure BEFORE INSERT ON job_remote_intents
                         BEGIN SELECT RAISE(ABORT, 'BR24_MARKER_FAILURE'); END""")
             provider = OpenAISummarizer(
-                Gateway(policy, ledger=ledger, transport=Transport()),
+                _fixture_gateway(policy, ledger=ledger, transport=Transport()),
                 ProviderConfig("openai", "test-model", endpoint=target, context_window_tokens=8192),
             )
             job_id = service.summarize(
@@ -466,3 +480,48 @@ def test_real_ai_reservation_wrapper_commits_marker_before_gateway(
                 assert ledger.snapshot("openai")["unknown_exposure"] == 10
         finally:
             service.close()
+
+
+# The older tests exercise revocation/transport, with an explicitly chosen library
+# grant. G02's separate cases exercise the default session-only permission.
+def _fixture_request(
+    policy: ConsentStore, session_id: str = "session", capability: str = "stt", generation: int = 0
+) -> ConsentRequest:
+    try:
+        policy.bind_session(session_id, generation)
+    except SecurityError:
+        pass  # Registration grants nothing; the tested API still checks the fence.
+    return ConsentRequest(session_id, generation, capability, 2)
+
+
+def _fixture_grant_scope(policy: ConsentStore) -> ConsentScope:
+    _fixture_request(policy)
+    return ConsentScope.library()
+
+
+def _fixture_gateway(
+    policy: ConsentStore,
+    *,
+    session_id: str = "session",
+    generation: int = 0,
+    factory=Gateway,
+    **kwargs,
+):
+    root = factory(policy, **kwargs)
+    request = _fixture_request(policy, session_id)
+    if "expected_grants" not in kwargs:
+        bindings = []
+        rows = policy._db.execute(
+            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability='stt' AND scope_kind='library' AND scope_id='' AND policy_version=2"
+        ).fetchall()
+        for provider, endpoint, data_type in rows:
+            bindings.extend(
+                policy.capture_bindings(
+                    provider, endpoint, (data_type,), scope=ConsentScope.library(), request=request
+                )
+            )
+        kwargs["expected_grants"] = tuple(bindings)
+        root = factory(policy, **kwargs)
+    return root.for_session(
+        session_id, generation, capability="stt", scope=ConsentScope.library(), policy_version=2
+    )

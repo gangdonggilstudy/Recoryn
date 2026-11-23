@@ -34,6 +34,7 @@ from recoryn.providers import (
     SummaryResult,
     TranscriptSegment,
 )
+from recoryn.security import ConsentRequest, ConsentScope, ConsentStore, Gateway, SecurityError
 from recoryn.storage import Library
 
 pytestmark = pytest.mark.integration
@@ -846,7 +847,7 @@ def test_late_attestation_result_cannot_restore_retired_privacy_proof(
     from PySide6.QtWidgets import QApplication
 
     from recoryn.providers import LocalModelAttestation, ProviderError
-    from recoryn.security import ConsentStore, CostLedger, Gateway, SecurityError
+    from recoryn.security import ConsentStore, CostLedger, SecurityError
     from recoryn.ui.models import ModelPanel
     from recoryn.ui.privacy import PrivacyPanel
 
@@ -910,6 +911,9 @@ def test_late_attestation_result_cannot_restore_retired_privacy_proof(
         privacy = PrivacyPanel(
             policy, ledger, vault, gateway=Gateway(policy, transport=Transport())
         )
+        privacy.select_session("retired-job")
+        privacy._confirm_library = lambda *args: True
+        privacy.controls["summary"].scope.setCurrentIndex(1)
         model = ModelPanel(tmp_path / "models")
         seen = []
         model.attestationChanged.connect(privacy.set_local_attestation)
@@ -966,7 +970,13 @@ def test_late_attestation_result_cannot_restore_retired_privacy_proof(
             if race == "replacement":
                 assert model.checked_attestation() is newer
                 assert privacy._attestation is newer
-                assert policy.allowed("ollama", local, "transcript")
+                assert policy.allowed(
+                    "ollama",
+                    local,
+                    "transcript",
+                    scope=ConsentScope.library(),
+                    request=_fixture_request(policy, "session", _fixture_feature("transcript"), 0),
+                )
                 fresh = privacy.gateway_for("replacement-job", kind="summary")
                 assert fresh.request("ollama", local, "transcript", b"new-plan") == b""
                 assert leases[-3:] == ["replacement"] * 3
@@ -976,7 +986,13 @@ def test_late_attestation_result_cannot_restore_retired_privacy_proof(
                 assert delivered == [b"new-plan"]
             else:
                 assert privacy._attestation is None and model._ollama_proof is None
-                assert not policy.allowed("ollama", local, "transcript")
+                assert not policy.allowed(
+                    "ollama",
+                    local,
+                    "transcript",
+                    scope=ConsentScope.library(),
+                    request=_fixture_request(policy, "session", _fixture_feature("transcript"), 0),
+                )
         finally:
             release.set()
             model.shutdown()
@@ -985,3 +1001,19 @@ def test_late_attestation_result_cannot_restore_retired_privacy_proof(
             privacy.close()
             privacy.deleteLater()
             app.processEvents()
+
+
+# The older tests exercise revocation/transport, with an explicitly chosen library
+# grant. G02's separate cases exercise the default session-only permission.
+def _fixture_request(
+    policy: ConsentStore, session_id: str = "session", capability: str = "stt", generation: int = 0
+) -> ConsentRequest:
+    try:
+        policy.bind_session(session_id, generation)
+    except SecurityError:
+        pass  # Registration grants nothing; the tested API still checks the fence.
+    return ConsentRequest(session_id, generation, capability, 2)
+
+
+def _fixture_feature(data_type: str) -> str:
+    return "stt" if data_type == "audio" else "summary"

@@ -14,7 +14,15 @@ from pathlib import Path
 
 import pytest
 
-from recoryn.security import ConsentStore, CostLedger, Gateway, SecurityError, SendPermit
+from recoryn.security import (
+    ConsentRequest,
+    ConsentScope,
+    ConsentStore,
+    CostLedger,
+    Gateway,
+    SecurityError,
+    SendPermit,
+)
 from recoryn.security._core import Endpoint
 from recoryn.storage import Library
 
@@ -76,11 +84,23 @@ def test_dispatch_guard_checks_open_each_write_and_final_result(
 
     db = tmp_path / "guard.sqlite"
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         reservation = ledger.reserve("p", "guarded-request", 60, 100)
-        gateway = Gateway(
-            policy, ledger=ledger, transport=transport, chunk_bytes=2, dispatch_guard=guard
-        ).for_session("source")
+        gateway = _fixture_gateway(
+            policy,
+            ledger=ledger,
+            transport=transport,
+            chunk_bytes=2,
+            dispatch_guard=guard,
+            session_id="source",
+        )
         assert gateway.dispatch_guard is guard
         if boundary is None:
             assert gateway.request("p", URL, "audio", b"abcd", reservation_id=reservation) == b"OK"
@@ -119,9 +139,16 @@ def test_guard_exit_failure_after_first_write_remains_unknown(
             raise RuntimeError("PRIVATE-OWNER-EXIT-CANARY")
 
     with ConsentStore(tmp_path / "guard.sqlite") as policy:
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         with pytest.raises(SecurityError, match="LOCAL_EXECUTION_UNVERIFIED") as failure:
-            Gateway(policy, transport=transport, dispatch_guard=guard).request(
+            _fixture_gateway(policy, transport=transport, dispatch_guard=guard).request(
                 "p", URL, "audio", b"abcd"
             )
         assert failure.value.outcome_known is (boundary == 1)
@@ -166,8 +193,15 @@ def test_owner_guard_holds_through_handoff_and_blocks_later_result(tmp_path: Pat
     transport.connection.write = held_write  # type: ignore[method-assign]
     transport.connection.read = read_after_revoke  # type: ignore[method-assign]
     with ConsentStore(tmp_path / "guard.sqlite") as policy:
-        policy.grant("p", URL, "audio")
-        gateway = Gateway(policy, transport=transport, dispatch_guard=guard)
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        gateway = _fixture_gateway(policy, transport=transport, dispatch_guard=guard)
         with ThreadPoolExecutor(max_workers=2) as worker:
             request = worker.submit(gateway.request, "p", URL, "audio", b"abcd")
             try:
@@ -203,9 +237,16 @@ def test_guard_exit_cannot_hide_failed_handoff_or_unknown_cost(
 
     db = tmp_path / "guard.sqlite"
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         reservation = ledger.reserve("p", "request", 60, 100)
-        gateway = Gateway(policy, ledger=ledger, transport=transport, dispatch_guard=guard)
+        gateway = _fixture_gateway(policy, ledger=ledger, transport=transport, dispatch_guard=guard)
         with pytest.raises(SecurityError, match="REMOTE_OUTCOME_UNKNOWN") as failure:
             gateway.request("p", URL, "audio", b"abcd", reservation_id=reservation)
         assert not failure.value.outcome_known
@@ -241,10 +282,17 @@ def test_revoke_before_first_or_second_handoff_blocks_unsent_bytes(
 
     monkeypatch.setattr(Gateway, "_write", controlled_write)
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         reservation = ledger.reserve("p", "r", 60, 100)
-        gateway = Gateway(policy, ledger=ledger, transport=transport, chunk_bytes=2).for_session(
-            "s"
+        gateway = _fixture_gateway(
+            policy, ledger=ledger, transport=transport, chunk_bytes=2, session_id="s"
         )
         with ThreadPoolExecutor(max_workers=1) as worker:
             outcome = worker.submit(
@@ -255,7 +303,14 @@ def test_revoke_before_first_or_second_handoff_blocks_unsent_bytes(
                 if revoke == "session":
                     policy.revoke_session("s")
                 elif revoke == "grant":
-                    policy.revoke("p", URL, "audio")
+                    policy.revoke(
+                        "p",
+                        URL,
+                        "audio",
+                        capability="stt",
+                        scope=ConsentScope.library(),
+                        policy_version=2,
+                    )
                 else:
                     with ConsentStore(db):
                         pass
@@ -294,12 +349,21 @@ def test_write_first_finishes_before_revoke_commit_without_blocking_media_db(
 
     transport.connection.read = delayed_response  # type: ignore[method-assign]
     with Library(tmp_path) as library, ConsentStore(tmp_path / "library.sqlite") as policy:
-        policy.grant("p", URL, "audio")
-        gateway = Gateway(policy, transport=transport)
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        gateway = _fixture_gateway(policy, transport=transport)
 
         def revoke() -> None:
             revoke_started.set()
-            policy.revoke("p", URL, "audio")
+            policy.revoke(
+                "p", URL, "audio", capability="stt", scope=ConsentScope.library(), policy_version=2
+            )
             order.append("revoke")
             revoke_committed.set()
 
@@ -326,9 +390,16 @@ def test_unknown_cost_survives_failed_write_restart_and_session_delete(tmp_path:
     transport.connection.fail_write = True
     with Library(tmp_path) as library, ConsentStore(db) as policy, CostLedger(db) as ledger:
         library.create_session("session")
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         reservation = ledger.reserve("p", "request", 80, 100)
-        gateway = Gateway(policy, ledger=ledger, transport=transport).for_session("session")
+        gateway = _fixture_gateway(policy, ledger=ledger, transport=transport, session_id="session")
         with pytest.raises(SecurityError, match="REMOTE_OUTCOME_UNKNOWN") as error:
             gateway.request("p", URL, "audio", b"dummy", reservation_id=reservation)
         assert not error.value.outcome_known
@@ -344,9 +415,13 @@ def test_unknown_cost_survives_failed_write_restart_and_session_delete(tmp_path:
 
 def test_gateway_limits_safe_headers_cancel_and_response(tmp_path: Path) -> None:
     with ConsentStore(tmp_path / "p.sqlite") as policy:
-        policy.grant("p", URL, "text")
+        policy.grant(
+            "p", URL, "text", capability="stt", scope=_fixture_grant_scope(policy), policy_version=2
+        )
         transport = FakeTransport(b"oversized")
-        gateway = Gateway(policy, transport=transport, max_request_bytes=4, max_response_bytes=2)
+        gateway = _fixture_gateway(
+            policy, transport=transport, max_request_bytes=4, max_response_bytes=2
+        )
         with pytest.raises(SecurityError, match="REQUEST_TOO_LARGE"):
             gateway.request("p", URL, "text", b"12345")
         with pytest.raises(SecurityError, match="INVALID_HEADER"):
@@ -379,8 +454,15 @@ def test_transport_faults_are_safe_and_always_close(
     else:
         monkeypatch.setattr(transport.connection, "close", unavailable)
     with ConsentStore(tmp_path / "security.sqlite") as policy:
-        policy.grant("p", URL, "audio")
-        gateway = Gateway(policy, transport=transport)
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        gateway = _fixture_gateway(policy, transport=transport)
         if failure == "close":
             assert gateway.request("p", URL, "audio", b"") == b"OK"
             assert transport.connection.writes == [b""]
@@ -437,10 +519,17 @@ def test_deadline_and_cancel_preserve_unsent_or_unknown_cost(
     transport.connection.write = written  # type: ignore[method-assign]
     db = tmp_path / "security.sqlite"
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         reservation = ledger.reserve("p", "r", 80, 100)
         with pytest.raises(SecurityError) as caught:
-            Gateway(policy, ledger=ledger, transport=transport).request(
+            _fixture_gateway(policy, ledger=ledger, transport=transport).request(
                 "p", URL, "audio", b"synthetic", cancel=cancel, reservation_id=reservation
             )
         expected = "TIMEOUT" if failure == "timeout" else "CANCELLED"
@@ -455,11 +544,20 @@ def test_budget_and_header_failures_never_open_transport(tmp_path: Path) -> None
     db = tmp_path / "security.sqlite"
     transport = FakeTransport()
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         with pytest.raises(SecurityError, match="BUDGET_REQUIRED"):
-            Gateway(policy, ledger=ledger, transport=transport).request("p", URL, "audio", b"ok")
+            _fixture_gateway(policy, ledger=ledger, transport=transport).request(
+                "p", URL, "audio", b"ok"
+            )
         with pytest.raises(SecurityError, match="LEDGER_REQUIRED"):
-            Gateway(policy, transport=transport).request(
+            _fixture_gateway(policy, transport=transport).request(
                 "p", URL, "audio", b"ok", reservation_id="r"
             )
         for headers in (
@@ -467,18 +565,25 @@ def test_budget_and_header_failures_never_open_transport(tmp_path: Path) -> None
             {"authorization": "x\r\nleak"},
         ):
             with pytest.raises(SecurityError, match="INVALID_HEADER"):
-                Gateway(policy, transport=transport).request(
+                _fixture_gateway(policy, transport=transport).request(
                     "p", URL, "audio", b"ok", headers=headers
                 )
         with pytest.raises(SecurityError, match="INVALID_SIZE_LIMIT"):
-            Gateway(policy, max_response_bytes=0)
+            _fixture_gateway(policy, max_response_bytes=0)
         assert transport.opens == 0
 
 
 def test_real_process_restart_denies_old_consent_and_preserves_unknown(tmp_path: Path) -> None:
     db = tmp_path / "security.sqlite"
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         policy.bind_session("deleted")
         policy.revoke_session("deleted")
         reservation = ledger.reserve("p", "durable-request", 80, 100)
@@ -486,12 +591,12 @@ def test_real_process_restart_denies_old_consent_and_preserves_unknown(tmp_path:
     script = """
 import json, socket, sys
 from pathlib import Path
-from recoryn.security import ConsentStore, CostLedger, Gateway, SecurityError
+from recoryn.security import ConsentStore, CostLedger, Gateway, SecurityError, ConsentRequest, ConsentScope
 def forbidden(*args, **kwargs):
     raise AssertionError("DNS/socket must never be used on restart")
 socket.getaddrinfo = socket.socket = forbidden
 with ConsentStore(Path(sys.argv[1])) as policy, CostLedger(Path(sys.argv[1])) as ledger:
-    assert not policy.allowed("p", sys.argv[2], "audio")
+    assert not policy.allowed("p", sys.argv[2], "audio", scope=ConsentScope.library(), request=ConsentRequest("session",0,"stt",2))
     try:
         Gateway(policy).request("p", sys.argv[2], "audio", b"synthetic")
     except SecurityError as error:
@@ -522,19 +627,97 @@ def test_frozen_gateway_rejects_regrant_after_reservation_before_permit(tmp_path
     db = tmp_path / "security.sqlite"
     transport = FakeTransport()
     with ConsentStore(db) as policy, CostLedger(db) as ledger:
-        policy.grant("p", URL, "audio")
-        bindings = policy.capture_bindings("p", URL, ("audio",))
-        gateway = Gateway(
-            policy, ledger=ledger, transport=transport, expected_grants=bindings
-        ).for_session("session")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        bindings = policy.capture_bindings(
+            "p",
+            URL,
+            ("audio",),
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
+        gateway = _fixture_gateway(
+            policy,
+            ledger=ledger,
+            transport=transport,
+            expected_grants=bindings,
+            session_id="session",
+        )
         policy.validate_binding(bindings[0])
         reservation = ledger.reserve("p", "validated-old-plan", 80, 100)
-        policy.revoke("p", URL, "audio")
-        policy.grant("p", URL, "audio")
+        policy.revoke(
+            "p", URL, "audio", capability="stt", scope=ConsentScope.library(), policy_version=2
+        )
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         with pytest.raises(SecurityError, match="PERMIT_REVOKED"):
             gateway.request("p", URL, "audio", b"old-plan", reservation_id=reservation)
         assert transport.opens == 0 and ledger.snapshot("p")["reserved"] == 80
-        policy.grant("p", URL, "transcript")
+        policy.grant(
+            "p",
+            URL,
+            "transcript",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         with pytest.raises(SecurityError, match="CONSENT_REQUIRED"):
             gateway.request("p", URL, "transcript", b"widened-plan", reservation_id=reservation)
         assert transport.opens == 0
+
+
+# The older tests exercise revocation/transport, with an explicitly chosen library
+# grant. G02's separate cases exercise the default session-only permission.
+def _fixture_request(
+    policy: ConsentStore, session_id: str = "session", capability: str = "stt", generation: int = 0
+) -> ConsentRequest:
+    try:
+        policy.bind_session(session_id, generation)
+    except SecurityError:
+        pass  # Registration grants nothing; the tested API still checks the fence.
+    return ConsentRequest(session_id, generation, capability, 2)
+
+
+def _fixture_grant_scope(policy: ConsentStore) -> ConsentScope:
+    _fixture_request(policy)
+    return ConsentScope.library()
+
+
+def _fixture_gateway(
+    policy: ConsentStore,
+    *,
+    session_id: str = "session",
+    generation: int = 0,
+    factory=Gateway,
+    **kwargs,
+):
+    root = factory(policy, **kwargs)
+    request = _fixture_request(policy, session_id)
+    if "expected_grants" not in kwargs:
+        bindings = []
+        rows = policy._db.execute(
+            "SELECT DISTINCT provider,endpoint,data_type FROM security_grants_v2 WHERE capability='stt' AND scope_kind='library' AND scope_id='' AND policy_version=2"
+        ).fetchall()
+        for provider, endpoint, data_type in rows:
+            bindings.extend(
+                policy.capture_bindings(
+                    provider, endpoint, (data_type,), scope=ConsentScope.library(), request=request
+                )
+            )
+        kwargs["expected_grants"] = tuple(bindings)
+        root = factory(policy, **kwargs)
+    return root.for_session(
+        session_id, generation, capability="stt", scope=ConsentScope.library(), policy_version=2
+    )

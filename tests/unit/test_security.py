@@ -17,6 +17,8 @@ from typing import Any
 import pytest
 
 from recoryn.security import (
+    ConsentRequest,
+    ConsentScope,
     ConsentStore,
     CostLedger,
     CredentialVault,
@@ -62,33 +64,114 @@ def test_expiring_consent_is_exact_and_invalid_after_restart(tmp_path: Path) -> 
     clock = [1000.0]
     db = tmp_path / "policy.sqlite"
     with ConsentStore(db, ttl_seconds=10, clock=lambda: clock[0]) as policy:
-        assert not policy.allowed("provider", URL, "audio")
-        policy.grant(provider_id="provider", endpoint=URL, data_type="audio")
-        assert policy.allowed("provider", URL, "audio")
+        assert not policy.allowed(
+            "provider",
+            URL,
+            "audio",
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
+        policy.grant(
+            provider_id="provider",
+            endpoint=URL,
+            data_type="audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        assert policy.allowed(
+            "provider",
+            URL,
+            "audio",
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
         for provider, target, data_type in (
             ("other", URL, "audio"),
             ("provider", URL + "/", "audio"),
             ("provider", URL, "text"),
         ):
-            assert not policy.allowed(provider, target, data_type)
+            assert not policy.allowed(
+                provider,
+                target,
+                data_type,
+                scope=ConsentScope.library(),
+                request=_fixture_request(policy, "session", "stt", 0),
+            )
         clock[0] = 1010
-        assert not policy.allowed("provider", URL, "audio")
-        policy.grant("provider", URL, "audio")
+        assert not policy.allowed(
+            "provider",
+            URL,
+            "audio",
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
+        policy.grant(
+            "provider",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
     with ConsentStore(db) as restarted:
-        assert not restarted.allowed("provider", URL, "audio")
+        assert not restarted.allowed(
+            "provider",
+            URL,
+            "audio",
+            scope=ConsentScope.library(),
+            request=_fixture_request(restarted, "session", "stt", 0),
+        )
 
 
 def test_epoch_regrant_and_session_revocation_invalidate_permits(tmp_path: Path) -> None:
     with ConsentStore(tmp_path / "p.sqlite") as policy:
-        policy.grant("provider", URL, "audio")
+        policy.grant(
+            "provider",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         policy.bind_session("session")
-        permit = policy.permit("provider", URL, "audio", "a" * 64, session_id="session")
+        permit = policy.permit(
+            "provider",
+            URL,
+            "audio",
+            "a" * 64,
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+            expected_grant=_fixture_binding(policy, "provider", URL, "audio", "session", "stt", 0),
+        )
         policy.validate(permit)
-        policy.revoke("provider", URL, "audio")
-        policy.grant("provider", URL, "audio")
+        policy.revoke(
+            "provider",
+            URL,
+            "audio",
+            capability="stt",
+            scope=ConsentScope.library(),
+            policy_version=2,
+        )
+        policy.grant(
+            "provider",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         with pytest.raises(SecurityError):
             policy.validate(permit)
-        permit = policy.permit("provider", URL, "audio", "a" * 64, session_id="session")
+        permit = policy.permit(
+            "provider",
+            URL,
+            "audio",
+            "a" * 64,
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+            expected_grant=_fixture_binding(policy, "provider", URL, "audio", "session", "stt", 0),
+        )
         policy.revoke_session("session")
         with pytest.raises(SecurityError, match="SESSION_REVOKED"):
             policy.validate(permit)
@@ -100,11 +183,37 @@ def test_loopback_needs_explicit_verified_model_approval(tmp_path: Path) -> None
     target = "http://127.0.0.1:11434/api/generate"
     with ConsentStore(tmp_path / "p.sqlite") as policy:
         with pytest.raises(SecurityError, match="LOCAL_EXECUTION_UNVERIFIED"):
-            policy.grant("ollama", target, "text")
+            policy.grant(
+                "ollama",
+                target,
+                "text",
+                capability="stt",
+                scope=_fixture_grant_scope(policy),
+                policy_version=2,
+            )
         policy.approve_local_endpoint(target, "a" * 64)
-        policy.grant("ollama", target, "text")
-        assert policy.allowed("ollama", target, "text")
-        assert not policy.allowed("ollama", target + "x", "text")
+        policy.grant(
+            "ollama",
+            target,
+            "text",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        assert policy.allowed(
+            "ollama",
+            target,
+            "text",
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
+        assert not policy.allowed(
+            "ollama",
+            target + "x",
+            "text",
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
 
 
 def test_cost_unknown_restart_settlement_and_idempotency(tmp_path: Path) -> None:
@@ -350,14 +459,40 @@ def test_consent_clock_rollback_and_stale_execution_fail_closed(tmp_path: Path) 
     clock = [1000.0]
     db = tmp_path / "p.sqlite"
     with ConsentStore(db, clock=lambda: clock[0]) as policy:
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         clock[0] = 999
-        assert not policy.allowed("p", URL, "audio")
+        assert not policy.allowed(
+            "p",
+            URL,
+            "audio",
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
         with pytest.raises(SecurityError, match="CONSENT_CLOCK_INVALID"):
-            policy.grant("p", URL, "audio")
+            policy.grant(
+                "p",
+                URL,
+                "audio",
+                capability="stt",
+                scope=_fixture_grant_scope(policy),
+                policy_version=2,
+            )
         clock[0] = 1001
         with ConsentStore(db):
-            assert not policy.allowed("p", URL, "audio")
+            assert not policy.allowed(
+                "p",
+                URL,
+                "audio",
+                scope=ConsentScope.library(),
+                request=_fixture_request(policy, "session", "stt", 0),
+            )
 
 
 def test_native_vault_missing_and_failed_results_never_use_real_api(
@@ -398,7 +533,14 @@ def test_invalid_consent_ttl_never_creates_storage(tmp_path: Path, ttl: Any) -> 
 def test_identifiers_are_not_paths_or_free_text(tmp_path: Path, value: Any) -> None:
     with ConsentStore(tmp_path / "p.sqlite") as policy:
         with pytest.raises(SecurityError, match="INVALID_IDENTIFIER"):
-            policy.grant(value, URL, "audio")
+            policy.grant(
+                value,
+                URL,
+                "audio",
+                capability="stt",
+                scope=_fixture_grant_scope(policy),
+                policy_version=2,
+            )
 
 
 def test_local_attestation_and_send_permit_expire_independently(tmp_path: Path) -> None:
@@ -408,17 +550,51 @@ def test_local_attestation_and_send_permit_expire_independently(tmp_path: Path) 
         with pytest.raises(SecurityError, match="LOCAL_EXECUTION_UNVERIFIED"):
             policy.approve_local_endpoint(URL, "a" * 64)
         policy.approve_local_endpoint(target, "a" * 64, ttl_seconds=5)
-        policy.grant("ollama", target, "transcript")
+        policy.grant(
+            "ollama",
+            target,
+            "transcript",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         clock[0] += 6
-        assert not policy.allowed("ollama", target, "transcript")
-        policy.grant("p", URL, "audio")
-        permit = policy.permit("p", URL, "audio", "a" * 64)
+        assert not policy.allowed(
+            "ollama",
+            target,
+            "transcript",
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        permit = policy.permit(
+            "p",
+            URL,
+            "audio",
+            "a" * 64,
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+            expected_grant=_fixture_binding(policy, "p", URL, "audio", "session", "stt", 0),
+        )
         clock[0] += 31
         with pytest.raises(SecurityError, match="PERMIT_REVOKED"):
             policy.validate(permit)
         policy.close()
         policy.close()
-        assert not policy.allowed("p", URL, "audio")
+        assert not policy.allowed(
+            "p",
+            URL,
+            "audio",
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
 
 
 def test_ledger_limit_changes_missing_ids_and_conflicting_request_are_safe(tmp_path: Path) -> None:
@@ -564,10 +740,30 @@ def test_policy_contention_has_bounded_safe_failure_and_releases_fd(
             patch.setattr(msvcrt, "locking", busy)
             patch.setattr("recoryn.security._core.time.monotonic", lambda: next(instants))
             with pytest.raises(SecurityError, match="POLICY_BUSY"):
-                policy.grant("p", URL, "audio")
+                policy.grant(
+                    "p",
+                    URL,
+                    "audio",
+                    capability="stt",
+                    scope=ConsentScope.library(),
+                    policy_version=2,
+                )
         # The failed acquisition left no lock/depth that can bypass later policy checks.
-        policy.grant("p", URL, "audio")
-        assert policy.allowed("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        assert policy.allowed(
+            "p",
+            URL,
+            "audio",
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
 
 
 @pytest.mark.parametrize("deletion", ("intent", "pending", "tombstone"))
@@ -576,9 +772,24 @@ def test_session_deletion_evidence_blocks_already_issued_permit(
 ) -> None:
     db = tmp_path / "security.sqlite"
     with ConsentStore(db) as policy:
-        policy.grant("p", URL, "audio")
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         policy.bind_session("session")
-        token = policy.permit("p", URL, "audio", "0" * 64, session_id="session")
+        token = policy.permit(
+            "p",
+            URL,
+            "audio",
+            "0" * 64,
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+            expected_grant=_fixture_binding(policy, "p", URL, "audio", "session", "stt", 0),
+        )
         if deletion == "tombstone":
             with closing(sqlite3.connect(db)) as connection:
                 connection.execute("CREATE TABLE deleted_sessions(session_id TEXT PRIMARY KEY)")
@@ -704,25 +915,126 @@ def test_frozen_grant_bindings_do_not_expand_or_revive(tmp_path: Path) -> None:
     from dataclasses import replace
 
     with ConsentStore(tmp_path / "security.sqlite") as policy:
-        assert policy.capture_bindings("p", URL, ("audio", "transcript")) == ()
-        policy.grant("p", URL, "audio")
-        captured = policy.capture_bindings("p", URL, ("audio", "transcript"))
+        assert (
+            policy.capture_bindings(
+                "p",
+                URL,
+                ("audio", "transcript"),
+                scope=ConsentScope.library(),
+                request=_fixture_request(policy, "session", "stt", 0),
+            )
+            == ()
+        )
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
+        captured = policy.capture_bindings(
+            "p",
+            URL,
+            ("audio", "transcript"),
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
         assert len(captured) == 1 and captured[0].data_type == "audio"
         policy.validate_binding(captured[0])
-        policy.permit("p", URL, "audio", "0" * 64, expected_grant=captured[0])
-        policy.grant("p", URL, "transcript")
+        policy.permit(
+            "p",
+            URL,
+            "audio",
+            "0" * 64,
+            expected_grant=captured[0],
+            scope=ConsentScope.library(),
+            request=_fixture_request(policy, "session", "stt", 0),
+        )
+        policy.grant(
+            "p",
+            URL,
+            "transcript",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         assert len(captured) == 1
-        policy.revoke("p", URL, "audio")
-        policy.grant("p", URL, "audio")
+        policy.revoke(
+            "p", URL, "audio", capability="stt", scope=ConsentScope.library(), policy_version=2
+        )
+        policy.grant(
+            "p",
+            URL,
+            "audio",
+            capability="stt",
+            scope=_fixture_grant_scope(policy),
+            policy_version=2,
+        )
         with pytest.raises(SecurityError, match="PERMIT_REVOKED"):
             policy.validate_binding(captured[0])
         with pytest.raises(SecurityError, match="PERMIT_REVOKED"):
-            policy.permit("p", URL, "audio", "0" * 64, expected_grant=captured[0])
+            policy.permit(
+                "p",
+                URL,
+                "audio",
+                "0" * 64,
+                expected_grant=captured[0],
+                scope=ConsentScope.library(),
+                request=_fixture_request(policy, "session", "stt", 0),
+            )
         with pytest.raises(SecurityError, match="PERMIT_REVOKED"):
             policy.validate_binding(replace(captured[0], execution_id="different"))
         for scopes in ((), ("audio", "audio")):
             with pytest.raises(SecurityError, match="INVALID_CONSENT_SCOPES"):
-                policy.capture_bindings("p", URL, scopes)
+                policy.capture_bindings(
+                    "p",
+                    URL,
+                    scopes,
+                    scope=ConsentScope.library(),
+                    request=_fixture_request(policy, "session", "stt", 0),
+                )
         policy.close()
         with pytest.raises(SecurityError, match="CONSENT_STORE_CLOSED"):
-            policy.capture_bindings("p", URL, ("audio",))
+            policy.capture_bindings(
+                "p",
+                URL,
+                ("audio",),
+                scope=ConsentScope.library(),
+                request=_fixture_request(policy, "session", "stt", 0),
+            )
+
+
+# The older tests exercise revocation/transport, with an explicitly chosen library
+# grant. G02's separate cases exercise the default session-only permission.
+def _fixture_request(
+    policy: ConsentStore, session_id: str = "session", capability: str = "stt", generation: int = 0
+) -> ConsentRequest:
+    try:
+        policy.bind_session(session_id, generation)
+    except SecurityError:
+        pass  # Registration grants nothing; the tested API still checks the fence.
+    return ConsentRequest(session_id, generation, capability, 2)
+
+
+def _fixture_grant_scope(policy: ConsentStore) -> ConsentScope:
+    _fixture_request(policy)
+    return ConsentScope.library()
+
+
+def _fixture_binding(
+    policy: ConsentStore,
+    provider: str,
+    endpoint: str,
+    data_type: str,
+    session_id: str = "session",
+    capability: str = "stt",
+    generation: int = 0,
+):
+    request = _fixture_request(policy, session_id, capability, generation)
+    bindings = policy.capture_bindings(
+        provider, endpoint, (data_type,), scope=ConsentScope.library(), request=request
+    )
+    if not bindings:
+        raise SecurityError("CONSENT_REQUIRED")
+    return bindings[0]
