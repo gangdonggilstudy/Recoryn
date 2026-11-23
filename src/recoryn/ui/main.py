@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,7 @@ class MainWindow(QMainWindow):
         self.pool.setMaxThreadCount(1)  # control operations are serialized
         self._tasks: set[Task] = set()
         self.busy = False
+        self._capture_request: str | None = None
         self._started_at: float | None = None
         self._closing = False
         self._closing_requested = False
@@ -350,6 +352,9 @@ class MainWindow(QMainWindow):
         def failure(code: str) -> None:
             self._tasks.discard(task)
             self.busy = False
+            if self._capture_request is not None:
+                self._capture_request = None
+                self._show_capture_status()
             self.warning.setText("작업 실패: " + code + " · 보존된 원본과 복구 정보를 확인하세요.")
             self._update_controls()
             self._drain_power()
@@ -430,24 +435,28 @@ class MainWindow(QMainWindow):
             return self.recorder.start(selections)
 
         def started(session_id: str) -> None:
+            self._capture_request = None
             self._started_at = time.monotonic()
-            self.indicator.setText("● REC · 녹음 중 · 로컬 저장")
-            self.warning.setText("녹음 중입니다. AI 실패는 원본 저장을 중단시키지 않습니다.")
+            self._show_capture_status()
+            self.warning.setText("AI 실패는 원본 저장을 중단시키지 않습니다.")
             self.refresh_sessions()
 
+        self._capture_request = "STARTING"
+        self._show_capture_status()
         self.operation(start, started)
 
     def pause_resume(self) -> None:
-        if not self.recorder.session_id:
+        if self.busy or not self.recorder.session_id:
             return
         paused = self.library.get_session(self.recorder.session_id).state == SessionState.PAUSED
 
         def done(result: Any) -> None:
-            self.indicator.setText(
-                "● REC · 녹음 중" if paused else "Ⅱ 일시정지 · 중단 구간은 복원되지 않습니다"
-            )
+            self._capture_request = None
+            self._show_capture_status()
             self.refresh_sessions()
 
+        self._capture_request = "STARTING" if paused else "PAUSING"
+        self._show_capture_status()
         self.operation(self.power.resume if paused else self.recorder.pause, done)
 
     def stop_recording(self) -> None:
@@ -455,6 +464,7 @@ class MainWindow(QMainWindow):
             return
 
         def done(result: Any) -> None:
+            self._capture_request = None
             self.indicator.setText(
                 "■ 원본 확정 · manifest 동기화 대기 · AI 처리는 별도"
                 if result.get("manifest_sync_pending")
@@ -463,6 +473,8 @@ class MainWindow(QMainWindow):
             self._started_at = None
             self.refresh_sessions()
 
+        self._capture_request = "STOPPING"
+        self._show_capture_status()
         self.operation(self.recorder.stop, done)
 
     def refresh_sessions(self) -> None:
@@ -1070,6 +1082,37 @@ class MainWindow(QMainWindow):
         snapshot = service.runner.snapshot()
         return not snapshot["active"] and not snapshot["pending"]
 
+    def _show_capture_status(self) -> None:
+        from recoryn.app.status import capture_status
+
+        facts = self.recorder.capture_progress()
+        if self._capture_request == "STARTING" and facts.control_mode in {
+            "IDLE",
+            "ENDED",
+            "PAUSED",
+        }:
+            facts = replace(
+                facts,
+                control_mode="STARTING",
+                current_accepted_frames=0,
+                all_sources_ready=False,
+                accepting=False,
+            )
+        elif self._capture_request in {"PAUSING", "STOPPING"}:
+            facts = replace(facts, control_mode="STOPPING", accepting=False)
+        text = capture_status(facts)
+        if (
+            facts.control_mode == "PAUSED"
+            and self.power.resume_required
+            and not facts.ack_pending
+            and not facts.storage_failed
+            and not facts.failure
+        ):
+            text = "Ⅱ 절전 일시정지 · 재개는 사용자 동작이 필요합니다"
+        if self._capture_request == "PAUSING":
+            text = "일시정지 요청 · " + text
+        self.indicator.setText(text)
+
     def _tick(self) -> None:
         if self._closing_requested:
             return
@@ -1082,6 +1125,7 @@ class MainWindow(QMainWindow):
             self._alert("장치 상태: " + str(health[-1].get("code", "CAPTURE_WARNING")))
         recording = self.recorder.recording
         if recording is not None:
+            self._show_capture_status()
             capture_health = recording.health_snapshot()
             if capture_health["storage_failed"]:
                 self.indicator.setText("저장 오류 · 녹음 지속을 확인할 수 없습니다")

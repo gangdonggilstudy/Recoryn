@@ -293,7 +293,7 @@ def test_stale_ack_cannot_clear_replacement_reader_and_default_recovery_cannot_c
         job = jobs.create("local", "replacement-input")
         first = jobs.claim(job.job_id, "old")
         jobs.reader_started(first)
-        jobs.fail(job.job_id, first.attempt_id, first.fence, "RETRYABLE", retryable=True)
+        jobs.fail(job.job_id, first.attempt_id, first.fence, "TEMPORARY", retryable=True)
         with pytest.raises(StateConflict, match="LOCAL_READER_STILL_ACTIVE"):
             jobs.claim(job.job_id, "new")
         with pytest.raises(StateConflict, match="LOCAL_READERS_REQUIRE_EXCLUSIVE_RECOVERY"):

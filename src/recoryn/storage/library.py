@@ -109,6 +109,10 @@ class Library:
     file fsync and atomic rename do not promise physical power-loss durability.
     """
 
+    # Bind JobStore's database identity to its existing owner, never a second
+    # Library connection/OS lock or a copied journal/coordination implementation.
+    _job_authorities: weakref.WeakValueDictionary[Path, Library] = weakref.WeakValueDictionary()
+
     def __init__(self, root: Path) -> None:
         self.root = root_path(root)
         self._mutex = root_mutex(self.root)
@@ -184,6 +188,105 @@ class Library:
             except (ValueError, OSError):
                 self._intent_journal = None  # every intent query fails closed until valid
         register_intent_check(self.root, self._append_check)
+        with self._mutex:
+            self._job_authorities[self.db_path] = self
+
+    @staticmethod
+    @contextmanager
+    def job_authority(db_path: Path, session_id: str) -> Iterator[str]:
+        """Read-only authority lease for worker/control-lane Job transitions.
+
+        VALID, DB_ONLY, JOURNAL_ONLY, BOTH, TOMBSTONE, MISSING or
+        HISTORY_UNAVAILABLE. Call outside JobStore transactions/locks and outside
+        the GUI lane. Full journal validation uses the existing G-P15 parser off
+        root_mutex; the validated G-P15 index and one session's DB facts are then
+        held stable through the caller's short transaction. No media/DB writes,
+        new Library, private journal parser or additional root lock are created.
+        """
+        identifier(session_id)
+        owner = Library._job_authorities.get(db_path.absolute())
+        if owner is None:
+            yield "HISTORY_UNAVAILABLE"
+            return
+        for _ in range(3):
+            with owner._mutex:
+                version, cached = owner._history_version, owner._intent_journal
+                cached_stamp = owner._intent_stamp
+            journal = None
+            stamp = None
+            observed_version = version
+            try:
+                before = owner._journal_stamp()
+                observed_version, journal = owner._journal_prefetch()
+                stamp = owner._journal_stamp()
+                if before != stamp:
+                    continue
+            except (ValueError, OSError):
+                pass  # acknowledged failures still need a terminal Job record
+            # Potentially large comparisons/construction remain outside root_mutex.
+            reuse = (
+                journal is not None
+                and cached is not None
+                and journal == cached
+                and stamp == cached_stamp
+            )
+            names = (
+                frozenset(f"{sid}.json" for sid in journal) if journal is not None else frozenset()
+            )
+            settled = stamp is not None and time.time_ns() - stamp[2] > _STAMP_SETTLE_NS
+            with owner._mutex:
+                if owner._history_version != version or observed_version != version:
+                    continue  # re-prepare off the mutex; never re-read here
+                state = "HISTORY_UNAVAILABLE"
+                try:
+                    if (
+                        owner._connection is not None
+                        and not owner._missing_deletion_history
+                        and journal is not None
+                        and stamp == owner._journal_stamp()
+                    ):
+                        owner._check_version()
+                        # Reuse/refresh the one G-P15 index. It is a memo, not a
+                        # durable write; all O(N) work was done in the preflight.
+                        if not reuse or owner._intent_journal is not cached:
+                            owner._intent_journal = journal
+                            owner._intent_stamp = stamp
+                            owner._intent_names = names
+                        owner._intent_settled = settled
+                        if owner._intent_journal is None:
+                            raise ValidationError(_HISTORY_UNAVAILABLE)
+                        published = owner._intent_journal.get(session_id)
+                        row = owner._db.execute(
+                            "SELECT generation,status FROM deleted_sessions WHERE session_id=?",
+                            (session_id,),
+                        ).fetchone()
+                        session = owner._db.execute(
+                            "SELECT generation FROM sessions WHERE session_id=?", (session_id,)
+                        ).fetchone()
+                        if row is not None:
+                            integer(row[0], minimum=1)
+                            if row[1] not in _DELETION_STATUSES:
+                                raise ValidationError(_HISTORY_UNAVAILABLE)
+                        if session is not None:
+                            integer(session[0])
+                        generation = max(row[0] if row else 0, published or 0)
+                        if session is not None and generation and session[0] > generation:
+                            raise ValidationError(_HISTORY_UNAVAILABLE)
+                        if row is not None and row[1] == "DELETED_LOCAL":
+                            state = "TOMBSTONE"
+                        elif row is not None and published is not None:
+                            state = "BOTH"
+                        elif row is not None:
+                            state = "DB_ONLY"
+                        elif published is not None:
+                            state = "JOURNAL_ONLY"
+                        else:
+                            state = "VALID" if session is not None else "MISSING"
+                except (ValueError, OSError, sqlite3.Error):
+                    state = "HISTORY_UNAVAILABLE"
+                yield state
+                return
+        yield "HISTORY_UNAVAILABLE"  # concurrent intent changes never become absence
 
     def _acquire_lock(self) -> None:
         path = safe_path(self.root, ".writer.lock")
@@ -1755,6 +1858,8 @@ class Library:
         # Writers fall back to the durable check once this Library is gone.
         unregister_intent_check(self.root, self._append_check)
         with self._mutex:
+            if self._job_authorities.get(self.db_path) is self:
+                del self._job_authorities[self.db_path]
             try:
                 if self._connection is not None:
                     self._connection.close()

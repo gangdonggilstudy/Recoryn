@@ -12,6 +12,7 @@ from threading import RLock
 from uuid import uuid4
 
 from recoryn.domain import StateConflict, ValidationError
+from recoryn.jobs.failures import BLOCK_REASONS, CODE_GROUPS, failure_decision
 
 __all__ = ["AttemptRecord", "AttemptState", "JobRecord", "JobState", "JobStore"]
 
@@ -99,6 +100,7 @@ class JobStore:
         self._lock = RLock()
         self._closed = False
         self._in_publication = False
+        self._db_path = db_path.absolute()
         self._db = sqlite3.connect(
             db_path, timeout=5.0, isolation_level=None, check_same_thread=False
         )
@@ -196,6 +198,49 @@ class JobStore:
                 self._db.execute("ROLLBACK")
                 raise
 
+    @contextmanager
+    def _session_transaction(self, job_id: str, *, acknowledgement: bool = False) -> Iterator[bool]:
+        # Copy immutable binding before asking storage for authority: root -> Job
+        # ordering, never Job transaction/lock -> journal I/O/root mutex.
+        with self._lock:
+            self._ensure_open()
+            row = self._db.execute(
+                "SELECT session_id FROM job_sessions WHERE job_id=?", (job_id,)
+            ).fetchone()
+            session_id = row[0] if row is not None else None
+            library_schema = self._db.execute("PRAGMA user_version").fetchone()[0] != 0
+
+        @contextmanager
+        def transaction(valid: bool) -> Iterator[bool]:
+            with self._transaction():
+                current = self._db.execute(
+                    "SELECT session_id FROM job_sessions WHERE job_id=?", (job_id,)
+                ).fetchone()
+                if (current[0] if current is not None else None) != session_id:
+                    raise StateConflict("JOB_VERSION_CHANGED")
+                yield valid
+
+        if session_id is None or not library_schema:
+            # Standalone Job databases retain their existing DB-only contract.
+            with transaction(True) as valid:
+                yield valid
+            return
+        from recoryn.storage import Library
+
+        with Library.job_authority(self._db_path, session_id) as authority:
+            valid = authority == "VALID"
+            if not acknowledgement and not valid:
+                code = (
+                    "DELETION_HISTORY_UNAVAILABLE"
+                    if authority == "HISTORY_UNAVAILABLE"
+                    else "JOB_SESSION_MISSING"
+                    if authority == "MISSING"
+                    else "JOB_SESSION_DELETED"
+                )
+                raise StateConflict(code)
+            with transaction(valid) as valid:
+                yield valid
+
     def _get(self, job_id: str) -> JobRecord:
         row = self._db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         if row is None:
@@ -271,7 +316,7 @@ class JobStore:
     def claim(self, job_id: str, owner: str) -> AttemptRecord:
         _text(job_id, "job_id", 128)
         _text(owner, "owner", 256)
-        with self._transaction():
+        with self._session_transaction(job_id):
             job = self._get(job_id)
             self._session_live(job_id)
             reader = self._db.execute(
@@ -340,7 +385,9 @@ class JobStore:
         Only one physical task may use the current attempt. This receipt is not
         a remote outcome and does not authorize publication or detached readers.
         """
-        with self._transaction():
+        if not isinstance(attempt, AttemptRecord):
+            raise ValidationError("READER_ATTEMPT_REQUIRED")
+        with self._session_transaction(attempt.job_id):
             self._reader_identity(attempt)
             self._active(attempt.job_id, attempt.attempt_id, attempt.fence)
             self._db.execute(
@@ -414,7 +461,55 @@ class JobStore:
             )
             return self._event(job_id)
 
-    def resume(self, job_id: str) -> JobRecord:
+    def block_pending(
+        self, job_id: str, reason: str, error_code: str, *, expected_version: int
+    ) -> JobRecord:
+        """Record a known preparation refusal without inventing an Attempt."""
+        _text(job_id, "job_id", 128)
+        self._version(expected_version)
+        if type(reason) is not str or reason not in BLOCK_REASONS:
+            raise ValidationError("BLOCK_REASON_INVALID")
+        if type(error_code) is not str or error_code not in CODE_GROUPS:
+            raise ValidationError("BLOCK_REASON_INVALID")
+        if CODE_GROUPS[error_code] != reason:
+            raise ValidationError("BLOCK_REASON_MISMATCH")
+        with self._session_transaction(job_id):
+            job = self._get(job_id)
+            self._session_live(job_id)
+            if job.state_version != expected_version:
+                raise StateConflict("JOB_VERSION_CHANGED")
+            if job.state != JobState.QUEUED or job.cancel_requested:
+                raise StateConflict("JOB_NOT_BLOCKABLE")
+            self._reader_inactive(job)
+            self._db.execute(
+                "UPDATE jobs SET state='BLOCKED',blocked_reason=?,error_code=?,owner=NULL,"
+                "fence=fence+1,state_version=state_version+1 WHERE job_id=?",
+                (reason, error_code, job_id),
+            )
+            return self._event(job_id)
+
+    @staticmethod
+    def _version(value: object) -> None:
+        if type(value) is not int or not 0 <= value < 2**63:
+            raise ValidationError("INVALID_JOB_VERSION")
+
+    def _reader_inactive(self, job: JobRecord) -> None:
+        reader = self._db.execute(
+            "SELECT active FROM job_local_readers WHERE job_id=?", (job.job_id,)
+        ).fetchone()
+        if (reader is not None and reader[0]) or (
+            reader is None and (job.attempt_id is not None or job.attempt_count != 0)
+        ):
+            raise StateConflict("LOCAL_READER_ACK_REQUIRED")
+        if job.attempt_id is not None:
+            attempt = self._db.execute(
+                "SELECT state FROM attempts WHERE attempt_id=? AND job_id=?",
+                (job.attempt_id, job.job_id),
+            ).fetchone()
+            if attempt is None or attempt[0] == "RUNNING":
+                raise StateConflict("LOCAL_READER_ACK_REQUIRED")
+
+    def resume(self, job_id: str, *, expected_version: int | None = None) -> JobRecord:
         """Explicitly retry known blocked work after caller policy revalidation.
 
         This does not grant consent/budget or settle remote outcomes. UNKNOWN
@@ -423,9 +518,13 @@ class JobStore:
         receipt. Attempts/checkpoints/history and the three-attempt cap remain.
         """
         _text(job_id, "job_id", 128)
-        with self._transaction():
+        if expected_version is not None:
+            self._version(expected_version)
+        with self._session_transaction(job_id):
             job = self._get(job_id)
             self._session_live(job_id)
+            if expected_version is not None and job.state_version != expected_version:
+                raise StateConflict("JOB_VERSION_CHANGED")
             if (
                 job.state != JobState.BLOCKED
                 or job.blocked_reason
@@ -434,13 +533,7 @@ class JobStore:
                 or job.attempt_count >= self.MAX_ATTEMPTS
             ):
                 raise StateConflict("JOB_NOT_RESUMABLE")
-            reader = self._db.execute(
-                "SELECT active FROM job_local_readers WHERE job_id=?", (job_id,)
-            ).fetchone()
-            if (reader is not None and reader[0]) or (
-                reader is None and (job.attempt_id is not None or job.attempt_count != 0)
-            ):
-                raise StateConflict("LOCAL_READER_ACK_REQUIRED")
+            self._reader_inactive(job)
             self._db.execute(
                 "UPDATE jobs SET state='QUEUED',blocked_reason=NULL,error_code=NULL,owner=NULL, "
                 "fence=fence+1,state_version=state_version+1 WHERE job_id=?",
@@ -686,29 +779,23 @@ class JobStore:
         _text(error_code, "error_code", 128)
         if type(retryable) is not bool or type(outcome_known) is not bool:
             raise ValidationError("retryable and outcome_known must be bool")
-        with self._transaction():
+        with self._session_transaction(job_id, acknowledgement=True) as authority_valid:
             # Retiring an authorized attempt writes no content. Permit failure
             # acknowledgement after deletion so cleanup cannot remain RUNNING.
             job = self._active(job_id, attempt_id, fence, check_session=False)
+            session_valid = authority_valid
             try:
                 self._session_live(job_id)
             except StateConflict:
                 # Deletion outranks local retry, while remote UNKNOWN remains
                 # UNKNOWN below until it can be reconciled without new dispatch.
-                retryable = False
-            if not outcome_known or error_code == "REMOTE_OUTCOME_UNKNOWN":
-                state, attempt_state, reason = (
-                    JobState.BLOCKED,
-                    AttemptState.UNKNOWN,
-                    "REMOTE_UNKNOWN",
-                )
-            else:
-                state = (
-                    JobState.BACKOFF
-                    if retryable and job.attempt_count < self.MAX_ATTEMPTS
-                    else JobState.FAILED
-                )
-                attempt_state, reason = AttemptState.FAILED, None
+                session_valid = False
+            decision = failure_decision(
+                error_code, retryable, outcome_known, job.attempt_count, session_valid=session_valid
+            )
+            state = JobState(decision.state)
+            attempt_state = AttemptState(decision.attempt_state)
+            reason = decision.blocked_reason
             self._db.execute(
                 "UPDATE attempts SET state=?, error_code=? WHERE attempt_id=?",
                 (attempt_state.value, error_code, attempt_id),

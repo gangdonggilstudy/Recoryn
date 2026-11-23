@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -301,6 +301,27 @@ class PrivacyPanel(QWidget):
                 setting.valueChanged.connect(lambda value, k=kind: self._changed(k))
             self._show_scope(kind)
             self._cost_unavailable(kind)
+
+    def focus_blocked_action(self, kind: str, action_id: str) -> None:
+        """Navigation only: no grant, vault read, cost reservation or execution."""
+        controls = self.controls.get(kind)
+        if controls is None:
+            return
+        target = {
+            "consent": controls.scope,
+            "auth": controls.key,
+            "budget": controls.per_request,
+            "price": controls.quote_info,
+            "clock": controls.reset_clock,
+            "cost_history": controls.requests,
+            "model": controls.model,
+            "resource": controls.model,
+        }.get(action_id)
+        if target is not None:
+            if action_id == "price":
+                target.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            target.setFocus()
+            controls.ensurePolished()
 
     def select_session(self, session_id: str | None) -> None:
         previous = self._selection_origin if self._selection_pending else self._selected_session

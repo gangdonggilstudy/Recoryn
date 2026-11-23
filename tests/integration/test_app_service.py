@@ -198,7 +198,8 @@ def test_job_failure_and_cancel_do_not_end_recording(tmp_path: Path) -> None:
                 job = jobs.create("transcribe", "p04-ai-input")
                 attempt = jobs.claim(job.job_id, "failing-worker")
                 jobs.fail(job.job_id, attempt.attempt_id, attempt.fence, "OOM")
-                assert jobs.get(job.job_id).state is JobState.FAILED
+                assert jobs.get(job.job_id).state is JobState.BLOCKED
+                assert jobs.get(job.job_id).blocked_reason == "RESOURCE"
                 cancelled = jobs.create("summarize", "p04-summary-input")
                 jobs.cancel(cancelled.job_id)
             assert library.get_session(service.session_id).state is SessionState.RECORDING

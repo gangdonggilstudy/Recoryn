@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from recoryn.app.status import AIStatus
 from recoryn.content import ContentStore
 
 
@@ -40,6 +41,8 @@ class ContentPanel(QWidget):
     retrySummaryRequested = Signal(str)
     diarizeRequested = Signal()
     seekRequested = Signal(str, int, str)
+    blockedOpenRequested = Signal()
+    blockedContinueRequested = Signal()
 
     def __init__(self, store: ContentStore, operation: Callable[..., Any]) -> None:
         super().__init__()
@@ -59,6 +62,8 @@ class ContentPanel(QWidget):
             ("AI 작업 취소", self.cancelRequested),
         ):
             button = QPushButton(text)
+            if text == "전체 전사 실행":
+                self.transcribe_button = button
             button.clicked.connect(signal.emit)
             actions.addWidget(button)
         self.search = QLineEdit()
@@ -86,6 +91,17 @@ class ContentPanel(QWidget):
         self.job_status.setWordWrap(True)
         self.job_status.setAccessibleName("AI 작업·취소·원격 결과 상태")
         layout.addWidget(self.job_status)
+        blocked_actions = QHBoxLayout()
+        self.blocked_open = QPushButton("설정 위치 확인")
+        self.blocked_open.setAccessibleName("AI 차단 사유의 설정 위치 확인; 자동 실행 안 함")
+        self.blocked_continue = QPushButton("조건 다시 확인 후 계속")
+        self.blocked_continue.setAccessibleName("현재 선택의 같은 AI 작업 조건을 다시 확인 후 계속")
+        self.blocked_open.clicked.connect(self.blockedOpenRequested.emit)
+        self.blocked_continue.clicked.connect(self.blockedContinueRequested.emit)
+        for button in (self.blocked_open, self.blocked_continue):
+            button.setEnabled(False)
+            blocked_actions.addWidget(button)
+        layout.addLayout(blocked_actions)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(
             ["시작", "전사문 (편집 시 새 버전)", "근거", "트랙 / 화자"]
@@ -138,7 +154,14 @@ class ContentPanel(QWidget):
         diarization.addWidget(speakers)
         layout.addLayout(diarization)
 
+    def show_ai_status(self, status: AIStatus) -> None:
+        self.job_status.setText(status.text)
+        self.blocked_open.setEnabled(status.action_id is not None)
+        self.blocked_continue.setEnabled(status.can_continue)
+
     def load(self, session_id: str) -> None:
+        if self.session_id != session_id:
+            self.show_ai_status(AIStatus("AI 대기 · 녹음 조작과 독립적으로 실행합니다."))
         same_session = self.session_id == session_id
         if same_session and (
             self.table.state() == QAbstractItemView.State.EditingState

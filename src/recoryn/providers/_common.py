@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from recoryn.jobs.failures import BOUNDARY_CODES, normalize_failure
 from recoryn.security.cost import COST_CODES, CostRequest, cost_headers, wire_api_version
 
 from .contracts import (
@@ -208,15 +209,25 @@ class Run:
                 )
                 reservation = self.context.reservation_factory(cost_request)
             except Exception as exc:
-                code = getattr(exc, "code", None)
-                if code in COST_CODES or code in {
-                    "BUDGET_REQUIRED",
-                    "BUDGET_EXCEEDED",
-                    "BUDGET_POLICY_CHANGED",
-                    "RESERVATION_CONFLICT",
-                    "LEDGER_ROLLBACK_DETECTED",
-                }:
-                    raise ProviderError(str(code), outcome_known=True) from None
+                failure = normalize_failure(exc)
+                code = failure.code
+                if (
+                    code in BOUNDARY_CODES
+                    or code in COST_CODES
+                    or code
+                    in {
+                        "BUDGET_REQUIRED",
+                        "BUDGET_EXCEEDED",
+                        "BUDGET_POLICY_CHANGED",
+                        "RESERVATION_CONFLICT",
+                        "LEDGER_ROLLBACK_DETECTED",
+                    }
+                ):
+                    raise ProviderError(
+                        code, retryable=failure.retryable, outcome_known=failure.outcome_known
+                    ) from None
+                if not failure.outcome_known:
+                    raise ProviderError("REMOTE_OUTCOME_UNKNOWN", outcome_known=False) from None
                 raise ProviderError("BUDGET_BLOCKED") from None
         if reservation is not None:
             if (
@@ -264,14 +275,16 @@ class Run:
                 "LEDGER_ROLLBACK_DETECTED",
                 "RESERVATION_NOT_DISPATCHABLE",
             }
-            code = getattr(exc, "code", None)
+            failure = normalize_failure(exc, remote_boundary=True)
+            code = failure.code
+            safe_codes.update(BOUNDARY_CODES)
             safe_codes.update(COST_CODES)
             safe_codes.update(
                 {"BUDGET_POLICY_CHANGED", "RESERVATION_CONFLICT", "SETTLEMENT_CONFLICT"}
             )
             if isinstance(code, str) and code in safe_codes:
                 raise ProviderError(
-                    code, outcome_known=getattr(exc, "outcome_known", False) is True
+                    code, retryable=failure.retryable, outcome_known=failure.outcome_known
                 ) from None
             raise ProviderError("REMOTE_OUTCOME_UNKNOWN", outcome_known=False) from None
         self.check()

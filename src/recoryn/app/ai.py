@@ -90,34 +90,54 @@ class AIService:
         self._admission_lock = threading.RLock()
         self._admitted: set[str] = set()
         self._closed = False
+        self.runner.on_admission_refused = self._admission_refused
         self.runner.start()
 
-    def _admit(self, session_id: str, kind: str, input_key: str) -> tuple[JobRecord, bool, bool]:
+    def _admission_refused(self, job_id: str) -> None:
+        # No attempt/read/send was admitted. A later explicit request must build
+        # fresh bindings and pass the canonical authority again, using the same
+        # durable QUEUED intent rather than being merged with an absent worker.
+        with self._admission_lock:
+            self._admitted.discard(job_id)
+
+    def _admit(
+        self,
+        session_id: str,
+        kind: str,
+        input_key: str,
+        *,
+        expected_job_id: str | None = None,
+        expected_job_version: int | None = None,
+    ) -> tuple[JobRecord, bool, bool]:
         with self._admission_lock:
             if self._closed:
                 raise StateConflict("AI_SERVICE_CLOSED")
-            requested = uuid4().hex
-            job = self.jobs.create(kind, input_key, job_id=requested)
-            created = job.job_id == requested
-            self.jobs.bind_session(job.job_id, session_id)
-            if job.state.value == "BLOCKED" and job.blocked_reason in {
-                "CONSENT",
-                "AUTH",
-                "RESOURCE",
-                "BUDGET",
-                "CAPABILITY",
-                "ABANDONED",
-            }:
-                job = self.jobs.resume(job.job_id)
+            if expected_job_id is not None:
+                job = self.jobs.get(expected_job_id)
+                if (
+                    expected_job_version is None
+                    or job.kind != kind
+                    or job.input_key != input_key
+                    or job.job_id
+                    not in {item.job_id for item in self.jobs.list_for_session(session_id)}
+                ):
+                    raise StateConflict("CONTINUE_PLAN_CHANGED")
+                job = self.jobs.resume(job.job_id, expected_version=expected_job_version)
                 self._admitted.discard(job.job_id)
+                created = False
+            else:
+                if expected_job_version is not None:
+                    raise StateConflict("CONTINUE_PLAN_CHANGED")
+                requested = uuid4().hex
+                job = self.jobs.create(kind, input_key, job_id=requested)
+                created = job.job_id == requested
+            self.jobs.bind_session(job.job_id, session_id)
             group = self._session_jobs.get(session_id)
             if group is None:
                 group = set()
                 self._session_jobs[session_id] = group
             group.add(job.job_id)
-            runnable = job.state.value in {"QUEUED", "BACKOFF"} or (
-                job.state.value == "BLOCKED" and job.blocked_reason == "ABANDONED"
-            )
+            runnable = job.state.value in {"QUEUED", "BACKOFF"}
             if not runnable or job.job_id in self._admitted:
                 return job, False, created
             self._admitted.add(job.job_id)
@@ -187,6 +207,8 @@ class AIService:
         chunk_ids: frozenset[str] | None = None,
         origin_ns: int | None = None,
         request_nonce: str | None = None,
+        expected_job_id: str | None = None,
+        expected_job_version: int | None = None,
     ) -> str:
         state = self.library.get_session(session_id).state
         if not provisional and state != SessionState.FINALIZED:
@@ -219,6 +241,8 @@ class AIService:
             _key(
                 [session_id, snapshot, origin_ns, config_key, language, provisional, request_nonce]
             ),
+            expected_job_id=expected_job_id,
+            expected_job_version=expected_job_version,
         )
         if not admitted:
             return job.job_id
@@ -445,6 +469,8 @@ class AIService:
         template: str = "meeting",
         context_factory: Callable[[threading.Event], ExecutionContext] | None = None,
         request_nonce: str | None = None,
+        expected_job_id: str | None = None,
+        expected_job_version: int | None = None,
     ) -> str:
         transcript = self.content.active_transcript(session_id)
         if not transcript or not transcript["complete"]:
@@ -503,6 +529,8 @@ class AIService:
             session_id,
             "summarization",
             _key([session_id, revision_id, config_key, template, request_nonce]),
+            expected_job_id=expected_job_id,
+            expected_job_version=expected_job_version,
         )
         if not admitted:
             # A request merged into an existing job is still the user's latest

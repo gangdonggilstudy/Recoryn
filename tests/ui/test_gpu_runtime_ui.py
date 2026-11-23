@@ -179,7 +179,8 @@ def test_runtime_failure_is_tracked_per_install_in_this_run_only(world: Any) -> 
     plan.fail_gpu = True
     first = run(world, window)
     assert plan.created[-1].device == "cuda" and plan.created[-1].gpu_runtime is not None
-    assert first.state.value == "FAILED"
+    assert first.state.value == "BLOCKED"
+    assert first.blocked_reason == "RESOURCE"
     plan.fail_gpu = False
     run(world, window)
     assert plan.created[-1].device == "cpu"  # this install failed in this run

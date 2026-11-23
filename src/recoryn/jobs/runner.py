@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import re
 import threading
 import time
 from collections import deque
@@ -14,6 +13,7 @@ from typing import Any
 from recoryn.domain import StateConflict, ValidationError
 
 from . import AttemptRecord, JobRecord, JobState, JobStore
+from .failures import normalize_failure
 
 Task = Callable[[AttemptRecord, threading.Event], str]
 
@@ -65,6 +65,22 @@ class BoundedRunner:
         }
         self._last_error: str | None = None
         self._reader_ack_error: str | None = None
+        self._admission_errors: dict[str, str] = {}
+        self.on_admission_refused: Callable[[str], None] | None = None
+
+    def admission_error(self, job_id: str) -> str | None:
+        """Bounded display metadata, never permission to claim or resume work."""
+        with self._condition:
+            return self._admission_errors.get(job_id)
+
+    def _record_admission_refusal(self, job_id: str) -> None:
+        with self._condition:
+            self._admission_errors.pop(job_id, None)
+            self._admission_errors[job_id] = "DELETION_HISTORY_UNAVAILABLE"
+            while len(self._admission_errors) > 256:
+                self._admission_errors.pop(next(iter(self._admission_errors)))
+        if self.on_admission_refused is not None:
+            self.on_admission_refused(job_id)
 
     @property
     def running(self) -> bool:
@@ -116,6 +132,7 @@ class BoundedRunner:
             ):
                 return False
             self._queue.append(_Work(job_id, task, threading.Event()))
+            self._admission_errors.pop(job_id, None)
             self._counts["submitted"] += 1
             self._counts["high_water"] = max(self._counts["high_water"], len(self._queue))
             self._condition.notify()
@@ -181,21 +198,22 @@ class BoundedRunner:
 
     @staticmethod
     def _failure(exc: Exception) -> tuple[str, bool, bool]:
-        code = getattr(exc, "code", "TASK_FAILED")
-        if not isinstance(code, str) or re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code) is None:
-            code = "TASK_FAILED"
-        return (
-            code,
-            getattr(exc, "retryable", False) is True,
-            getattr(exc, "outcome_known", True) is True,
-        )
+        failure = normalize_failure(exc)
+        return failure.code, failure.retryable, failure.outcome_known
 
     def _execute(self, item: _Work) -> None:
+        attempt: AttemptRecord | None = None
         try:
             while not item.cancel.is_set():
+                attempt = None
                 attempt = self.jobs.claim(item.job_id, self.owner)
                 try:
-                    self.jobs.reader_started(attempt)
+                    try:
+                        self.jobs.reader_started(attempt)
+                    except StateConflict as error:
+                        if error.args == ("DELETION_HISTORY_UNAVAILABLE",):
+                            self._record_admission_refusal(item.job_id)
+                        raise
                     task_error: BaseException | None = None
                     try:
                         result_ref = item.task(attempt, item.cancel)
@@ -245,9 +263,18 @@ class BoundedRunner:
                     # unbounded queue/timer or a blocking put into a full queue.
                     if item.cancel.wait(min(1.0, self.RETRY_DELAY * 2 ** (attempt.attempt_no - 1))):
                         break
-        except (StateConflict, KeyError):
+        except (StateConflict, KeyError) as error:
+            refused = (
+                attempt is None
+                and isinstance(error, StateConflict)
+                and error.args == ("DELETION_HISTORY_UNAVAILABLE",)
+            )
             with self._condition:
-                self._last_error = "JOB_UNAVAILABLE"
+                self._last_error = "DELETION_HISTORY_UNAVAILABLE" if refused else "JOB_UNAVAILABLE"
+            # claim() has unwound its authority/DB locks. Cache release must not
+            # wait for an app admission lock while holding the runner condition.
+            if refused:
+                self._record_admission_refusal(item.job_id)
         except Exception:
             with self._condition:
                 self._last_error = "RUNNER_STORE_FAILED"

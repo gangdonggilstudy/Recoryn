@@ -9,6 +9,7 @@ from functools import partial
 from typing import Any, Protocol
 
 from recoryn.app.recording import RecordingError, RecordingService
+from recoryn.app.status import CaptureProgress
 from recoryn.domain import AudioFormat, PCMBlock, SessionState, StateConflict
 from recoryn.storage import Library
 
@@ -59,6 +60,46 @@ class DesktopRecorder:
         self._meters: dict[str, PCMBlock] = {}
         self._health: list[dict[str, Any]] = []
         self._native_formats: dict[str, dict[str, Any]] = {}
+        self._run_generation = 0
+        self._control_mode = "IDLE"
+        self._ready: set[str] = set()
+        self._accepted_frames = 0
+        self._failure = False
+        self._ack_pending = False
+        self._manifest_sync_pending = False
+
+    def _begin_run(self) -> None:
+        with self._lock:
+            self._run_generation += 1
+            self._control_mode = "STARTING"
+            self._ready.clear()
+            self._accepted_frames = 0
+            self._failure = self._ack_pending = False
+            self._manifest_sync_pending = False
+
+    def capture_progress(self) -> CaptureProgress:
+        # Never wait for the recording gate while holding the callback lock.
+        with self._lock:
+            recorder, generation = self.recording, self._run_generation
+        if recorder is None:
+            return CaptureProgress()
+        health = recorder.health_snapshot()
+        epochs = tuple(sorted(recorder.epochs.items()))
+        with self._lock:
+            return CaptureProgress(
+                recorder.session_id,
+                generation,
+                epochs,
+                self._control_mode,
+                self._ready == {item.track_id for item in self._selections},
+                self._accepted_frames,
+                bool(health["accepting"]),
+                bool(health["storage_failed"]),
+                recorder is self.recording and generation == self._run_generation,
+                self._failure,
+                self._ack_pending,
+                self._manifest_sync_pending,
+            )
 
     @property
     def session_id(self) -> str | None:
@@ -83,25 +124,55 @@ class DesktopRecorder:
             self._meters.clear()
             self._health.clear()
             self._native_formats.clear()
-        self.recording = RecordingService(
-            self.library, {item.track_id: item.format for item in selections}
-        )
-        self.recording.start()
+        self._begin_run()
+        try:
+            self.recording = RecordingService(
+                self.library, {item.track_id: item.format for item in selections}
+            )
+            self.recording.start()
+        except Exception:
+            with self._lock:
+                self._control_mode = "START_FAILED"
+            raise
         self._open_sources()
         return self.recording.session_id
 
-    def _submit(self, block: PCMBlock) -> bool:
-        recorder = self.recording
+    def _submit(self, block: PCMBlock, *, generation: int | None = None) -> bool:
+        with self._lock:
+            recorder, run = self.recording, self._run_generation
         if recorder is None:
             return False
+        if (
+            generation is not None
+            and generation != run
+            or block.session_id != recorder.session_id
+            or recorder.epochs.get(block.track_id) != block.epoch_id
+        ):
+            return False
+        # Epoch access waits for RecordingService._gate, outside the callback lock.
+        # Stop/pause only suppress REC: in-flight PCM still belongs to the open epoch.
+        with self._lock:
+            if run != self._run_generation or recorder is not self.recording:
+                return False
         accepted = recorder.submit(block)
         if not accepted and recorder.health_snapshot()["storage_failed"]:
             raise RecordingError("STORAGE_FAILED_CAPTURE_STOP")
         with self._lock:
+            if run != self._run_generation or recorder is not self.recording:
+                return accepted
+            if accepted:
+                self._accepted_frames += block.frame_count
             self._meters[block.track_id] = block
         return accepted
 
-    def _on_health(self, track_id: str, event: dict[str, Any]) -> None:
+    def _on_health(
+        self, track_id: str, event: dict[str, Any], *, generation: int | None = None
+    ) -> None:
+        with self._lock:
+            if generation is not None and generation != self._run_generation:
+                return
+            if event.get("event") == "error" and self._control_mode in {"STARTING", "ACTIVE"}:
+                self._failure = True
         if event.get("event") == "ready":
             # Preserve trusted format metadata separately from warning events.
             # AudioFormat intentionally retains the original PCM core contract.
@@ -140,6 +211,7 @@ class DesktopRecorder:
 
     def _open_sources(self) -> None:
         assert self.recording is not None
+        generation = self._run_generation
         try:
             for item in self._selections:
                 source = self._factory(item.device_id, item.loopback)
@@ -148,23 +220,39 @@ class DesktopRecorder:
                     self.recording.session_id,
                     item.track_id,
                     self.recording.epochs[item.track_id],
-                    self._submit,
-                    partial(self._on_health, item.track_id),
+                    partial(self._submit, generation=generation),
+                    partial(self._on_health, item.track_id, generation=generation),
                 )
                 if actual != item.format:
                     raise RecordingError("DEVICE_FORMAT_CHANGED")
+                with self._lock:
+                    if generation != self._run_generation or self._control_mode != "STARTING":
+                        return
+                    self._ready.add(item.track_id)
+            with self._lock:
+                if generation == self._run_generation and self._control_mode == "STARTING":
+                    self._control_mode = "ACTIVE"
         except Exception as error:
+            with self._lock:
+                self._control_mode = "STOPPING"
             # A source can start before a later source fails. Stop acknowledgements
             # remain necessary before draining or releasing the library lock.
             try:
                 self._close_sources()
                 self.recording.pause()
                 self._persist_backend_health()
+                with self._lock:
+                    self._control_mode = "PAUSED"
+                    self._ack_pending = False
             except Exception:
+                with self._lock:
+                    self._ack_pending = True
                 raise RecordingError("CAPTURE_START_FAILED_ACK_PENDING") from error
             raise RecordingError("CAPTURE_START_FAILED_MEDIA_PRESERVED") from error
 
     def _close_sources(self, timeout: float = 5.0) -> None:
+        with self._lock:
+            self._control_mode = "STOPPING"
         failed = False
         for source in self._sources.values():
             try:
@@ -172,6 +260,8 @@ class DesktopRecorder:
             except Exception:
                 failed = True
         if failed:
+            with self._lock:
+                self._ack_pending = True
             raise RecordingError("CAPTURE_ACK_PENDING")
         self._sources.clear()
         with self._lock:
@@ -189,13 +279,22 @@ class DesktopRecorder:
         if self.recording is None:
             raise StateConflict("NO_RECORDING")
         self._close_sources()
-        self.recording.pause()
-        self._persist_backend_health()
+        try:
+            self.recording.pause()
+            self._persist_backend_health()
+        except Exception:
+            with self._lock:
+                self._ack_pending = True
+            raise
+        with self._lock:
+            self._control_mode = "PAUSED"
+            self._ack_pending = False
 
     def resume(self) -> None:
         if self.recording is None:
             raise StateConflict("NO_RECORDING")
         self.recording.resume()
+        self._begin_run()
         self._open_sources()
 
     def stop(self) -> dict[str, Any]:
@@ -207,7 +306,17 @@ class DesktopRecorder:
                 "backend_events": list(self._health),
                 "native_formats": dict(self._native_formats),
             }
-        return self.recording.stop(health_extra=extra)
+        try:
+            result = self.recording.stop(health_extra=extra)
+        except Exception:
+            with self._lock:
+                self._ack_pending = True
+            raise
+        with self._lock:
+            self._control_mode = "ENDED"
+            self._ack_pending = False
+            self._manifest_sync_pending = result.get("manifest_sync_pending") is True
+        return result
 
     def observations(self) -> tuple[dict[str, PCMBlock], list[dict[str, Any]]]:
         with self._lock:

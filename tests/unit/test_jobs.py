@@ -824,12 +824,17 @@ def test_resume_known_blocked_preserves_identity_history_checkpoint_and_attempt_
             lambda connection: "fixed-checkpoint",
             complete=False,
         )
-        jobs.fail(job.job_id, attempt.attempt_id, attempt.fence, "KNOWN_FAILURE")
-        with closing(sqlite3.connect(path)) as db, db:
-            db.execute(
-                "UPDATE jobs SET state='BLOCKED',blocked_reason=? WHERE job_id=?",
-                (reason, job.job_id),
-            )
+        if reason == "ABANDONED":
+            jobs.recover_abandoned(coordinator_exclusive=True)
+        else:
+            code = {
+                "CONSENT": "CONSENT_REQUIRED",
+                "AUTH": "AUTH_REQUIRED",
+                "RESOURCE": "OOM",
+                "BUDGET": "BUDGET_REQUIRED",
+                "CAPABILITY": "CAPABILITY_UNSUPPORTED",
+            }[reason]
+            jobs.fail(job.job_id, attempt.attempt_id, attempt.fence, code)
         before = jobs.get(job.job_id)
         resumed = jobs.resume(job.job_id)
         assert resumed.state == JobState.QUEUED and resumed.blocked_reason is None
@@ -886,14 +891,17 @@ def test_resume_undispatched_known_block_and_deleted_session(tmp_path: Path) -> 
         library.create_session("session")
         job = jobs.create("STT", "input")
         jobs.bind_session(job.job_id, "session")
-        with closing(sqlite3.connect(library.db_path)) as db, db:
-            db.execute("UPDATE jobs SET state='BLOCKED',blocked_reason='CONSENT'")
+        jobs.block_pending(
+            job.job_id, "CONSENT", "CONSENT_REQUIRED", expected_version=job.state_version
+        )
         assert jobs.local_reader_active(job.job_id) is None
         assert jobs.resume(job.job_id).state == JobState.QUEUED
         with pytest.raises(StateConflict):
             jobs.resume(job.job_id)
-        with closing(sqlite3.connect(library.db_path)) as db, db:
-            db.execute("UPDATE jobs SET state='BLOCKED',blocked_reason='CONSENT'")
+        current = jobs.get(job.job_id)
+        jobs.block_pending(
+            job.job_id, "CONSENT", "CONSENT_REQUIRED", expected_version=current.state_version
+        )
         assert library.delete_session("session")["deleted"] is False
         with pytest.raises(StateConflict, match="SESSION_DELETED"):
             jobs.resume(job.job_id)

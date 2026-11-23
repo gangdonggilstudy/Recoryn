@@ -17,9 +17,11 @@ from PySide6.QtWidgets import QMessageBox
 
 from recoryn.app.ai import AIService
 from recoryn.app.inference import LocalSTTProcess
+from recoryn.app.status import EXECUTION_POLICY_ACTION, AIStatus, admission_status, ai_status
 from recoryn.content import ContentStore, Segment
 from recoryn.domain import AudioFormat, StateConflict
 from recoryn.jobs import JobStore
+from recoryn.jobs.failures import NormalizedFailure, normalize_failure
 from recoryn.providers import ExecutionContext, ProviderError
 from recoryn.storage._coordination import root_mutex
 from recoryn.storage._safe import mkdir, open_file, safe_path
@@ -64,6 +66,12 @@ class DesktopAI:
         self.panel.retrySummaryRequested.connect(self.retry_summary)
         self.panel.diarizeRequested.connect(self.diarize)
         self.panel.seekRequested.connect(self.seek)
+        self.panel.blockedOpenRequested.connect(self.open_blocked_action)
+        self.panel.blockedContinueRequested.connect(self.continue_blocked)
+        self._blocked_target: tuple[str, str, int, str] | None = None
+        self._preparation_action: tuple[str, str, str] | None = None
+        self._job_options: dict[str, tuple[str, str | None, str]] = {}
+        self._selected_ai_session: str | None = None
         self._last_snapshot = ""
         self.privacy: Any = None
 
@@ -73,17 +81,52 @@ class DesktopAI:
         done: Callable[[Any], None] | None = None,
         *,
         failed: Callable[[str], None] | None = None,
+        preparation_kind: str = "stt",
+        continuing: bool = False,
     ) -> bool:
         """AI preparation and editing never occupy the recording control lane."""
         if self.busy or self._shutting_down:
             return False
         self.busy = True
-        task = Task(action)
+        selected_at_start = self.window.selected_session()
+
+        def guarded() -> Any:
+            try:
+                return action()
+            except Exception as error:
+                if isinstance(error, StateConflict) and error.args == (
+                    "DELETION_HISTORY_UNAVAILABLE",
+                ):
+                    return NormalizedFailure(
+                        "DELETION_HISTORY_UNAVAILABLE",
+                        outcome_known=normalize_failure(error).outcome_known,
+                    )
+                normalized = normalize_failure(error)
+                if normalized.code != "TASK_FAILED":
+                    return normalized
+                if isinstance(error, StateConflict) and error.args == ("CONTINUE_PLAN_CHANGED",):
+                    return AIStatus("설정이 달라 새 작업 필요 · 기존 작업·결과 보존")
+                raise
+
+        task = Task(guarded)
         self._tasks.add(task)
 
         def finished(value: Any) -> None:
             self._tasks.discard(task)
             self.busy = False
+            if isinstance(value, (NormalizedFailure, AIStatus)):
+                if not self._shutting_down:
+                    if self.window.selected_session() == selected_at_start:
+                        self._show_preparation(
+                            value, kind=preparation_kind, preserve_job=continuing
+                        )
+                    if failed:
+                        failed(
+                            value.code
+                            if isinstance(value, NormalizedFailure)
+                            else "CONTINUE_PLAN_CHANGED"
+                        )
+                return
             if not self._shutting_down and done:
                 done(value)
 
@@ -125,9 +168,168 @@ class DesktopAI:
         return self.service
 
     def selection(self, session_id: str) -> None:
+        if getattr(self, "_selected_ai_session", None) != session_id:
+            self._blocked_target = self._preparation_action = None
+            self._selected_ai_session = session_id
         if self.privacy is not None:
             self.privacy.select_session(session_id)
         self.panel.load(session_id)
+
+    def _show_preparation(
+        self,
+        failure: NormalizedFailure | AIStatus,
+        *,
+        kind: str = "stt",
+        preserve_job: bool = False,
+    ) -> None:
+        status = (
+            ai_status(preparation=failure) if isinstance(failure, NormalizedFailure) else failure
+        )
+        if (
+            preserve_job
+            and isinstance(failure, NormalizedFailure)
+            and failure.outcome_known is True
+            and status.reason != "REMOTE_UNKNOWN"
+        ):
+            try:
+                job = self._current_blocked()
+                previous = ai_status(
+                    job,
+                    reader_active=self._history.local_reader_active(job.job_id),
+                    resource_acknowledged=self._resource_acknowledged(job),
+                )
+                action = status.action_id or previous.action_id
+                if self._blocked_target and action:
+                    self._blocked_target = (*self._blocked_target[:3], action)
+                    self.panel.show_ai_status(
+                        AIStatus(
+                            status.text + " · 기존 Job BLOCKED 유지",
+                            status.reason,
+                            action,
+                            previous.can_continue,
+                        )
+                    )
+                    return
+            except (StateConflict, KeyError):
+                pass
+        self._blocked_target = None
+        selected = self.window.selected_session()
+        self._preparation_action = (
+            (selected, kind, status.action_id) if selected and status.action_id else None
+        )
+        self.panel.show_ai_status(status)
+
+    def _current_blocked(self) -> Any:
+        target = self._blocked_target
+        if target is None or self.window.selected_session() != target[0]:
+            raise StateConflict("JOB_VERSION_CHANGED")
+        job = self._history.get(target[1])
+        if job.state_version != target[2] or job.state.value != "BLOCKED":
+            raise StateConflict("JOB_VERSION_CHANGED")
+        return job
+
+    def _resource_acknowledged(self, job: Any) -> bool:
+        # close() retains its handle on ACK failure; only successful closure
+        # removes it. A logical Job reader receipt alone is insufficient.
+        return job.error_code == "INFERENCE_ACK_PENDING" and getattr(self, "local", None) is None
+
+    def open_blocked_action(self) -> None:
+        """Only change the visible settings location, never authorization."""
+        if self._blocked_target is not None:
+            try:
+                job = self._current_blocked()
+            except (KeyError, StateConflict):
+                self.panel.show_ai_status(AIStatus("상태가 바뀌었습니다. 작업을 다시 선택하세요."))
+                return
+            status = ai_status(
+                job,
+                reader_active=self._history.local_reader_active(job.job_id),
+                resource_acknowledged=self._resource_acknowledged(job),
+            )
+            kind = "summary" if job.kind == "summarization" else "stt"
+            action = self._blocked_target[3] if self._blocked_target else status.action_id
+        elif self._preparation_action is not None:
+            session, kind, action = self._preparation_action
+            if session != self.window.selected_session():
+                return
+        else:
+            return
+        if action == "deletion_history":
+            self.window.tabs.setCurrentWidget(self.window.details)
+            note = (
+                "삭제 이력 확인 불가: 삭제 journal·저장 장치 상태를 확인하세요. "
+                "이력을 임의로 지우면 원본이 부활할 수 있습니다. 새 전송은 하지 않았습니다."
+            )
+            if not self.window.details.toPlainText().endswith(note):
+                self.window.details.appendPlainText(note)
+            self.window.details.setFocus()
+        elif action == "finalize":
+            self.window.tabs.setCurrentWidget(self.window.details)
+            target = (
+                self.window.finalize_button
+                if self.window.finalize_button.isEnabled()
+                else self.window.details
+            )
+            target.setFocus()
+        elif action == "transcription":
+            self.window.tabs.setCurrentWidget(self.panel)
+            self.panel.transcribe_button.setFocus()
+        elif action == "resource":
+            self.window.tabs.setCurrentWidget(self.window.model_panel)
+            self.window.model_panel.installed.setFocus()
+        elif action == EXECUTION_POLICY_ACTION:
+            policy = self.window.device_policy
+            parent = policy.parentWidget()
+            while parent is not None and self.window.tabs.indexOf(parent) < 0:
+                parent = parent.parentWidget()
+            if parent is not None:
+                self.window.tabs.setCurrentWidget(parent)
+            policy.setFocus()
+        elif action and self.privacy is not None:
+            self.window.tabs.setCurrentWidget(self.privacy)
+            self.privacy.focus_blocked_action(kind, action)
+
+    def continue_blocked(self) -> None:
+        if self.busy or self._shutting_down:
+            return
+        try:
+            job = self._current_blocked()
+            status = ai_status(
+                job,
+                reader_active=self._history.local_reader_active(job.job_id),
+                resource_acknowledged=self._resource_acknowledged(job),
+            )
+            if not status.can_continue or job.kind not in {
+                "transcription",
+                "streaming_transcription",
+                "summarization",
+            }:
+                return
+        except (StateConflict, KeyError):
+            self.panel.show_ai_status(AIStatus("상태가 바뀌었습니다. 작업을 다시 선택하세요."))
+            return
+        kind, nonce, template = self._job_options.get(
+            job.job_id,
+            (
+                "summary"
+                if job.kind == "summarization"
+                else "live"
+                if job.kind == "streaming_transcription"
+                else "stt",
+                None,
+                self.panel.templates.currentData(),
+            ),
+        )
+        expected = (job.job_id, job.state_version)
+        if kind == "summary":
+            self.summarize(template, expected=expected, nonce=nonce)
+        else:
+            self._transcribe(
+                session_id=self._blocked_target[0] if self._blocked_target else None,
+                provisional=kind == "live",
+                expected=expected,
+                nonce=nonce,
+            )
 
     @staticmethod
     def _context_factory(context: ExecutionContext) -> Any:
@@ -144,7 +346,13 @@ class DesktopAI:
         self._transcribe()
 
     def _transcribe(
-        self, *, session_id: str | None = None, provisional: bool = False, retry: bool = False
+        self,
+        *,
+        session_id: str | None = None,
+        provisional: bool = False,
+        retry: bool = False,
+        expected: tuple[str, int] | None = None,
+        nonce: str | None = None,
     ) -> None:
         window = self.window
         session_id = session_id or window.selected_session()
@@ -152,7 +360,11 @@ class DesktopAI:
             return
         fixed_session = session_id
         chunks = frozenset(item.chunk_id for item in window.library.chunks(session_id))
-        if provisional and (not chunks or self._live_snapshots.get(session_id) == chunks):
+        if (
+            provisional
+            and not expected
+            and (not chunks or self._live_snapshots.get(session_id) == chunks)
+        ):
             return
         try:
             if self.privacy is not None:
@@ -161,8 +373,8 @@ class DesktopAI:
                 config_key, gateway = execution.config_key, execution.gateway
             else:
                 config, context, config_key, gateway = None, ExecutionContext(), "local", None
-        except Exception:
-            self.panel.job_status.setText("전사 제공업체·권한·예산 설정을 확인하세요.")
+        except Exception as error:
+            self._show_preparation(normalize_failure(error), preserve_job=expected is not None)
             if provisional:
                 self._live_blocked.add(session_id)
             return
@@ -172,7 +384,10 @@ class DesktopAI:
         gpu_change_pending = bool(getattr(window.model_panel, "gpu_busy", False))
         preparation_cancel = threading.Event()
         self._preparation_cancel = preparation_cancel
-        nonce = uuid4().hex if retry else self._live_nonces.get(session_id) if provisional else None
+        if expected is None:
+            nonce = (
+                uuid4().hex if retry else self._live_nonces.get(session_id) if provisional else None
+            )
 
         def check_cancel() -> None:
             if preparation_cancel.is_set():
@@ -185,6 +400,8 @@ class DesktopAI:
                 "provisional": provisional,
                 "chunk_ids": chunks,
                 "request_nonce": nonce,
+                "expected_job_id": expected[0] if expected else None,
+                "expected_job_version": expected[1] if expected else None,
             }
             if config is None or config.provider_id == "faster_whisper":
                 if not model:
@@ -258,6 +475,10 @@ class DesktopAI:
             )
 
         def submitted(job_id: str) -> None:
+            self._last_snapshot = ""
+            self._job_options[job_id] = ("live" if provisional else "stt", nonce, "")
+            if expected:
+                self._live_blocked.discard(fixed_session)
             if provisional:
                 self._live_jobs[fixed_session] = job_id
                 self._live_snapshots[fixed_session] = chunks
@@ -269,9 +490,17 @@ class DesktopAI:
             submit,
             submitted,
             failed=lambda code: self._live_blocked.add(fixed_session) if provisional else None,
+            continuing=expected is not None,
         )
 
-    def summarize(self, template: str, *, retry: bool = False) -> None:
+    def summarize(
+        self,
+        template: str,
+        *,
+        retry: bool = False,
+        expected: tuple[str, int] | None = None,
+        nonce: str | None = None,
+    ) -> None:
         window = self.window
         session_id = window.selected_session()
         if session_id is None or self.busy or self.privacy is None:
@@ -286,10 +515,13 @@ class DesktopAI:
             execution = self.privacy.prepare_execution("summary", session_id, threading.Event())
             config, context = execution.config, execution.context
             config_key, gateway = execution.config_key, execution.gateway
-        except Exception:
-            self.panel.job_status.setText("요약 제공업체·권한·예산 설정을 확인하세요.")
+        except Exception as error:
+            self._show_preparation(
+                normalize_failure(error), kind="summary", preserve_job=expected is not None
+            )
             return
-        nonce = uuid4().hex if retry else None
+        if expected is None:
+            nonce = uuid4().hex if retry else None
         preparation_cancel = threading.Event()
         self._preparation_cancel = preparation_cancel
 
@@ -319,10 +551,17 @@ class DesktopAI:
                 template=template,
                 context_factory=self._context_factory(context),
                 request_nonce=nonce,
+                expected_job_id=expected[0] if expected else None,
+                expected_job_version=expected[1] if expected else None,
             )
 
+        def submitted(job_id: str) -> None:
+            self._last_snapshot = ""
+            self._job_options[job_id] = ("summary", nonce, template)
+            self.panel.job_status.setText("요약 작업 등록: " + job_id[:12])
+
         self.operation(
-            submit, lambda job_id: self.panel.job_status.setText("요약 작업 등록: " + job_id[:12])
+            submit, submitted, preparation_kind="summary", continuing=expected is not None
         )
 
     def _confirm_retry(self) -> bool:
@@ -636,8 +875,24 @@ class DesktopAI:
         self.window.model_panel.request_attestation_check()
         session_id = self.window.selected_session()
         if session_id:
-            jobs = self._history.list_for_session(session_id)
-            key = str([asdict(job) for job in jobs])
+            # Playback verification has its own status, and must not hide an AI
+            # condition the user still needs to resolve.
+            jobs = [
+                job
+                for job in self._history.list_for_session(session_id)
+                if job.kind
+                in {"transcription", "streaming_transcription", "summarization", "diarization"}
+            ]
+            reader = self._history.local_reader_active(jobs[-1].job_id) if jobs else None
+            resource_ack = self._resource_acknowledged(jobs[-1]) if jobs else False
+            service = getattr(self, "service", None)
+            read_refusal = getattr(getattr(service, "runner", None), "admission_error", None)
+            admission_error = (
+                read_refusal(jobs[-1].job_id) if callable(read_refusal) and jobs else None
+            )
+            key = str(
+                [session_id, [asdict(job) for job in jobs], reader, resource_ack, admission_error]
+            )
             if key != self._last_snapshot:
                 if not self.busy and not self.window.busy:
                     self._last_snapshot = key
@@ -645,13 +900,32 @@ class DesktopAI:
                 if jobs:
                     job = jobs[-1]
                     self.observe_gpu_failure()
-                    self.panel.job_status.setText(
-                        f"AI: {job.state.value} · {job.error_code or job.blocked_reason or ''}"
-                        + (
-                            " · 원격 처리·비용 미확인, 자동 재전송 없음. 명시 재실행만 가능합니다."
-                            if job.blocked_reason == "REMOTE_UNKNOWN"
-                            else ""
+                    status = ai_status(
+                        job, reader_active=reader, resource_acknowledged=resource_ack
+                    )
+                    if admission_error and job.state.value in {"QUEUED", "BACKOFF", "FAILED"}:
+                        status = admission_status(
+                            admission_error, failed=job.state.value == "FAILED"
                         )
+                    if job.kind == "diarization":
+                        status = AIStatus(status.text, status.reason, status.action_id, False)
+                    self._preparation_action = (
+                        (
+                            session_id,
+                            "summary" if job.kind == "summarization" else "stt",
+                            status.action_id,
+                        )
+                        if status.action_id and job.state.value != "BLOCKED"
+                        else None
+                    )
+                    self._blocked_target = (
+                        (session_id, job.job_id, job.state_version, status.action_id)
+                        if status.action_id and job.state.value == "BLOCKED"
+                        else None
+                    )
+                    self.panel.show_ai_status(status)
+                    self.panel.job_status.setText(
+                        status.text
                         + (
                             " · GPU 런타임으로 실행하지 못했습니다. 모델 관리 탭에서 상태를"
                             " 확인하세요."
