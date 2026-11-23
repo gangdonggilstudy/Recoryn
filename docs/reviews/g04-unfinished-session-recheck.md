@@ -644,3 +644,67 @@ harness LF `2b71f9e837c79ec740d12973129664304722af4303a3632370207290856e2d7d`, �
 ### R7-6. RECHECK 7 결론
 
 **GT-P03 수용 가능 / 새 OPEN 0 (S0 0 / S1 0 / S2 0 / S3 0).** G04-10 회귀(V1·V3)는 자연 실행과 느린 seal 모사 모두에서 검출되고, 회계 oracle은 수락 블록 손실(A1)과 비QUEUE_DROP 거부(A2)를 검출한다. 블록별 payload 식별 강화는 선택 개선 제안이다. RECHECK 4의 **G04-11(S3)**은 이 단위 범위 밖이며 그 뒤 처리 여부는 C00 기록을 따른다.
+
+## RECHECK 8 (GT-P04) — 2026-11-23, 관리 보유 판정 상한 0.5초 독립 검토
+
+같은 검토자(Claude)가 C00 작성 GT-P04를 짧게 검토했다. 전체 회귀는 생략했다. 위 내용은 이력으로 보존한다.
+
+**요약: GT-P04 수용 가능. 0.5초 상한은 G-P04 성질 판정에 타당하고, G04-07·08형 회귀(관리 작업을 mutex 안으로 되돌림)를 7배 이상 여유로 계속 검출한다. 같은 파일에서 새로 OPEN할 CI 민감 assertion은 찾지 못했다. 새 OPEN 0. 판정 방식 개선 제안 1건은 결함으로 세지 않는다.**
+
+### R8-1. 입력
+
+- 대상 tree **`29ac6042123095516f7d56988bf48dab8fdc77ea`**(tree), 기준 `2933573`(GT-P03 커밋). `git diff --stat 2933573 29ac6042`는 시험 1파일(17+/3-)뿐이다.
+- 시험 LF SHA256 `631e406832112112491ec8ab06bd56d9dd30cdb0536a67d2836a97a4bb0c5d51`로 C00 제시값과 같다.
+- `git archive`로 `build/review-trees/gt04`(판정)와 `gt04-pristine`(변이)에 풀어 판정했다. 작업 트리의 다른 미완성 변경은 쓰지 않았다.
+- **diff 내용**:
+  - 상수 `MANAGEMENT_HOLD_LIMIT_SECONDS = 0.5`와 근거 주석 추가
+  - `max(management_holds) < 0.05`를 상수로 교체
+  - `management_long_holds`를 관리 thread이면서 상한 이상인 보유로 한정
+  - 50ms 이상 진단용 `long_holds` 기록은 그대로
+- 쓰기는 이 절 추가뿐이다.
+
+### R8-2. CI 실패 원문 해석(`build/ci-evidence/gt03-core3.11.log`)
+
+- 실패 측정(578행 JSON): 확정 47.09초, 관리 root 최대 50.2ms, 전체 root 최대 1.61초, 거부 2,294블록, 유실 1,101,120frame.
+- 관리 thread의 유일한 50ms 이상 보유 스택은 `finalize_unfinished:1031 → finalize_session:604 → write_manifest:569 → __exit__`다. 이 구간은 `write_manifest`의 마지막 mutex 구간(`_manifest_current` + `manifest_sync_pending=0` SQLite commit, synchronous FULL)이다. 즉 검증·열거가 아니라 짧은 DB commit의 fsync가 느린 러너에서 50ms를 넘긴 것이다.
+- 나머지 장기 보유 24건은 모두 `recoryn-writer-rec`(G-P15)이다.
+
+### R8-3. 0.5초의 타당성
+
+| 기준 | 값 | 0.5초와의 관계 |
+| --- | --- | --- |
+| 시험의 녹음 큐(1트랙, 256블록 × 10ms) | 약 2.56초 | 5배 여유 |
+| 실제 앱 2트랙 공유 큐(추정) | 약 1.28초 | 2.5배 여유 |
+| CI에서 관측한 정상 관리 최대(commit fsync) | 50.2ms | 정상 관측의 10배 여유 |
+| 이번 변이 MA/MB의 관리 보유(R8-4) | 4.836초 / 7.227초 | 9.7배 / 14배로 검출 |
+
+- **판단**: 상한이 녹음 큐 시간보다 충분히 짧아 "관리 보유 한 번이 큐를 넘치게 하지 않는다"는 성질을 보존한다. 동시에 느린 러너의 commit fsync 변동을 흡수한다. 0.05초보다 오탐 위험이 크게 줄었다.
+- **남는 한계**: 판정이 단일 보유 최대값이라, 0.5초 미만의 보유가 연달아 쌓여 writer를 굶기는 회귀는 이 판정만으로는 잡히지 않는다(재확인 5의 MC형). 극단적으로 느린 러너에서 단일 commit fsync가 0.5초를 넘으면 오탐 가능성도 남는다. 이번 CI 근거로는 정상 관리 보유가 writer 최대의 약 1/32이었다.
+- **개선 제안(결함 아님)**: 보유 시간 대신 **구조적 oracle**을 추가하는 방안이 CI 속도에 가장 덜 민감하다. 관리 thread가 root mutex를 보유한 동안 `verify_bundle`·`check_path` 열거·`os.scandir`/`iterdir`이 호출되지 않았음을 계측해 단언하는 것이다. MA/MB형은 모두 이 조건을 위반한다. 보조로 "관리 보유 구간과 겹친 writer 대기 시간 합"을 큐 시간 이하로 판정하면 누적형도 다룰 수 있다. "관리 보유와 겹친 QUEUE_DROP 0"은 거부가 큐 포화 시점(writer seal 지연 포함)에 나서 귀속이 모호하므로 권하지 않는다.
+
+### R8-4. 변이 재적용(검토자 harness, `python -I build/review-trees/gt04-mutate.py`)
+
+harness LF `f58d0163b9626e489f2eef84cf5339aac3ae4cbe8a78addc68ca973bb3141750`(재확인 6 harness에서 대상 사본만 교체), 결과 `gt04-mutations.json` LF `3abd39ecd62a0a79ab3e72b5141ab50d3844005249c5a49b0ca4fd67f5627a1c`. baseline 2행은 2 PASS(59.98s)다.
+
+| 변이 | 결과 | 측정 |
+| --- | --- | --- |
+| MA: `unfinished_inventory()` 전체를 mutex 안으로 | **KILLED** | 관리 보유 4.836초, 상한 이상 관리 보유 1건, 거부 228 |
+| MB: 확정의 `recover_session` 호출을 mutex 안으로 | **KILLED** | 관리 보유 7.227초, 상한 이상 관리 보유 1건, 거부 553 |
+
+### R8-5. 같은 파일의 다른 CI 민감 assertion 점검
+
+시간이나 대기에 의존하는 단언을 grep으로 모두 찾아 읽었다.
+
+- **"끝나야 한다" 방향의 짧은 창**: `test_f3_claim_competitors`는 `two.join(0.15)` 뒤 second가 delete/resume이면 `not two.is_alive()`를 단언한다.
+  - 검토자 probe `tests/review_gt04/test_slow_fsync_competitor.py`(LF `19103bc3b98816fb2d3b7aa77401254b713ec43abd85770a2c9356aa74907d12`)로 대상 시험을 수정 없이 호출했다. `os.fsync`마다 0/30/80/200ms 지연을 넣어도 **8/8 PASS**였다.
+  - 단언 전에 주 thread의 `library.create_session("other")`가 같은 root mutex를 기다리므로, delete의 mutex 구간이 끝난 뒤에야 단언에 도달하는 구조다. 따라서 fsync 속도에는 둔감하다.
+  - 남는 위험은 극단적 GIL 경합으로 두 번째 thread가 150ms 안에 시작조차 못 하는 경우뿐이며, 낮다고 판단해 OPEN하지 않는다.
+- **"기다려야 한다" 방향**(`two.join(0.15/0.2)` 뒤 `two.is_alive()`): 두 번째 호출이 잠금에서 대기하므로 느린 러너에서도 참이다. 견고하다.
+- **barrier**: `entered.wait(5)`/`release.wait(5)`, `wait_for` 5초, 자식 프로세스 동기화 20초, `stop/pause(timeout=60)`, `join(10/30/60)`이다. 대상 작업이 작은 합성 세션이라 여유가 크다. CI 원문에서 이들이 실패한 기록도 없다.
+- **GT-P03 live 시험**: 거부 수는 측정값이고 회계로만 판정한다(RECHECK 7).
+- **관리 보유 시험**: 이번 변경으로 0.5초 상한이며 위와 같이 판단한다.
+- **결론**: 새 OPEN 0.
+
+### R8-6. RECHECK 8 결론
+
+**GT-P04 수용 가능 / 새 OPEN 0 (S0 0 / S1 0 / S2 0 / S3 0).** 0.5초는 녹음 큐 시간과 CI 정상 관측 사이에서 타당한 상한이고 MA/MB를 계속 검출한다. 구조적 oracle 추가는 선택 개선 제안이다.

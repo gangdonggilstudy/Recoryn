@@ -198,6 +198,13 @@ def test_live_writer_admission_has_an_independent_claim_defense(tmp_path: Path) 
             service.join_writer()
 
 
+# 관리 스레드 한 번의 root mutex 보유 상한. CI 3.11 러너에서 정상 확정의 짧은 commit이
+# GIL 경합으로 50.2ms까지 늘어난 적이 있다(GT-P04). 0.5초는 녹음 큐 256블록(10ms 블록
+# 기준 약 2.56초)보다 충분히 작고, 관리 작업을 mutex 안으로 되돌린 변이(목록 3.85초,
+# 확정 6.94초)보다 7배 이상 작다.
+MANAGEMENT_HOLD_LIMIT_SECONDS = 0.5
+
+
 class RootHoldMeter:
     """Measure outermost lock ownership, excluding contention/wait time."""
 
@@ -245,7 +252,11 @@ def test_management_never_blocks_another_recording(
     monkeypatch: pytest.MonkeyPatch,
     action: str,
 ) -> None:
-    """관리 작업 완료까지 측정한다(상한 300초). writer seal 지연은 G-P15 후속이다."""
+    """관리 작업 완료까지 측정한다(상한 300초). writer seal 지연은 G-P15 후속이다.
+
+    관리 스레드의 보유 판정 상한은 MANAGEMENT_HOLD_LIMIT_SECONDS다. 50ms 이상 보유는
+    진단용 long_holds에 계속 기록한다.
+    """
     root = tmp_path / "library"
     with Library(root) as library:
         library.create_session("old")
@@ -363,7 +374,10 @@ def test_management_never_blocks_another_recording(
             "management_root_max_seconds": max(meter.management_holds),
             "long_holds": meter.long_holds,
             "management_long_holds": [
-                hold for hold in meter.long_holds if hold["thread"] == "g04-management"
+                hold
+                for hold in meter.long_holds
+                if hold["thread"] == "g04-management"
+                and hold["seconds"] >= MANAGEMENT_HOLD_LIMIT_SECONDS
             ],
             "rejected": rejected,
             "dropped_frames": health["dropped_frames"],
@@ -375,7 +389,7 @@ def test_management_never_blocks_another_recording(
         assert result.get("ok"), result
         # writer seal의 긴 보유나 환경 부하로 인한 거부는 측정값으로 남긴다.
         # 관리 작업에 귀속되는 보유만 판정하며 저장 계층 전체의 유실 0은 요구하지 않는다.
-        assert max(meter.management_holds) < 0.05, measurement
+        assert max(meter.management_holds) < MANAGEMENT_HOLD_LIMIT_SECONDS, measurement
         assert measurement["management_long_holds"] == [], measurement
 
 
