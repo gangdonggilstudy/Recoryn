@@ -1685,9 +1685,12 @@ def test_v2_separate_process_reservations_have_one_winner(tmp_path: Path) -> Non
     from recoryn.security import ledger as ledger_module
 
     db = tmp_path / "process.sqlite"
-    expected_ledger = Path(ledger_module.__file__).resolve()
+    # This test tree's own src (an isolated copy tests itself), not another installed copy.
+    tree_src = Path(__file__).resolve().parents[2] / "src"
+    expected_ledger = (tree_src / "recoryn" / "security" / "ledger.py").resolve()
+    assert Path(ledger_module.__file__).resolve() == expected_ledger, ledger_module.__file__
     child_env = os.environ.copy()
-    child_env["PYTHONPATH"] = str(expected_ledger.parents[2])
+    child_env["PYTHONPATH"] = str(tree_src)
     catalog = cost_catalog.load_catalog()
     settings = CostPolicy("general", "USD", 0, 4_000_000_000, 7, 10, 1, catalog.sha256, True)
     with CostLedger(db) as ledger:
@@ -1696,10 +1699,12 @@ def test_v2_separate_process_reservations_have_one_winner(tmp_path: Path) -> Non
     script.write_text(
         """import json,sys,time
 from pathlib import Path
+import recoryn
 from recoryn.security import CostLedger,CostPolicy,CostRequest,SecurityError,cost_catalog
 from recoryn.security import ledger as ledger_module
 db,ready,gate,index,expected_origin=map(str,sys.argv[1:])
 assert Path(ledger_module.__file__).resolve()==Path(expected_origin),ledger_module.__file__
+assert Path(recoryn.__file__).resolve().parent==Path(expected_origin).parents[1],recoryn.__file__
 settings=CostPolicy("general","USD",0,4_000_000_000,7,10,1,cost_catalog.load_catalog().sha256,True)
 request=CostRequest("openai","https://process.invalid/v1/responses","unpriced","v1","summary","transcript",b'{"model":"unpriced","input":"x","max_output_tokens":1}')
 with CostLedger(Path(db)) as ledger:
@@ -1746,7 +1751,9 @@ with CostLedger(Path(db)) as ledger:
         try:
             deadline = time.monotonic() + 30
             while not all((tmp_path / f"ready{i}").exists() for i in range(4)):
-                assert all(c.poll() is None for c in children)
+                exited = [c for c in children if c.poll() is not None]
+                # An early exit (e.g. the child's own import-origin assert) is reported.
+                assert not exited, [c.communicate(timeout=30) for c in exited]
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
             gate.write_text("go")
@@ -2207,6 +2214,84 @@ def test_cov2_dispatch_open_does_not_accept_inconsistent_quotes(
         )
     assert ledger._request(reservation)["dispatch_id"] is None
     assert ledger._request(reservation)["state"] == "RESERVED"
+
+
+# G-P06b / G06R-10: a USER_CAP open never re-quotes, so the stored catalog digest is its
+# only catalog binding. Each negative row changes only that relation; 000 is the control.
+COV3_OPEN = [
+    pytest.param("unchanged", id="G06-COV3-OPEN-000"),
+    pytest.param("stored-digest", id="G06-COV3-OPEN-001"),
+    pytest.param("catalog-updated", id="G06-COV3-OPEN-002"),
+    pytest.param("catalog-updated-gateway", id="G06-COV3-OPEN-003"),
+]
+
+
+@pytest.mark.parametrize("case", COV3_OPEN)
+def test_cov3_user_cap_open_is_bound_to_the_reserving_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    unpriced = dict(price_as_of_utc=None, valid_from_utc=None, valid_until_utc=None)
+    catalog = install_catalog(monkeypatch, price(**unpriced))
+    settings = policy(catalog, mode="general", general_acknowledged=True, cap=13)
+    clock, request, wire = Clock(), text_request(), Wire()
+    with (
+        ConsentStore(tmp_path / "consent.sqlite") as consent,
+        CostLedger(tmp_path / "cost.sqlite", clock=clock.now, monotonic=clock.monotonic) as ledger,
+    ):
+        ledger.apply_policy("p", settings)
+        reservation = reserve(ledger, request, settings, "cov3")
+        row = ledger._request(reservation)
+        assert (row["quote_kind"], row["reserved_amount"], row["catalog_digest"]) == (
+            "USER_CAP",
+            13,
+            catalog.sha256,
+        )
+        if case == "stored-digest":
+            # An authenticated row whose reserving catalog differs from the loaded one
+            # (fixture via the owned connection; not a claim about forging the witness).
+            stored_policy = json.loads(row["policy_json"])
+            stored_policy["catalog_digest"] = "0" * 64
+            stored_quote = json.loads(row["quote_json"])
+            stored_quote["policy"] = stored_policy
+            ledger._change(
+                lambda: ledger._db.execute(
+                    "UPDATE security_cost_requests_v2 SET policy_json=?,quote_json=? "
+                    "WHERE reservation_id=?",
+                    (json.dumps(stored_policy), json.dumps(stored_quote), reservation),
+                )
+            )
+        elif case.startswith("catalog-updated"):
+            # The compiled catalog changed between reservation and dispatch (an update):
+            # same wire entry, so only the digest relation differs.
+            updated = install_catalog(monkeypatch, price(**unpriced, review_id="UPDATED_FIXTURE"))
+            assert updated.sha256 != catalog.sha256 and updated.find(request) is not None
+        witness = ledger._witness.read_bytes()
+        if case == "unchanged":
+            cov2_open(ledger, request, reservation)  # control: the same row does open
+            assert ledger._request(reservation)["dispatch_id"] == "cov2"
+            return
+        with pytest.raises(SecurityError, match="^COST_QUOTE_MISMATCH$"):
+            if case.endswith("gateway"):
+                view = gateway(consent, ledger, wire, request)
+                view.chunk_bytes = len(request.body)
+                view.request(
+                    "p",
+                    request.endpoint,
+                    request.data_type,
+                    request.body,
+                    reservation_id=reservation,
+                )
+            else:
+                cov2_open(ledger, request, reservation)
+        after = ledger._request(reservation)
+        assert (after["state"], after["dispatch_id"], after["reserved_amount"]) == (
+            "RESERVED",
+            None,
+            13,
+        )
+        assert balance(ledger)["reserved"] == 13 and balance(ledger)["unknown_exposure"] == 0
+        assert wire.opens == 0 and wire.writes == []
+        assert ledger._witness.read_bytes() == witness  # a refused open writes nothing
 
 
 @pytest.mark.parametrize("slot", range(4), ids=[f"G06-COV2-TYPED-{i:03}" for i in range(4)])

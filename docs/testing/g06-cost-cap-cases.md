@@ -831,3 +831,53 @@ FIX1 뒤 변경은 이 문서와 tests/unit/test_cost_cap.py·tests/integration/
 | tests/ui/test_privacy_ui.py | 7daa11da328c8899f8f886f35a2f63ea37028d86be0e62253745575710fdf1c9 |
 | tests/ui/test_consent_scope_ui.py | fa836e195864248d3bad20e35cf8db303a23f5ada3e7dfcd51c43af4829ebd9e |
 | src/recoryn/ui/main.py | 8c92a483b78cbd57377fc28863ff05a8d8df1528c008e8a9d6cd4a5dc3a6649b |
+
+## 18. G-P06b — RECHECK 2 후속(G06R-10, 2026-11-23)
+
+G-P06은 커밋 68fbbda로 push됐다. 검토 문서 RECHECK 2(FIX2)(LF `a84a8c0136b69239f9db87a43fd9eb22d31722a4d54c09b7418f265fdc509661`)의 S3 G06R-10과 부수 관찰(프로세스 경쟁 시험의 자식 import 경로)을 C00이 후속으로 배정했다. 작성자는 Claude 하위 에이전트이며 재확인은 G-P06 검토자가 한다. **제품 코드는 바꾸지 않았다.** 변경은 `tests/integration/test_cost_cap.py`와 이 문서뿐이며 `tests/unit/test_cost_cap.py`는 그대로다. 기준 HEAD **68fbbda**, 판정 사본 **R5/iso = `git archive 68fbbda` + 위 2파일**, 증거 루트 **R5=`C:/Users/gangd/AppData/Local/Temp/recoryn-g06b-CsfWs5ts`**.
+
+### 18.1 결함과 계약
+
+USER_CAP(일반 모드, 검증 불가 가격) 예약의 dispatch open은 `quote()`를 다시 부르지 않는다. 그래서 `ledger.py`의 `if catalog.sha256 != policy.catalog_digest: raise COST_QUOTE_MISMATCH`(68fbbda 기준 1072행)가 이 경로의 **유일한** catalog 결합 검사다. 기존 COV2-OPEN-003은 VERIFIED 예약을 써서 `quote()`의 자체 digest 검사가 같은 코드로 막아 주므로 두 방어선을 구별하지 못했다(검토자 변이 L6 생존). 현재 동작은 계약대로다. 예약 뒤 catalog가 바뀌었거나 예약 행의 catalog digest가 현재 catalog와 다르면 `COST_QUOTE_MISMATCH`로 거부하고 dispatch를 열지 않는다. 동작이 틀렸다고 판단한 곳은 없다.
+
+### 18.2 추가 행(G06-COV3, 기존 분모와 별도)
+
+| ID | 입력(USER_CAP, cap 13, 일반 모드 승인) | 독립 oracle |
+| --- | --- | --- |
+| G06-COV3-OPEN-000 | 변경 없음(대조군) | 같은 예약이 실제로 open되어 `dispatch_id`가 기록됨. 아래 부정 행이 다른 이유로 실패하지 않음을 보장 |
+| G06-COV3-OPEN-001 | 예약 행의 policy_json·quote_json.policy의 catalog digest만 다른 값(소유 연결의 `_change`로 인증된 행, 위조 가능성 주장 아님) | `^COST_QUOTE_MISMATCH$`, `dispatch_id` NULL, RESERVED·예약 13, 예약 합 13·UNKNOWN 0, 거부한 open이 witness를 바꾸지 않음 |
+| G06-COV3-OPEN-002 | 예약 뒤 compiled catalog가 바뀜(같은 wire entry, review_id만 달라 digest가 다름. 앱 갱신 모사) | 위와 같음 |
+| G06-COV3-OPEN-003 | 002와 같은 상태를 Gateway로 요청 | 위와 같음 + transport open 0·write 0 |
+
+부수 관찰: `test_v2_separate_process_reservations_have_one_winner`는 이제 **시험 파일이 속한 tree의 src**(`Path(__file__).parents[2]/"src"`)를 기대 경로로 정한다. 부모가 import한 `ledger.py`가 그 경로인지 먼저 assert하고, 자식 PYTHONPATH도 그 src로 고정한다. 자식은 `ledger.__file__`과 `recoryn` 패키지 위치를 모두 그 경로와 대조한다. 자식이 준비 전에 종료하면 부모가 그 stdout/stderr를 assert 메시지로 보고한다(예전에는 사유 없는 `assert False`).
+
+### 18.3 실행 결과
+
+- **L6 재적용**(검토자 `mutate_g06c.py` 원문 패턴, R5/mut-L6, import 위치 사본 src 확인): `-k cov3` **3 failed / 1 passed**. 대조군을 뺀 COV3-OPEN-001·002·003이 `DID NOT RAISE SecurityError`로 실패했다. 신규 4파일 전체는 **3 failed, 5090 passed**로 KILLED다. 검토자 원래 선택 `-k cov2`는 새 행 이름(cov3)을 포함하지 않으므로 여전히 181 passed다. 재확인에서는 `-k "cov2 or cov3"` 또는 4파일 전체를 써야 한다. `R5/l6-results.json` LF `2b7b35f2edb5a2e84dda0072b139fd3a2ebfb8e0ebd4bd5cf590a0dcec1929dd`.
+- **자식 import 확인 대조 변이 P1**(자식 PYTHONPATH를 작업 트리 src로 바꿈): 1 failed. 부모 메시지는 `AssertionError: D:\\project\\Recoryn\\src\\recoryn\\security\\ledger.py`다. 정상본은 통과한다.
+- **G-P06 신규 4파일 단독 실행**: **5093 passed in 104.94초**(120초 예산 이내). 측정 직전 이 PC의 CPU 부하는 6%였다. 그 동안 다른 작업자의 실행이 없었다고 보장하지는 않는다. 명령은 `python -B -m pytest tests/unit/test_cost_cap.py tests/integration/test_cost_cap.py tests/property/test_cost_cap_case_space.py tests/ui/test_cost_cap_ui.py -q -p no:cacheprovider -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning`(cwd R5/iso, PYTHONPATH=R5/iso/src, 볼륨 C: TEMP)이다. `R5/new-four.xml` LF `11e1542bf39dd8139734718941587385133df3964f4430daa6ebf9336e2284b4`.
+- **ID 감사**(`R5/audit_g06.py`, 4파일 JUnit의 `[G06-…]` 매개변수 ID): 검토자 g06c 전체 JUnit 기준 5,089 node·고유 5,050 → 이번 5,093 node·고유 5,054다. **추가는 정확히 G06-COV3-OPEN-000~003의 4개**이고 삭제·중복은 0, ID 없는 node는 39로 그대로다. `R5/g06-audit.json` LF `521a4c2d7eb9bdadd310aeb78b6e8770deb4b9f71edd112c64cbcf986626b110`. 검토자의 '의미 행 4,834'와는 집계 규칙이 다르므로 같은 수로 비교하지 않는다.
+- **CI와 같은 coverage 명령**(`.github/workflows/core.yml` "Offline core tests" 옵션 + PYTHONPATH·basetemp·junit·`-rs`): **15035 passed in 984.95초, exit 0**, skip 0. "Required test coverage of 85% reached. Total coverage: 92.53%". 검토자 실행의 2 skip(D: 볼륨 8.3 환경)은 C: TEMP라 생기지 않았다. coverage 측정 파일은 73개이며 전부 `src/recoryn/` 아래다. `ledger.py`는 647/662문장·228/246분기로 이전과 같다(1072행은 이미 덮여 있었고, 이번 행은 그 줄의 검출력을 보강한 것이다). `scripts/check_coverage.py`(exit 0) 출력은 다음과 같다.
+
+  ```text
+  domain: line=100.00%/95% branch=100.00%/90% PASS
+  capture: line=99.85%/95% branch=98.57%/90% PASS
+  jobs: line=98.89%/95% branch=97.47%/90% PASS
+  storage: line=96.30%/95% branch=91.56%/90% PASS
+  security: line=98.11%/95% branch=94.43%/90% PASS
+  content: line=99.59%/95% branch=98.75%/90% PASS
+  all: line=93.95%/85% branch=88.20%/80% PASS
+  ```
+
+  `R5/cov-full.xml` LF `9db14dc431d978eb7abd62784aa4c087049303e02c5d177275e4eeefc7eb2a64`, `R5/coverage.json` LF `24d6c7120dbbfd2eec9cbc690c358f6e1d0015230a3ea3f8aeb6939579071689`.
+- **정적 검사**(R5/iso): `ruff check --no-cache .` PASS, 변경·관련 시험 2파일 format PASS, `python -m mypy src/recoryn scripts packaging` **86 source files PASS**.
+- **전체 오프라인 회귀**(엄격 옵션, `-W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning`, cwd R5/iso, PYTHONPATH=R5/iso/src): **15035 passed in 970.58초 / exit 0**, failure/error/skip 0. `R5/full.xml` LF `c644541df47e6e8a2eb3f8b787541b1d97d3923141b5d0a50c1ddf8ecb5e0e26`.
+
+### 18.4 제출 파일
+
+| 파일 | SHA256(LF) |
+| --- | --- |
+| tests/integration/test_cost_cap.py | `bfa21139dacda930c10fa2f6134080206a00b316f2944153765b70a1ae027637` |
+| tests/unit/test_cost_cap.py(변경 없음) | `c1ac728a2064a230b08e9a5b5af4acc0df955fd9cfd97f5ed4b083f46f163880` |
+
+이 문서의 최종 hash는 제출 보고에 둔다. G06R-08(실가격 첫 항목 게이트 인계)은 이 단위 범위 밖이다.

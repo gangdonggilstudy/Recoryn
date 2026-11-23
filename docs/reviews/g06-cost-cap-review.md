@@ -694,3 +694,78 @@ RECHECK 1의 생존 변이 N01·N03도 같은 선택으로 다시 판정했다. 
 - 작성자 FIX2 변이 2개 외의 기존 변이(46개) 재실행
 - coverage 미실행으로 남은 `ledger.py` 방어 경로(§17.6 표)의 도달 가능성 개별 증명
 - CI runner(Windows matrix)에서의 실제 시간과 coverage(이 PC에서만 실행)
+
+## RECHECK 3 (G-P06b) — 2026-11-23, 같은 검토자(Claude, G-P06 독립 검토)
+
+G-P06은 commit 68fbbda로 push됐다. C00이 RECHECK 2의 G06R-10을 다룬 후속 G-P06b(작성자: C00 지정 구현 하위 에이전트)의 짧은 재확인을 요청했다. 앞 절들(LF SHA256 `a84a8c01…`)은 보존한다.
+
+**판정:**
+
+- **G06R-10 / S3는 RECHECKED**다. RECHECK 2의 자식 import 부수 관찰도 해소됐다.
+- 새 OPEN은 0건이다.
+- G06R-08(S3, 실가격 첫 항목 게이트 인계)은 범위 밖이라 OPEN 유지다.
+
+### RC3-1. 입력
+
+- 대상 tree는 **`8e7403bb21218294c03b5e8f8c8dd1bb78277033`**(`git cat-file -t` = tree)다. 기준은 HEAD **68fbbda**이다.
+- `git diff --stat 68fbbda 8e7403bb` 결과는 2파일, +138/−3이다.
+  - `git diff --quiet 68fbbda 8e7403bb -- src tests/unit`이 성공한다. **제품 코드와 `tests/unit/test_cost_cap.py`의 변경은 0이다.**
+- LF SHA256은 다음과 같다. 둘 다 배정값과 일치한다.
+  - `tests/integration/test_cost_cap.py` `bfa21139dacda930c10fa2f6134080206a00b316f2944153765b70a1ae027637`
+  - 계약 문서 `54aa5443fc37ead9eedfff248d704ddb6165af3ee6cfef96e92c278142273730`
+- 작성자 증거 R5(`C:\Users\gangd\AppData\Local\Temp\recoryn-g06b-CsfWs5ts`)는 읽기만 했다. `l6-results.json`, `new-four.xml`, `g06-audit.json`의 LF SHA256이 §18.3 기재값과 일치한다.
+- 추출과 실행 위치: `git archive 8e7403bb | tar -x -C D:\project\Recoryn\build\review-trees\g06d`. 변이 사본은 `g06d-mut`, basetemp는 `g06d-bt`, 스크립트는 `g06d-probe`다.
+- 모든 출력 경로는 Windows 형식 `D:\project\Recoryn\build\review-trees\…`로 지정했고 저장소 밖 쓰기가 없음을 확인했다. RECHECK 2의 `D:\d\…` 오기록은 반복하지 않았다.
+
+### RC3-2. G06R-10 — L6 직접 재적용과 판별력
+
+harness는 `g06d-probe\mutate_g06d.py`다(LF `1e97a586c0685acb29163bad94362b0c61b7c03fdf67eacfc52a3c5e2ed2c0a3`).
+
+- 결과는 `mutations_g06d.json`(`1c89329495a4467f5df1bcc08bd3fd64071f0418729097ae275fa996372a679e`)과 `mutate_g06d.log`(`e3665570969f3d8055d86bb634bf886bc2d2389e5b583c453010e9abb2910138`)다.
+- 사본 import 위치는 `g06d-mut\src`임을 확인했다.
+- 정상본은 `-k "cov2 or cov3"`에서 **185 passed**(181 + 4)였다.
+
+| 변이 | 선택 | 결과 |
+| --- | --- | --- |
+| L6: `ledger.py`의 open 단계 `if catalog.sha256 != policy.catalog_digest:` → `if False:`(RECHECK 2와 같은 패턴) | `-k "cov2 or cov3"` | **3 failed / 182 passed**: COV3-OPEN-001·002·003. 대조군 000은 통과 |
+| 같은 L6 | 신규 4파일 전체 | **3 failed / 5090 passed**(같은 3행) |
+| Q: `cost.py`의 `quote()` 자체 digest 검사(`:534-535`) 제거 | `-k cov3` | **4 passed** |
+
+- Q 결과의 의미: COV3 행은 `quote()`의 자체 검사에 의존하지 않는다. 즉 RECHECK 2에서 지적한 "다른 방어선이 같은 코드로 막아 줌"이 아니다.
+- 코드 경로도 대조했다(`ledger.py`의 `validate_dispatch` open 분기). USER_CAP 예약은 open에서 `quote()`를 다시 부르지 않는다.
+  - 001은 policy_json의 digest가 바뀌어 재사용 cache가 빠진다.
+  - 002·003은 같은 인스턴스 cache로 재사용된다.
+  - 두 경우 모두 `_eligible_account`, 지문 대조, 모드·cap 대조는 통과한다. 남는 catalog 결합은 open 단계 대조 하나다.
+- 대조군 000이 같은 예약의 정상 open(`dispatch_id='cov2'`)을 보이므로, 부정 행이 다른 이유로 실패한 것이 아님도 확인된다.
+- 부정 행의 oracle: `^COST_QUOTE_MISMATCH$`, `dispatch_id` NULL, RESERVED 13, 예약 합 13, UNKNOWN 0, witness 불변. 003은 여기에 transport open 0·write 0을 더한다. 기대값은 literal이고 제품 함수로 만들지 않는다.
+
+### RC3-3. 자식 import 확인의 판별력
+
+같은 harness로 `test_v2_separate_process_reservations_have_one_winner`(`-k separate_process`)를 변형했다. 정상본은 1 passed다.
+
+| 변형 | 결과 |
+| --- | --- |
+| P1: 자식 `PYTHONPATH`를 작업 트리 `D:\project\Recoryn\src`로 | **1 failed.** 자식의 `AssertionError: D:\project\Recoryn\src\recoryn\security\ledger.py`가 부모의 조기 종료 보고(stdout/stderr)로 표시됨 |
+| P2: 자식 `PYTHONPATH` 제거(venv editable `.pth`가 작업 트리를 가리킴) | **1 failed**, 같은 메시지 |
+| P3: P1에 더해 자식 쪽 두 origin assert 제거 | **1 passed** |
+
+- P3 결과는 혼동을 잡는 장치가 자식 쪽 assert임을 보여 준다. 즉 새 assert가 실제로 검출력을 가진다.
+- 부모 쪽은 시험 파일 기준 `tree_src`와 자기 `ledger.__file__`을 대조한다. PYTHONPATH를 고정하지 않고 pytest의 `pythonpath=["src"]`만 쓴 실행에서도 경쟁 시험과 COV3가 **5 passed**였다. 부모가 다른 사본을 import하는 경우는 코드 읽기로만 확인했다.
+
+### RC3-4. 실행
+
+- G-P06 신규 4파일 단독(cwd g06d, PYTHONPATH 고정, `-W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning`): **5093 passed, 97.50s**. 120초 예산 안이다.
+  - JUnit `D:\project\Recoryn\build\review-trees\g06d-new4.xml`, LF `0a4b5cb06d5a7d114a48eebc49617678630c61c0985bfaf1a765b7bb002d310b`
+  - testcase 합은 94.92s다.
+- ID 감사: 의미 행 **4834 고유, 누락·중복·추가 0**. G06-COV2 181개, **G06-COV3-OPEN-000~003 4개**, 모두 고유다.
+- `ruff check`와 `ruff format --check`(`tests/integration/test_cost_cap.py`): PASS.
+- 전체 오프라인 회귀와 coverage는 제품 코드 불변이므로 이번에 다시 실행하지 않았다. 작성자 R5의 15035 PASS와 check_coverage 전 묶음 PASS(§18.3)는 해시만 대조했다.
+
+### RC3-5. 상태
+
+| ID | 상태 |
+| --- | --- |
+| G06R-10 / S3 | **RECHECKED.** L6 → COV3-OPEN-001~003 KILLED. COV3는 `quote()` 자체 검사와 독립적이다 |
+| RECHECK 2 부수 관찰(자식 import 경로) | 해소. P1·P2 검출, P3로 검출 장치 확인 |
+| G06R-08 / S3 | OPEN 유지(실가격 첫 항목 게이트 인계, 범위 밖) |
+| 새 발견 | 없음 |
