@@ -285,6 +285,6 @@ P1부터 동의 허용·거부·철회, CPU 전환 거부, 예산 대기 취소,
 | ADR14 | CANCEL_UNCONFIRMED를 BLOCKED(REMOTE_UNKNOWN)+cancel_requested로 표현 | 설계 채택(2026-11-22, G01-C) | 의미 동일: 자동 재전송 없음, 재개 거부. 별도 enum을 추가하지 않음 |
 | ADR15 | 에코·중복 발화 완화(원본에 적용하지 않는 선택 파생 처리) | v1.0 이후로 연기(2026-11-22, G01-C) | v1.0 단계표에 없음. 원본 불변 제약은 그대로 |
 | ADR16 | 동의·인증·capability·자원·예산 오류는 FAILED가 아니라 BLOCKED(reason) | 설계 유지, 구현 정정 예정(2026-11-22, G01-C) | 구현과 편차를 고정한 시험의 기대값 변경은 G-P07 |
-| ADR17 | 사용자가 직접 고른 로컬 모델 디렉터리(product-contracts B13) | 허용 유지, 검증 범위 보류 | 실행 전 digest 고정·'사용자 지정 모델' 표시. 신뢰 책임·명시 확인·validation S04의 적용 또는 예외는 G-P13에서 결정 |
+| ADR17 | 사용자가 직접 고른 로컬 모델 디렉터리(product-contracts B13) | 허용 유지, S04 예외로 결정(2026-11-23, G-P13 계약) | 로컬 Whisper 디렉터리는 '사용자 지정 모델 — 출처 인증 안 됨' 표시, 최초·digest 변경 시 사용자 책임과 license 미확인 명시 확인, 실행 bytes 고정·실행 직전 재검사. 관리 공급망 검증 완료로 집계하지 않음. 화자 구분 모델은 기존 strict 검증 유지. 구현은 G-P13 |
 
 Qt for Python의 선택 라이선스와 포함 모듈·제3자 코드의 조건은 저장소 Apache 2.0과 구분한다. 구체 배포물의 파일 목록과 조건을 확인하기 전 일괄 호환 또는 재배포 가능으로 표시하지 않는다. [Qt for Python 라이선스](https://doc.qt.io/qtforpython-6/commercial/index.html), [제3자 라이선스](https://doc.qt.io/qtforpython-6/licenses.html)

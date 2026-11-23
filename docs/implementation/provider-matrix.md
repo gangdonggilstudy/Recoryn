@@ -17,7 +17,7 @@
 ## 공개 API와 안전한 기본값
 
 - providers/contracts.py의 frozen DTO를 providers에서 export한다. ProviderConfig(provider_id, model, endpoint="", execution_location="remote", timeout_seconds=60, max_response_bytes=4MiB, context_window_tokens=None, max_output_tokens=1024, max_requests=128, local_attestation=None, api_version="2026-10-21").
-- FasterWhisperProvider(model_path: Path, *, device="cpu", compute_type=None, timeout_seconds=300, model_factory=None). 생성자는 장치/파일/모델을 열지 않는다. 로컬 모델 및 audio 경로는 절대 경로이며 링크/reparse/hardlink를 거부한다. 모델 가중치·tokenizer의 신뢰/라이선스·정확한 의존성 버전은 B10 ModelManager와 설치 증거에 의존한다.
+- FasterWhisperProvider(model_path: Path, *, device="cpu", compute_type=None, timeout_seconds=300, model_factory=None). 생성자는 장치/파일/모델을 열지 않는다. 로컬 모델 및 audio 경로는 절대 경로이며 링크/reparse/hardlink를 거부한다. 모델 가중치·tokenizer의 신뢰/라이선스·정확한 의존성 버전은 관리 설치에서는 B10 ModelManager와 설치 증거에 의존한다. 사용자가 직접 고른 디렉터리는 validation S04의 사용자 지정 모델 예외로, 설치 증거 대신 사용자 책임·license 미확인 확인과 실행 bytes 고정·실행 직전 재검사를 따른다(구현 G-P13). 이 확인은 출처 인증이나 공급망 검증 완료가 아니다.
 - 나머지 어댑터는 (gateway: GatewayLike, config: ProviderConfig). transcribe(STTRequest, context=None) 또는 summarize(SummaryRequest, context=None)를 호출한다. capabilities()는 어댑터 기능 선언이고 설치·실제 모델 검증 성공의 뜻이 아니다.
 - STTRequest(audio_path, language=None, offset_ms=0, track_id="audio", audio_revision_id=""). 원본 hash/offset/범위/내용에서 segment ID를 재현하고 원본 WAV를 수정하지 않는다. 업로드는 WAV만 구현했다. 앱 상한은 remote 8MiB/local 128MiB이며 공급자의 더 큰 지원량과 구별한다.
 - SummaryRequest(transcript_revision_id, segments: tuple[TranscriptSegment,...], template="meeting", output_language="ko", chunk_chars=4000, overlap_segments=1, checkpoint=None). 템플릿은 meeting/lecture/key_points/decisions/tasks다. 긴 segment는 원 ID와 문자 span을 보존해 나눈다.

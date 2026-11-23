@@ -110,7 +110,7 @@ UI·장치 이벤트 알림의 측정 시작점은 실제 물리 장애인지 OS
 | S01 | startup부터 SDK·worker·daemon DNS/접속 관측과 양성 대조, I07의 첫·후속 write/삭제 barrier | 동의 없는 egress 0, 과거 permit 사용 금지, 이미 handoff한 바이트 별도. observer가 통제된 허용 요청을 실제 탐지해야 무송신 결과를 인정 |
 | S02 | canary secret, crash/exception/log/export/support bundle | 비밀 없음, 허용 필드 목록 일치, 실제 키와 사용자 녹음 사용 안 함 |
 | S03 | path traversal·absolute path·reparse point, 악성 import, 삭제와 recovery 경쟁 | 지정 root 이탈 없음, 삭제 부활 없음, 파일·metadata 입력 한도와 version 검사 |
-| S04 | 첫 다운로드·로드 기능부터 중단·서명/hash 불일치·오염 cache·라이선스 누락 | G1/G2/P1 필수. 검증 전 설치/로드 금지, 출처·digest·라이선스 일치. 미실행이면 기능 제외와 N/A 근거 필요 |
+| S04 | 첫 다운로드·로드 기능부터 중단·서명/hash 불일치·오염 cache·라이선스 누락 | G1/G2/P1 필수. 관리 설치·로드는 사용자가 출처와 라이선스를 검토해 고정한 manifest, 선언된 파일 size/hash·license 정보, 설치/로드 전 검증을 요구한다. 설치 폴더의 자기 기술만으로 신뢰 등급을 올리지 않으며 digest 일치는 게시자 인증·법률 검토와 구별한다. 미실행이면 기능 제외와 N/A 근거 필요. **예외(B13·ADR17):** 사용자가 직접 고른 로컬 Whisper 디렉터리는 '사용자 지정 모델 — 출처 인증 안 됨'으로 표시하고, 최초와 digest·출처·고지 변경 시 사용자 책임과 license 미확인 상태를 명시 확인한 뒤 허용한다. 실행 bytes를 고정하고 실행 직전 재검사하며 자동 다운로드·remote code·묵시 fallback은 없다. 이 예외를 관리 공급망 검증 완료로 집계하지 않는다. 화자 구분 모델의 manifest/model/license hash와 ONNX 외부 데이터 거부는 예외에서 완화하지 않는다(구현 G-P13) |
 | REL01 | 깨끗한 Windows VM 설치·업데이트·제거, offline 첫 실행, EXE 권한 | 지원 환경 실행, 비밀/묵시 다운로드 없음, 사용자 미디어의 제거 정책 명확, rollback/복구 가능 |
 | REL02 | 고정 commit clean build, artifact hash, SBOM/NOTICE/license, 코드 서명 결정 | 포함 파일 기준 목록과 조건 검토, provenance 기록, G0~G4 증거와 차단 이슈 0 |
 

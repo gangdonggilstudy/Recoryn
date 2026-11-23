@@ -96,7 +96,7 @@ audio는 PCM→float, mono downmix, 리샘플링, meter, 에너지 기반 VAD, �
 
 소유: src/recoryn/providers/*, src/recoryn/transcription/*, src/recoryn/summarization/*, tests/unit/test_providers.py, tests/contract/*, docs/implementation/provider-matrix.md. domain/providers 등 공용 파일을 만들지 않는다.
 
-providers/contracts.py에 frozen DTO를 정의하고 각 package에서 공개한다. 사용자 입력에는 provider_id/model/언어/실행위치/timeout/취소/진행 정보가 필요하다. local FasterWhisper는 명시적 로컬 모델 디렉터리만 받고 local_files_only=True, CPU 또는 GPU 명시 선택, 패키지 미설치·모델 미설치·OOM은 안전한 capability/resource 오류로 표시한다. 모델명으로 자동 다운로드하지 않는다.
+providers/contracts.py에 frozen DTO를 정의하고 각 package에서 공개한다. 사용자 입력에는 provider_id/model/언어/실행위치/timeout/취소/진행 정보가 필요하다. local FasterWhisper는 명시적 로컬 모델 디렉터리만 받고(관리 설치가 아닌 디렉터리는 validation S04의 사용자 지정 모델 예외: 사용자 책임 확인, 실행 bytes 고정과 실행 직전 digest 재검사, G-P13) local_files_only=True, CPU 또는 GPU 명시 선택, 패키지 미설치·모델 미설치·OOM은 안전한 capability/resource 오류로 표시한다. 모델명으로 자동 다운로드하지 않는다.
 
 요약 결과는 content.Claim으로 변환 가능해야 하며 고정 transcript revision 및 segment ID를 유지한다. 긴 문서는 겹치는 문맥·분할 처리·진행·취소·부분 결과·최종 합성을 구현한다. 모델이 반환한 존재하지 않는 reference를 거부하고 reference 존재를 의미 검증과 구별한다. 회의·강의·핵심·결정·할 일 템플릿을 제공한다.
 
