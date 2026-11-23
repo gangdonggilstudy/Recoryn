@@ -55,6 +55,17 @@ class RecordingService:
         self._history: list[dict[str, Any]] = []
         self._track_health: dict[str, dict[str, Any]] = {}
         library.create_session(self.session_id)
+        # Recovery and finalization refuse a session this service may still write.
+        library.register_live_owner(self.session_id, self)
+
+    def is_live(self) -> bool:
+        """Accepting input or still draining the writer.
+
+        Library calls this under its root mutex, so it reads state without taking
+        the capture gate (whose holders may wait for that mutex).
+        """
+        thread = self._thread
+        return self._accepting or (thread is not None and thread.is_alive())
 
     @property
     def epochs(self) -> dict[str, str]:

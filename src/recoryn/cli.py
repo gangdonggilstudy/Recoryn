@@ -43,8 +43,11 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("gui", help="open the optional desktop; recording requires user action")
     simulate = commands.add_parser("simulate", help="record two deterministic synthetic tracks")
     simulate.add_argument("--seconds", type=_duration, default=1.0)
-    commands.add_parser("list", help="list stored sessions")
-    for name in ("inspect", "recover", "export", "delete"):
+    listing = commands.add_parser("list", help="list stored sessions")
+    listing.add_argument(
+        "--unfinished", action="store_true", help="only sessions that are not finalized"
+    )
+    for name in ("inspect", "recover", "export", "delete", "finalize"):
         command = commands.add_parser(name)
         command.add_argument("session_id")
         if name == "export":
@@ -54,6 +57,29 @@ def _parser() -> argparse.ArgumentParser:
 
 def _print(value: object) -> None:
     print(json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False))
+
+
+_REFUSAL_CODES = frozenset(
+    {
+        "SESSION_LIVE",
+        "DELETE_PENDING",
+        "STALE_SESSION_VERSION",
+        "INSPECTION_UNSAFE",
+        "INSPECTION_UNAVAILABLE",
+    }
+)
+
+
+def _error_code(error: BaseException) -> str:
+    """Closed code set for finalize and list --unfinished; never the exception text."""
+    from recoryn.domain import StateConflict
+
+    if isinstance(error, KeyError):
+        return "NOT_FOUND"
+    if isinstance(error, StateConflict):
+        code = error.args[0] if len(error.args) == 1 else None
+        return code if code in _REFUSAL_CODES else "STATE_CONFLICT"
+    return "STORAGE_ERROR"
 
 
 def _simulate(library: Any, seconds: float) -> dict[str, Any]:
@@ -273,11 +299,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         with Library(args.root) as library:
             if args.command == "simulate":
                 result: object = _simulate(library, args.seconds)
+            elif args.command == "list" and args.unfinished:
+                result = library.unfinished_sessions()
             elif args.command == "list":
                 result = [
                     {"session_id": item.session_id, "state": item.state.value}
                     for item in library.list_sessions()
                 ]
+            elif args.command == "finalize":
+                result = library.finalize_unfinished(args.session_id)
             elif args.command == "inspect":
                 session = library.get_session(args.session_id)
                 result = {
@@ -304,5 +334,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 130
     except (ValueError, RuntimeError, OSError, sqlite3.Error, KeyError) as error:
         # Do not persist/print exception repr: SDKs and paths may contain private data.
-        _print({"error": type(error).__name__, "message": "Operation failed; media preserved"})
+        payload = {"error": type(error).__name__, "message": "Operation failed; media preserved"}
+        if args.command in {"finalize", "recover"} or (args.command == "list" and args.unfinished):
+            payload["code"] = _error_code(error)
+        _print(payload)
         return 1
