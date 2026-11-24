@@ -24,6 +24,17 @@ from recoryn.domain import (
     ValidationError,
     transition_session,
 )
+from recoryn.domain.capture_health import (
+    CaptureReceipt,
+    GapFact,
+    observed_interval,
+    stable_id,
+    track_loss,
+    validate_snapshot,
+)
+from recoryn.domain.capture_health import (
+    encoded as health_encoded,
+)
 
 from ._coordination import register_intent_check, root_mutex, unregister_intent_check
 from ._safe import (
@@ -52,6 +63,56 @@ from .chunks import (
     scan_prefix,
     verify_bundle,
 )
+
+
+def _bounded_health_projection(value: dict[str, Any]) -> dict[str, Any]:
+    """A byte-bounded compatibility view; canonical rows keep the full facts."""
+    result: dict[str, Any] = json.loads(health_encoded(value))
+    if len(canonical(result)) <= 60 * 1024:
+        return result
+    result["detail_complete"] = False
+    for key in ("backend_events", "epochs"):
+        entries = result.get(key, [])
+        while entries and len(canonical(result)) > 60 * 1024:
+            removed = max(1, len(entries) // 2)
+            del entries[:removed]
+            result[key + "_omitted"] = result.get(key + "_omitted", 0) + removed
+    for track in result.get("tracks", {}).values():
+        for key in ("events", "gaps", "loss_ranges"):
+            entries = track.get(key, [])
+            while entries and len(canonical(result)) > 60 * 1024:
+                removed = max(1, len(entries) // 2)
+                del entries[:removed]
+                track[key + "_omitted"] = track.get(key + "_omitted", 0) + removed
+                track["detail_complete"] = False
+                if key == "gaps":
+                    track["gap_detail_truncated"] = True
+    if len(canonical(result)) > 60 * 1024:
+        keep = {
+            "health_schema_version",
+            "health_version",
+            "capture_run_id",
+            "checkpoint_seq",
+            "run_status",
+            "has_unknown",
+            "detail_complete",
+            "tracks",
+            "health_status",
+            "health_error",
+            "legacy_archive_run_id",
+            "deferred_run_id",
+        }
+        result = {key: val for key, val in result.items() if key in keep}
+        for track in result.get("tracks", {}).values():
+            for key in ("events", "gaps", "loss_ranges"):
+                track.pop(key, None)
+            track["detail_complete"] = False
+    # Even unusual legacy metadata cannot make a compatibility view unbounded.
+    while len(canonical(result)) > 60 * 1024 and result.get("tracks"):
+        result["tracks"].pop(next(iter(result["tracks"])))
+        result["tracks_omitted"] = result.get("tracks_omitted", 0) + 1
+    return result
+
 
 _Listing = tuple[tuple[int, int, int], frozenset[str], bool, bool]
 _UNFINISHED = frozenset(
@@ -135,6 +196,8 @@ class Library:
         # Capture-path listing (stamp, names, unfinished, settled) while the index is
         # not current. It never opens an entry.
         self._journal_listing: _Listing | None = None
+        # Session-wide observation debt survives run changes even if marker I/O fails.
+        self._deferred_health_sessions: set[str] = set()
         mkdir(self.root)
         self.db_path = safe_path(self.root, "library.sqlite")
         for suffix in ("-wal", "-shm", "-journal"):
@@ -174,6 +237,30 @@ class Library:
                     session_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
                     status TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS capture_health_runs (
+                    session_id TEXT NOT NULL, capture_run_id TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL, health_version INTEGER NOT NULL,
+                    checkpoint_seq INTEGER NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL,
+                    PRIMARY KEY(session_id,capture_run_id),
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS capture_health_tracks (
+                    session_id TEXT NOT NULL, capture_run_id TEXT NOT NULL,
+                    track_id TEXT NOT NULL, epoch_id TEXT NOT NULL, payload TEXT NOT NULL,
+                    PRIMARY KEY(session_id,capture_run_id,track_id,epoch_id),
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE,
+                    FOREIGN KEY(session_id,capture_run_id) REFERENCES capture_health_runs(session_id,capture_run_id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS capture_health_events (
+                    session_id TEXT NOT NULL, event_id TEXT NOT NULL,
+                    capture_run_id TEXT NOT NULL, ordinal INTEGER NOT NULL, payload TEXT NOT NULL,
+                    gap_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', digest TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(session_id,event_id),
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE,
+                    FOREIGN KEY(session_id,capture_run_id) REFERENCES capture_health_runs(session_id,capture_run_id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS capture_health_event_order ON capture_health_events(session_id,capture_run_id,ordinal,event_id);
+                CREATE UNIQUE INDEX IF NOT EXISTS capture_health_gap_phase ON capture_health_events(session_id,gap_id,kind);
                 PRAGMA user_version=1;
                 COMMIT;
             """)
@@ -371,7 +458,7 @@ class Library:
         return (status.st_dev, status.st_ino, status.st_mtime_ns)
 
     def _list_journal(self, stamp: tuple[int, int, int]) -> tuple[frozenset[str], bool]:
-        """Root mutex held: entry names (no entry is opened) and whether stamp settled."""
+        """Names only. Off-root callers must recheck stamp/version before using them."""
         observed = time.time_ns()
         journal = safe_path(self.root, "deletion-journal")
         check_path(journal)
@@ -868,11 +955,34 @@ class Library:
         )
 
     def record_capture_health(self, session_id: str, health: dict[str, Any]) -> None:
+        encoded = canonical(
+            _bounded_health_projection(health)
+            if health.get("health_schema_version") == 2
+            else health
+        )
+        strict_json(encoded)
         with self._mutex:
             self._check_claim(session_id)
             self.get_session(session_id)
-            encoded = canonical(health)
-            strict_json(encoded)
+            current = self._db.execute(
+                "SELECT capture_health FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()[0]
+            if '"health_schema_version":2' in current.replace(" ", ""):
+                # Backend metadata is additive; legacy writers cannot erase v2 authority.
+                existing = strict_json(current.encode())
+                for key in (
+                    "health_schema_version",
+                    "health_version",
+                    "epochs",
+                    "tracks",
+                    "has_unknown",
+                    "detail_complete",
+                    "capture_run_id",
+                    "checkpoint_seq",
+                    "run_status",
+                ):
+                    if key in existing and health.get(key) != existing[key]:
+                        raise StateConflict("HEALTH_EVENT_CONFLICT")
             # Metadata size is bounded; callers must only supply the health DTO,
             # never audio, secrets or free-form provider exception bodies.
             with self._transaction() as connection:
@@ -882,13 +992,900 @@ class Library:
                     (encoded.decode("utf-8"), session_id),
                 )
 
-    def capture_health(self, session_id: str) -> dict[str, Any]:
+    @contextmanager
+    def _health_transaction(self) -> Iterator[sqlite3.Connection]:
+        """Authority holds root_mutex: ancillary metadata never waits on SQLite busy."""
+        connection = self._db
+        timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+        connection.execute("PRAGMA busy_timeout=0")
+        try:
+            with self._transaction() as transaction:
+                yield transaction
+        finally:
+            connection.execute(f"PRAGMA busy_timeout={timeout}")
+
+    def defer_capture_health(self, session_id: str, run_id: str) -> None:
+        """Best-effort conservative marker; no CLOSED or fabricated observations."""
+        old = self.capture_health(session_id, for_capture=True)
+        previous = canonical(old).decode()
+        old.update(
+            health_status="DEFERRED",
+            health_error="HEALTH_RECOVERY_PENDING",
+            has_unknown=True,
+            detail_complete=False,
+            deferred_run_id=run_id,
+        )
+        for track in old.get("tracks", {}).values():
+            track.update(detail_complete=False, media_loss_unknown=True, count_complete=False)
+            track.update(track_loss(track))
+        body = canonical(_bounded_health_projection(old)).decode()
+        with self._health_authority(session_id, capture=True) as authority:
+            if authority != "VALID":
+                raise StateConflict("DELETE_PENDING")
+            current = self._db.execute(
+                "SELECT capture_health FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()[0]
+            if current != previous:
+                raise StateConflict("HEALTH_SNAPSHOT_CHANGED")
+            with self._health_transaction() as connection:
+                connection.execute(
+                    "UPDATE sessions SET capture_health=?,generation=generation+1,manifest_sync_pending=1 WHERE session_id=?",
+                    (body, session_id),
+                )
+
+    def note_capture_health_deferred(self, session_id: str) -> None:
+        """Nonpersistent conservative read-model fact, independent of marker storage."""
         with self._mutex:
-            self.get_session(session_id)
+            self._deferred_health_sessions.add(session_id)
+
+    @staticmethod
+    def _deferred_health_view(health: dict[str, Any]) -> dict[str, Any]:
+        health.update(
+            health_status="DEFERRED",
+            health_error="HEALTH_RECOVERY_PENDING",
+            has_unknown=True,
+            detail_complete=False,
+        )
+        for track in health.get("tracks", {}).values():
+            track.update(detail_complete=False, media_loss_unknown=True, count_complete=False)
+            track.update(track_loss(track))
+        return health
+
+    def capture_health_pending(self, session_id: str) -> bool:
+        """Stop admission checks canonical OPEN runs, not only the last run's projection."""
+        health = self.capture_health(session_id)
+        with self._mutex:
+            return health.get("health_status") == "DEFERRED" or bool(
+                self._db.execute(
+                    "SELECT 1 FROM capture_health_runs WHERE session_id=? AND status='OPEN' LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            )
+
+    def capture_health(self, session_id: str, *, for_capture: bool = False) -> dict[str, Any]:
+        if for_capture:
+            return self._health_input(session_id, capture=True)[0]
+        with self._mutex:
+            session = self.get_session(session_id)
             row = self._db.execute(
                 "SELECT capture_health FROM sessions WHERE session_id=?", (session_id,)
             ).fetchone()
-            return strict_json(row[0].encode("utf-8"))
+            raw = row[0]
+            deferred = session_id in self._deferred_health_sessions
+            open_runs = {
+                r[0]
+                for r in self._db.execute(
+                    "SELECT capture_run_id FROM capture_health_runs WHERE session_id=? AND status='OPEN'",
+                    (session_id,),
+                )
+            }
+        health = strict_json(raw.encode("utf-8"))
+        if (
+            deferred
+            or open_runs - {health.get("capture_run_id")}
+            or (open_runs and session.state != SessionState.RECORDING)
+        ):
+            return self._deferred_health_view(health)
+        return health
+
+    @contextmanager
+    def _health_authority(self, session_id: str, *, capture: bool = False) -> Iterator[str]:
+        if not capture:
+            with self.job_authority(self.db_path, session_id) as state:
+                yield state
+            return
+        # Same per-session authority as capture's _writer_intent. Never open other
+        # sessions' journal bodies on the recording path. Names are prepared off root.
+        for _ in range(3):
+            with self._mutex:
+                version = self._history_version
+            try:
+                stamp = self._journal_stamp()
+                names, _ = self._list_journal(stamp)
+                incomplete = any(name.startswith(".tmp-") for name in names)
+            except (ValueError, OSError):
+                yield "HISTORY_UNAVAILABLE"
+                return
+            with self._mutex:
+                if version != self._history_version or stamp != self._journal_stamp():
+                    continue
+                self._check_version()
+                if self._missing_deletion_history or incomplete:
+                    state = "HISTORY_UNAVAILABLE"
+                elif f"{session_id}.json" in names or self._db_intent(session_id):
+                    state = "DELETED"
+                elif self._db.execute(
+                    "SELECT 1 FROM sessions WHERE session_id=?", (session_id,)
+                ).fetchone():
+                    state = "VALID"
+                else:
+                    state = "MISSING"
+                yield state
+                return
+        raise StateConflict("HEALTH_SNAPSHOT_CHANGED")
+
+    def _health_input(
+        self, session_id: str, *, capture: bool = False
+    ) -> tuple[dict[str, Any], int]:
+        # Prepare deletion authority off root; parse JSON after releasing its lease.
+        with self._health_authority(session_id, capture=capture) as authority:
+            if authority != "VALID":
+                raise StateConflict(
+                    "DELETE_PENDING" if authority != "HISTORY_UNAVAILABLE" else _HISTORY_UNAVAILABLE
+                )
+            raw = self._db.execute(
+                "SELECT capture_health FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()[0]
+        health = strict_json(raw.encode())
+        version = health.get("health_version", 0)
+        integer(version)
+        marker = health.get("health_schema_version")
+        if marker is not None and (type(marker) is not int or marker != 2):
+            raise ValidationError("HEALTH_VERSION_UNSUPPORTED")
+        with self._mutex:
+            row = self._db.execute(
+                "SELECT COUNT(*),MAX(health_version),MIN(schema_version),MAX(schema_version) FROM capture_health_runs WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+        if row[0]:
+            if row[2] != 2 or row[3] != 2:
+                raise ValidationError("HEALTH_VERSION_UNSUPPORTED")
+            if marker != 2 or row[1] != version:
+                raise ValidationError("HEALTH_UNREADABLE")
+        elif marker == 2:
+            raise ValidationError("HEALTH_UNREADABLE")
+        return health, version
+
+    def begin_capture_health(
+        self, session_id: str, snapshot: dict[str, Any], *, expected_state_version: int
+    ) -> int:
+        return self._store_health(
+            session_id,
+            snapshot,
+            expected_health_version=self._health_input(session_id, capture=True)[1],
+            begin_version=expected_state_version,
+            capture=True,
+        )
+
+    def checkpoint_capture_health(
+        self, session_id: str, snapshot: dict[str, Any], *, expected_health_version: int
+    ) -> int:
+        return self._store_health(
+            session_id, snapshot, expected_health_version=expected_health_version, capture=True
+        )
+
+    def finish_capture_health(
+        self,
+        session_id: str,
+        snapshot: dict[str, Any],
+        *,
+        expected_health_version: int,
+        receipt: CaptureReceipt,
+    ) -> int:
+        if not isinstance(receipt, CaptureReceipt) or not receipt.complete(
+            snapshot.get("capture_run_id", "")
+        ):
+            raise StateConflict("HEALTH_ACK_PENDING")
+        return self._store_health(
+            session_id,
+            snapshot,
+            expected_health_version=expected_health_version,
+            status="CLOSED",
+            capture=True,
+        )
+
+    def _store_health(
+        self,
+        session_id: str,
+        snapshot: dict[str, Any],
+        *,
+        expected_health_version: int,
+        begin_version: int | None = None,
+        status: str = "OPEN",
+        capture: bool = False,
+    ) -> int:
+        # Validation, encoding and projection happen outside the writer's root mutex.
+        snapshot = json.loads(health_encoded(snapshot))
+        validate_snapshot(snapshot)
+        if snapshot["session_id"] != session_id:
+            raise ValidationError("HEALTH_EVENT_CONFLICT")
+        integer(expected_health_version)
+        old, version = self._health_input(session_id, capture=capture)
+        if version != expected_health_version:
+            raise StateConflict("HEALTH_SNAPSHOT_CHANGED")
+        if any(not e.get("capture_run_id") for e in old.get("epochs", [])) and not old.get(
+            "legacy_archive_run_id"
+        ):
+            snapshot["legacy_projection"] = old
+        run_id, seq = snapshot["capture_run_id"], snapshot["checkpoint_seq"]
+        closing: list[dict[str, Any]] = []
+        if snapshot.get("gate_open_mono_ns") is not None:
+            with self._mutex:
+                prior_events = self._db.execute(
+                    "SELECT payload FROM capture_health_events WHERE session_id=? AND capture_run_id=(SELECT capture_run_id FROM capture_health_runs WHERE session_id=? AND capture_run_id!=? ORDER BY rowid DESC LIMIT 1) ORDER BY ordinal DESC LIMIT 256",
+                    (session_id, session_id, run_id),
+                ).fetchall()
+            prior_facts = [json.loads(row[0]) for row in prior_events]
+            closed_ids = {e["gap_id"] for e in prior_facts if e["kind"] == "CLOSE"}
+            next_ordinal = max((e["ordinal"] for e in prior_facts), default=0) + 1
+            for event in prior_facts:
+                if (
+                    event["reason"] in {"PAUSE", "SUSPEND"}
+                    and event["kind"] == "OPEN"
+                    and event["gap_id"] not in closed_ids
+                ):
+                    event.update(
+                        event_id=stable_id(event["gap_id"], "close"),
+                        kind="CLOSE",
+                        open=False,
+                        ordinal=next_ordinal,
+                    )
+                    next_ordinal += 1
+                    event["start"], event["end"] = observed_interval(
+                        event["start"],
+                        snapshot["gate_open_mono_ns"],
+                        event["clock_ref"],
+                        snapshot["process_clock_id"],
+                    )
+                    if event["end"] is None:
+                        event["range_quality"] = "UNKNOWN"
+                    GapFact.from_dict(event)
+                    closing.append(event)
+        with self._mutex:
+            previous = self._db.execute(
+                "SELECT checkpoint_seq,status,payload FROM capture_health_runs WHERE session_id=? AND capture_run_id=?",
+                (session_id, run_id),
+            ).fetchone()
+            event_rows = {
+                event["event_id"]: self._db.execute(
+                    "SELECT payload,digest FROM capture_health_events WHERE session_id=? AND event_id=?",
+                    (session_id, event["event_id"]),
+                ).fetchone()
+                for event in snapshot["events"] + closing
+            }
+        payload = health_encoded({k: v for k, v in snapshot.items() if k != "events"})
+        if previous is not None:
+            prior = json.loads(previous[2])
+            if "legacy_projection" in prior:
+                snapshot["legacy_projection"] = prior["legacy_projection"]
+                payload = health_encoded({k: v for k, v in snapshot.items() if k != "events"})
+            if seq < previous[0] or (
+                previous[1] != "OPEN"
+                and not (previous[1] == status and seq == previous[0] and payload == previous[2])
+            ):
+                raise StateConflict("HEALTH_SNAPSHOT_CHANGED")
+            for track, value in snapshot["tracks"].items():
+                before = prior["tracks"].get(track)
+                if before is None or value["epoch_id"] != before["epoch_id"]:
+                    raise StateConflict("HEALTH_EVENT_CONFLICT")
+                if any(
+                    value.get(k, 0) < before.get(k, 0)
+                    for k in ("accepted_frames", "dropped_frames", "device_lost_frames")
+                ):
+                    raise StateConflict("HEALTH_EVENT_CONFLICT")
+            if seq == previous[0] and payload != previous[2]:
+                raise StateConflict("HEALTH_EVENT_CONFLICT")
+        elif begin_version is None and status != "RECOVERED_UNCLEAN":
+            raise StateConflict("HEALTH_SNAPSHOT_CHANGED")
+        events = [(e, health_encoded(e)) for e in snapshot["events"] + closing]
+        event_digests = {event["event_id"]: sha256(body.encode()) for event, body in events}
+        staged_ids: dict[str, str] = {}
+        staged_phases: dict[tuple[str, str], str] = {}
+        for event, body in events:
+            phase_key = event["gap_id"], event["kind"]
+            if (event["event_id"] in staged_ids and staged_ids[event["event_id"]] != body) or (
+                phase_key in staged_phases and staged_phases[phase_key] != event["event_id"]
+            ):
+                raise StateConflict("HEALTH_EVENT_CONFLICT")
+            staged_ids[event["event_id"]] = body
+            staged_phases[phase_key] = event["event_id"]
+            row = event_rows[event["event_id"]]
+            if row is not None and (row[0] != body or row[1] != event_digests[event["event_id"]]):
+                raise StateConflict("HEALTH_EVENT_CONFLICT")
+            with self._mutex:
+                phase = self._db.execute(
+                    "SELECT event_id FROM capture_health_events WHERE session_id=? AND gap_id=? AND kind=?",
+                    (session_id, event["gap_id"], event["kind"]),
+                ).fetchone()
+                opening = (
+                    self._db.execute(
+                        "SELECT payload FROM capture_health_events WHERE session_id=? AND gap_id=? AND kind='OPEN'",
+                        (session_id, event["gap_id"]),
+                    ).fetchone()
+                    if event["kind"] == "CLOSE"
+                    else None
+                )
+            if phase is not None and phase[0] != event["event_id"]:
+                raise StateConflict("HEALTH_EVENT_CONFLICT")
+            if event["kind"] == "CLOSE":
+                before = (
+                    json.loads(opening[0])
+                    if opening is not None
+                    else next(
+                        (
+                            e
+                            for e, _ in events
+                            if e["gap_id"] == event["gap_id"] and e["kind"] == "OPEN"
+                        ),
+                        None,
+                    )
+                )
+                if before is None or any(
+                    event[k] != before[k]
+                    for k in (
+                        "session_id",
+                        "capture_run_id",
+                        "track_id",
+                        "epoch_id",
+                        "reason",
+                        "source",
+                        "clock_ref",
+                        "lost_frames",
+                        "count_quality",
+                    )
+                ):
+                    raise StateConflict("HEALTH_EVENT_CONFLICT")
+        if previous is not None and seq == previous[0] and status == previous[1]:
+            if any(event_rows[event["event_id"]] is None for event, _ in events):
+                raise StateConflict("HEALTH_EVENT_CONFLICT")
+            return version
+        tracks = {
+            k: {**v, **track_loss(v), "count_complete": status == "CLOSED"}
+            for k, v in snapshot["tracks"].items()
+        }
+        epoch = {"capture_run_id": run_id, "tracks": tracks, "queue": snapshot.get("queue")}
+        if snapshot["process_clock_id"] == "legacy":
+            tracks = {**old.get("tracks", {}), **tracks}
+        legacy_epochs = [e for e in old.get("epochs", []) if not e.get("capture_run_id")]
+        epochs = [
+            e
+            for e in old.get("epochs", [])
+            if e.get("capture_run_id") and e.get("capture_run_id") != run_id
+        ]
+        epochs.append(epoch)
+        projection = json.loads(
+            health_encoded(
+                {
+                    **old,
+                    "health_schema_version": 2,
+                    "health_version": version + 1,
+                    "capture_run_id": run_id,
+                    "checkpoint_seq": seq,
+                    "run_status": status,
+                    "epochs": legacy_epochs + epochs[-8:],
+                    "tracks": tracks,
+                    "has_unknown": old.get("has_unknown", False)
+                    or any(e["source"] != "CONTROL" and e["lost_frames"] is None for e, _ in events)
+                    or any(not v["detail_complete"] for v in tracks.values()),
+                    "detail_complete": len(epochs) <= 8
+                    and all(v["detail_complete"] for v in tracks.values()),
+                    **(
+                        {"legacy_archive_run_id": run_id}
+                        if "legacy_projection" in snapshot and not old.get("legacy_archive_run_id")
+                        else {}
+                    ),
+                }
+            )
+        )
+        # Keep the compatibility projection bounded; canonical events never get evicted.
+        for item in projection["epochs"]:
+            if not item.get("capture_run_id"):
+                continue  # Do not reinterpret, truncate or decorate legacy records.
+            for value in item["tracks"].values():
+                if len(value.get("gaps", [])) > 16:
+                    value["gaps"] = value["gaps"][-16:]
+                    value["gap_detail_truncated"] = True
+                    value["detail_complete"] = projection["detail_complete"] = False
+                if len(value.get("loss_ranges", [])) > 16:
+                    value["loss_ranges"] = value["loss_ranges"][-16:]
+                    value["detail_complete"] = projection["detail_complete"] = False
+        for value in projection["tracks"].values():
+            for key in ("gaps", "loss_ranges"):
+                if len(value.get(key, [])) > 16:
+                    value[key] = value[key][-16:]
+                    if key == "gaps":
+                        value["gap_detail_truncated"] = True
+                    value["detail_complete"] = projection["detail_complete"] = False
+        for track, value in projection["tracks"].items():
+            prior_events = (
+                old.get("tracks", {}).get(track, {}).get("events", [])
+                if previous is not None
+                else []
+            )
+            recent = {e["event_id"]: e for e in prior_events}
+            recent.update(
+                {
+                    e["event_id"]: e
+                    for e, _ in events
+                    if e["track_id"] == track and e["capture_run_id"] == run_id
+                }
+            )
+            value["events"] = list(recent.values())[-16:]
+            omitted = (
+                old.get("tracks", {}).get(track, {}).get("events_omitted", 0)
+                if previous is not None
+                else 0
+            )
+            value["events_omitted"] = omitted + max(0, len(recent) - 16)
+            if value["events_omitted"]:
+                projection["detail_complete"] = value["detail_complete"] = False
+        with self._mutex:
+            pending = session_id in self._deferred_health_sessions or bool(
+                self._db.execute(
+                    "SELECT 1 FROM capture_health_runs WHERE session_id=? AND capture_run_id!=? AND status='OPEN' LIMIT 1",
+                    (session_id, run_id),
+                ).fetchone()
+            )
+        if pending:
+            self._deferred_health_view(projection)
+        projection_body = canonical(_bounded_health_projection(projection))
+        strict_json(projection_body)
+        previous_body = canonical(old).decode()
+        track_rows = [
+            (
+                track,
+                value["epoch_id"],
+                health_encoded(
+                    {"session_id": session_id, "capture_run_id": run_id, "track_id": track, **value}
+                ),
+            )
+            for track, value in snapshot["tracks"].items()
+        ]
+        with self._health_authority(session_id, capture=capture) as authority:
+            if authority != "VALID":
+                raise StateConflict(
+                    "DELETE_PENDING" if authority != "HISTORY_UNAVAILABLE" else _HISTORY_UNAVAILABLE
+                )
+            self._check_claim(session_id)
+            current = self._db.execute(
+                "SELECT capture_health FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()[0]
+            if current != previous_body:
+                raise StateConflict("HEALTH_SNAPSHOT_CHANGED")
+            with self._health_transaction() as connection:
+                if begin_version is not None:
+                    state_row = connection.execute(
+                        "SELECT state,state_version FROM sessions WHERE session_id=?", (session_id,)
+                    ).fetchone()
+                    session = Session(session_id, SessionState(state_row[0]), state_row[1])
+                    changed = transition_session(session, SessionState.RECORDING, begin_version)
+                    connection.execute(
+                        "UPDATE sessions SET state=?,state_version=? WHERE session_id=?",
+                        (changed.state.value, changed.state_version, session_id),
+                    )
+                    self._event(connection, session_id, changed.state.value, changed.state_version)
+                connection.execute(
+                    "INSERT INTO capture_health_runs VALUES(?,?,2,?,?,?,?) ON CONFLICT(session_id,capture_run_id) DO UPDATE SET health_version=excluded.health_version,checkpoint_seq=excluded.checkpoint_seq,status=excluded.status,payload=excluded.payload",
+                    (session_id, run_id, version + 1, seq, status, payload),
+                )
+                for track, epoch_id, body in track_rows:
+                    connection.execute(
+                        "INSERT INTO capture_health_tracks VALUES(?,?,?,?,?) ON CONFLICT(session_id,capture_run_id,track_id,epoch_id) DO UPDATE SET payload=excluded.payload",
+                        (session_id, run_id, track, epoch_id, body),
+                    )
+                for event, body in events:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO capture_health_events VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            session_id,
+                            event["event_id"],
+                            event["capture_run_id"],
+                            event["ordinal"],
+                            body,
+                            event["gap_id"],
+                            event["kind"],
+                            event_digests[event["event_id"]],
+                        ),
+                    )
+                connection.execute(
+                    "UPDATE sessions SET capture_health=?,generation=generation+1,manifest_sync_pending=1 WHERE session_id=?",
+                    (projection_body.decode(), session_id),
+                )
+        return version + 1
+
+    def _resolve_capture_health_deferred(self, session_id: str) -> None:
+        """Clear pending observation only after every run has a final health status."""
+        old, _ = self._health_input(session_id)
+        previous = canonical(old).decode()
+        with self._mutex:
+            pending = session_id in self._deferred_health_sessions
+        if not pending and not any(
+            key in old for key in ("health_status", "health_error", "deferred_run_id")
+        ):
+            return
+        resolved = dict(old)
+        for key in ("health_status", "health_error", "deferred_run_id"):
+            resolved.pop(key, None)
+        if pending:
+            resolved["has_unknown"] = True
+        body = canonical(
+            _bounded_health_projection(resolved)
+            if resolved.get("health_schema_version") == 2
+            else resolved
+        ).decode()
+        with self._health_authority(session_id) as authority:
+            if authority != "VALID":
+                raise StateConflict("DELETE_PENDING")
+            if self._db.execute(
+                "SELECT 1 FROM capture_health_runs WHERE session_id=? AND status='OPEN' LIMIT 1",
+                (session_id,),
+            ).fetchone():
+                raise StateConflict("HEALTH_RECOVERY_PENDING")
+            current = self._db.execute(
+                "SELECT capture_health FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()[0]
+            if current != previous:
+                raise StateConflict("HEALTH_SNAPSHOT_CHANGED")
+            if body != previous:
+                with self._health_transaction() as connection:
+                    connection.execute(
+                        "UPDATE sessions SET capture_health=?,generation=generation+1,manifest_sync_pending=1 WHERE session_id=?",
+                        (body, session_id),
+                    )
+            self._deferred_health_sessions.discard(session_id)
+
+    def _recover_capture_health(self, session_id: str) -> dict[str, Any]:
+        """Called under the existing session claim, after deletion/live admission."""
+        try:
+            _, observed_version = self._health_input(session_id)
+            cursor = None
+            while True:
+                page = self.capture_health_details(
+                    session_id, cursor=cursor, expected_health_version=observed_version
+                )
+                cursor = page["next_cursor"]
+                if cursor is None:
+                    break
+            with self._mutex:
+                rows = self._db.execute(
+                    "SELECT schema_version,status,payload FROM capture_health_runs WHERE session_id=? ORDER BY capture_run_id",
+                    (session_id,),
+                ).fetchall()
+            # Validate the entire run set before making any repair.
+            snapshots = []
+            for row in rows:
+                if type(row[0]) is not int or row[0] != 2:
+                    raise ValidationError("HEALTH_VERSION_UNSUPPORTED")
+                snapshot = strict_json(row[2].encode(), limit=8 * 1024 * 1024)
+                validate_snapshot({**snapshot, "events": []})
+                if row[1] not in {"OPEN", "CLOSED", "RECOVERED_UNCLEAN"}:
+                    raise ValidationError("HEALTH_UNREADABLE")
+                snapshots.append((row[1], snapshot))
+            legacy = self.capture_health(session_id)
+            sources = [legacy] + [
+                s["legacy_projection"] for _, s in snapshots if "legacy_projection" in s
+            ]
+            known: dict[tuple[str, str], int | None] = {}
+            for source in sources:
+                for entry in source.get("epochs", []):
+                    if entry.get("capture_run_id"):
+                        continue
+                    for track, value in entry.get("tracks", {}).items():
+                        epoch = value.get("epoch_id")
+                        if not isinstance(epoch, str):
+                            continue
+                        count = value.get("dropped_frames")
+                        count = count if type(count) is int and count >= 0 else None
+                        key = track, epoch
+                        if key in known and known[key] != count:
+                            count = None
+                        known[key] = count
+            represented = {
+                (track, value["epoch_id"])
+                for _, item in snapshots
+                for track, value in item["tracks"].items()
+            }
+            if not rows or legacy.get("deferred_run_id"):
+                for chunk in self.chunks(session_id):
+                    key = chunk.track_id, chunk.epoch_id
+                    if key not in represented:
+                        known.setdefault(key, None)
+            session = self.get_session(session_id)
+            unclean = session.state in {
+                SessionState.RECORDING,
+                SessionState.INTERRUPTED,
+                SessionState.FINALIZING,
+            }
+            unclean = unclean and not any(s["process_clock_id"] != "legacy" for _, s in snapshots)
+            unclean = unclean or bool(legacy.get("deferred_run_id")) and not rows
+            unknown = [key for key, count in known.items() if unclean or count is None]
+            if unclean and not known and not rows:
+                unknown = [("session", "unidentified")]
+            completed = {
+                (track, value["epoch_id"])
+                for _, s in snapshots
+                if s["process_clock_id"] == "legacy"
+                for track, value in s["tracks"].items()
+            }
+            for track, epoch in unknown:
+                if (track, epoch) in completed:
+                    continue
+                rid = stable_id(stable_id(session_id, "legacy"), track, epoch)
+                snapshots.append(
+                    (
+                        "OPEN",
+                        {
+                            "schema_version": 2,
+                            "session_id": session_id,
+                            "capture_run_id": rid,
+                            "process_clock_id": "legacy",
+                            "checkpoint_seq": 0,
+                            "observed_mono_ns": 0,
+                            "tracks": {
+                                track: {
+                                    "epoch_id": epoch,
+                                    "state": "STOPPED",
+                                    "reason": "UNCLEAN",
+                                    "accepted_frames": 0,
+                                    "dropped_frames": known.get((track, epoch)) or 0,
+                                    "legacy_prefix_known": known.get((track, epoch)) is not None,
+                                    "detail_complete": False,
+                                }
+                            },
+                            "events": [],
+                        },
+                    )
+                )
+            if not rows and not unknown:
+                self._resolve_capture_health_deferred(session_id)
+                return {
+                    "status": "LEGACY",
+                    "code": None,
+                    "has_unknown": bool(self.capture_health(session_id).get("has_unknown")),
+                }
+            repaired = False
+            for status, snapshot in snapshots:
+                if status != "OPEN":
+                    continue
+                snapshot["events"] = []
+                for track, value in snapshot["tracks"].items():
+                    identity = stable_id(
+                        session_id,
+                        snapshot["capture_run_id"],
+                        track,
+                        value["epoch_id"],
+                        snapshot["checkpoint_seq"],
+                        "UNKNOWN_TAIL",
+                    )
+                    snapshot["events"].append(
+                        GapFact(
+                            session_id,
+                            snapshot["capture_run_id"],
+                            track,
+                            value["epoch_id"],
+                            identity,
+                            identity,
+                            snapshot.get("event_ordinal", snapshot["checkpoint_seq"]) + 1,
+                            "UNKNOWN_TAIL",
+                            "RECOVERY",
+                            snapshot["process_clock_id"],
+                            kind="UNKNOWN_TAIL",
+                            detail_complete=False,
+                            observation_bounds=(snapshot["observed_mono_ns"], None),
+                        ).to_dict()
+                    )
+                    value.update(
+                        state="STOPPED",
+                        reason="UNCLEAN",
+                        detail_complete=False,
+                        media_loss_unknown=True,
+                    )
+                snapshot["checkpoint_seq"] += 1
+                self._store_health(
+                    session_id,
+                    snapshot,
+                    expected_health_version=self._health_input(session_id)[1],
+                    status="RECOVERED_UNCLEAN",
+                )
+                repaired = True
+            self._resolve_capture_health_deferred(session_id)
+            return {
+                "status": "RECOVERED_UNCLEAN"
+                if repaired or any(s == "RECOVERED_UNCLEAN" for s, _ in snapshots)
+                else "CLOSED",
+                "code": None,
+                "has_unknown": bool(self.capture_health(session_id).get("has_unknown")),
+            }
+        except StateConflict as error:
+            code = str(error)
+            if code not in {
+                "DELETE_PENDING",
+                "DELETION_HISTORY_UNAVAILABLE",
+                "HEALTH_RECOVERY_PENDING",
+            }:
+                code = "HEALTH_RECOVERY_PENDING"
+            return {"status": "DEFERRED", "code": code, "has_unknown": True}
+        except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as error:
+            code = (
+                str(error)
+                if str(error) in {"HEALTH_VERSION_UNSUPPORTED", "HEALTH_UNREADABLE"}
+                else "HEALTH_RECOVERY_PENDING"
+                if isinstance(error, (OSError, sqlite3.Error))
+                else "HEALTH_UNREADABLE"
+            )
+            return {"status": "DEFERRED", "code": code, "has_unknown": True}
+
+    def capture_health_details(
+        self,
+        session_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 128,
+        expected_health_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Indexed, bounded keyset pages; no full-history sort under root_mutex."""
+        integer(limit, minimum=1)
+        if limit > 256:
+            raise ValidationError("HEALTH_PAGE_LIMIT")
+        if expected_health_version is not None:
+            integer(expected_health_version)
+        summary, version = self._health_input(session_id)
+        if expected_health_version is not None and expected_health_version != version:
+            raise StateConflict("HEALTH_SNAPSHOT_CHANGED")
+        phases = ("run", "track", "event")
+        phase, key = "run", None
+        if cursor is not None:
+            if not isinstance(cursor, str):
+                raise ValidationError("HEALTH_UNREADABLE")
+            try:
+                token = strict_json(cursor.encode(), limit=1024)
+            except ValueError:
+                raise ValidationError("HEALTH_UNREADABLE") from None
+            if (
+                set(token) != {"schema_version", "health_version", "phase", "key"}
+                or type(token["schema_version"]) is not int
+                or token["schema_version"] != 1
+            ):
+                raise ValidationError("HEALTH_UNREADABLE")
+            integer(token["health_version"])
+            if token["health_version"] != version:
+                raise StateConflict("HEALTH_SNAPSHOT_CHANGED")
+            phase, key = token["phase"], token["key"]
+            if not isinstance(phase, str) or phase not in phases:
+                raise ValidationError("HEALTH_UNREADABLE")
+            if key is not None:
+                if not isinstance(key, list) or len(key) != (1 if phase == "run" else 3):
+                    raise ValidationError("HEALTH_UNREADABLE")
+                for n, item in enumerate(key):
+                    if phase == "event" and n == 1:
+                        integer(item)
+                    else:
+                        identifier(item)
+        page_rows: list[tuple[str, tuple[Any, ...], str, tuple[Any, ...]]] = []
+        next_position: tuple[str, list[Any] | None] | None = None
+        for current_phase in phases[phases.index(phase) :]:
+            lower = key if current_phase == phase and key is not None else None
+            remaining = limit - len(page_rows)
+            with self._mutex:
+                if current_phase == "run":
+                    fetched = self._db.execute(
+                        "SELECT capture_run_id,payload,status,health_version,schema_version FROM capture_health_runs WHERE session_id=? AND capture_run_id>? ORDER BY capture_run_id LIMIT ?",
+                        (session_id, lower[0] if lower else "", remaining + 1),
+                    ).fetchall()
+                    prepared = [(current_phase, (r[0],), r[1], tuple(r[2:])) for r in fetched]
+                elif current_phase == "track":
+                    fetched = self._db.execute(
+                        "SELECT capture_run_id,track_id,epoch_id,payload FROM capture_health_tracks WHERE session_id=? AND (capture_run_id,track_id,epoch_id)>(?,?,?) ORDER BY capture_run_id,track_id,epoch_id LIMIT ?",
+                        (session_id, *(lower or ("", "", "")), remaining + 1),
+                    ).fetchall()
+                    prepared = [(current_phase, tuple(r[:3]), r[3], ()) for r in fetched]
+                else:
+                    fetched = self._db.execute(
+                        "SELECT capture_run_id,ordinal,event_id,payload,gap_id,kind,digest FROM capture_health_events WHERE session_id=? AND (capture_run_id,ordinal,event_id)>(?,?,?) ORDER BY capture_run_id,ordinal,event_id LIMIT ?",
+                        (session_id, *(lower or ("", -1, "")), remaining + 1),
+                    ).fetchall()
+                    prepared = [(current_phase, tuple(r[:3]), r[3], tuple(r[4:])) for r in fetched]
+            page_rows.extend(prepared[:remaining])
+            if len(prepared) > remaining:
+                next_position = current_phase, list(prepared[remaining - 1][1])
+                break
+            if len(page_rows) == limit:
+                n = phases.index(current_phase) + 1
+                next_position = (phases[n], None) if n < len(phases) else None
+                break
+        items = []
+        for kind, identity, raw, metadata in page_rows:
+            try:
+                value = strict_json(
+                    raw.encode(), limit=4096 if kind == "event" else 8 * 1024 * 1024
+                )
+                if kind == "event":
+                    event = GapFact.from_dict(value)
+                    if (
+                        event.session_id != session_id
+                        or identity != (event.capture_run_id, event.ordinal, event.event_id)
+                        or metadata != (event.gap_id, event.kind, sha256(raw.encode()))
+                    ):
+                        raise ValidationError("HEALTH_UNREADABLE")
+                    with self._mutex:
+                        parent = self._db.execute(
+                            "SELECT 1 FROM capture_health_tracks WHERE session_id=? AND capture_run_id=? AND track_id=? AND epoch_id=?",
+                            (session_id, event.capture_run_id, event.track_id, event.epoch_id),
+                        ).fetchone()
+                    if parent is None:
+                        raise ValidationError("HEALTH_UNREADABLE")
+                elif kind == "run":
+                    validate_snapshot({**value, "events": []})
+                    if (
+                        metadata[0] not in {"OPEN", "CLOSED", "RECOVERED_UNCLEAN"}
+                        or metadata[2] != 2
+                        or value["session_id"] != session_id
+                        or identity != (value["capture_run_id"],)
+                    ):
+                        raise ValidationError("HEALTH_UNREADABLE")
+                else:
+                    if value["session_id"] != session_id or identity != (
+                        value["capture_run_id"],
+                        value["track_id"],
+                        value["epoch_id"],
+                    ):
+                        raise ValidationError("HEALTH_UNREADABLE")
+                    validate_snapshot(
+                        {
+                            "schema_version": 2,
+                            "session_id": value["session_id"],
+                            "capture_run_id": value["capture_run_id"],
+                            "process_clock_id": "validation",
+                            "checkpoint_seq": 0,
+                            "observed_mono_ns": 0,
+                            "tracks": {
+                                value["track_id"]: {
+                                    k: v
+                                    for k, v in value.items()
+                                    if k not in {"session_id", "capture_run_id", "track_id"}
+                                }
+                            },
+                            "events": [],
+                        }
+                    )
+            except (ValueError, TypeError, KeyError):
+                raise ValidationError("HEALTH_UNREADABLE") from None
+            item = {"kind": kind, "value": value}
+            if kind == "run":
+                item.update(
+                    status=metadata[0], health_version=metadata[1], schema_version=metadata[2]
+                )
+            items.append(item)
+        if self._health_input(session_id)[1] != version:
+            raise StateConflict("HEALTH_SNAPSHOT_CHANGED")
+        next_cursor = (
+            None
+            if next_position is None
+            else health_encoded(
+                {
+                    "schema_version": 1,
+                    "health_version": version,
+                    "phase": next_position[0],
+                    "key": next_position[1],
+                }
+            )
+        )
+        return {
+            "health_version": version,
+            "rows": items,
+            "next_cursor": next_cursor,
+            "legacy_only": summary.get("health_schema_version") != 2,
+        }
 
     def _manifest(self, session_id: str) -> dict[str, Any]:
         with self._mutex:
@@ -951,6 +1948,21 @@ class Library:
             with self._mutex:
                 if self._is_live(session_id):
                     raise StateConflict("Writer has not drained")
+            _, health_version = self._health_input(session_id)
+            cursor = None
+            while True:
+                page = self.capture_health_details(
+                    session_id, cursor=cursor, expected_health_version=health_version
+                )
+                cursor = page["next_cursor"]
+                if cursor is None:
+                    break
+            with self._mutex:
+                if self._db.execute(
+                    "SELECT 1 FROM capture_health_runs WHERE session_id=? AND status='OPEN' LIMIT 1",
+                    (session_id,),
+                ).fetchone():
+                    raise StateConflict("HEALTH_RECOVERY_PENDING")
             manifest = self._manifest(session_id)
             encoded = canonical(manifest["chunks"]).decode("utf-8")
             with self._mutex:
@@ -1217,6 +2229,7 @@ class Library:
                 )
             result["state"] = session.state.value
             result["verified_chunk_ids"] = sorted(verified)
+            result["health_recovery"] = self._recover_capture_health(session_id)
             try:
                 self.write_manifest(session_id)
             except (OSError, ValueError, sqlite3.Error):
@@ -1389,6 +2402,7 @@ class Library:
                     "session_id": session_id,
                     "state": SessionState.FINALIZED.value,
                     "already_finalized": True,
+                    "finalized": recovery.get("health_recovery", {}).get("status") != "DEFERRED",
                     "previous_state": previous_state,
                     "recovery": recovery,
                     "chunk_count": len(sealed_list),
@@ -1398,6 +2412,15 @@ class Library:
             if expected_version is not None and expected_version != previous_version:
                 raise StateConflict("STALE_SESSION_VERSION")
             recovery = self.recover_session(session_id)
+            if recovery.get("health_recovery", {}).get("status") == "DEFERRED":
+                return {
+                    "session_id": session_id,
+                    "state": self.get_session(session_id).state.value,
+                    "finalized": False,
+                    "health_recovery": recovery["health_recovery"],
+                    "recovery": recovery,
+                    "previous_state": previous_state,
+                }
             session = self.get_session(session_id)
             if session.state != SessionState.FINALIZING:
                 self.transition(session_id, SessionState.FINALIZING, session.state_version)

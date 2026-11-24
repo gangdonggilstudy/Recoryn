@@ -153,7 +153,7 @@ def test_storage_failure_interrupts_without_claiming_finalized(
 def test_capture_health_write_failure_cannot_leave_recording_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail_health(session_id: str, health: dict[str, object]) -> None:
+    def fail_health(*args: object, **kwargs: object) -> None:
         raise OSError("P04 injected health persistence failure")
 
     with Library(tmp_path) as library:
@@ -161,11 +161,12 @@ def test_capture_health_write_failure_cannot_leave_recording_state(
         try:
             service.start()
             assert service.submit(block_for(service, 0))
-            monkeypatch.setattr(library, "record_capture_health", fail_health)
-            with pytest.raises((RecordingError, OSError)):
-                service.stop()
-            assert not service.worker_alive
-            assert library.get_session(service.session_id).state is SessionState.INTERRUPTED
+            monkeypatch.setattr(library, "finish_capture_health", fail_health)
+            result = service.stop()
+            assert result["state"] == "FINALIZED"
+            assert library.capture_health(service.session_id)["has_unknown"] is True
+            assert not service.storage_failed and not service.worker_alive
+            assert result["frame_count"] == 3
         finally:
             service.join_writer()
 
@@ -176,9 +177,10 @@ def test_failed_start_does_not_leak_a_live_writer(
     with Library(tmp_path) as library:
         service = RecordingService(library, {"mic": AudioFormat(48000, 1)})
 
-        def fail_transition(session_id: str, target: SessionState, expected_version: int) -> None:
+        def fail_transition(*args: object, **kwargs: object) -> None:
             raise OSError("P04 injected start transition failure")
 
+        monkeypatch.setattr(library, "begin_capture_health", fail_transition)
         monkeypatch.setattr(library, "transition", fail_transition)
         try:
             with pytest.raises((RecordingError, OSError)):

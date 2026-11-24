@@ -25,7 +25,7 @@ class PowerCoordinator:
             # Set intent before attempting acknowledgements. Failure must not
             # leave an automatic-resume path enabled after the system wakes.
             self.resume_required = True
-            self.recorder.pause()
+            self.recorder.pause(reason="SUSPEND")
             return True
         return False
 

@@ -243,6 +243,42 @@ def _export(library: Any, session_id: str, output: Path) -> dict[str, Any]:
         "files": files,
         "capture_health": library.capture_health(session_id),
     }
+    health = manifest["capture_health"]
+    if health.get("health_schema_version") == 2:
+        import hashlib
+
+        version = health["health_version"]
+        digest, count, cursor = hashlib.sha256(), 0, None
+        with (destination / "capture-health.jsonl").open("xb") as details:
+            while True:
+                page = library.capture_health_details(
+                    session_id, cursor=cursor, expected_health_version=version
+                )
+                for row in page["rows"]:
+                    payload = (
+                        json.dumps(row, ensure_ascii=True, sort_keys=True, allow_nan=False) + "\n"
+                    ).encode()
+                    details.write(payload)
+                    digest.update(payload)
+                    count += 1
+                cursor = page["next_cursor"]
+                if cursor is None:
+                    break
+            details.flush()
+            os.fsync(details.fileno())
+        if library.capture_health(session_id).get("health_version") != version:
+            raise ValueError("HEALTH_SNAPSHOT_CHANGED")
+        manifest["capture_health_details"] = {
+            "file": "capture-health.jsonl",
+            "sha256": digest.hexdigest(),
+            "rows": count,
+            "health_version": version,
+        }
+    else:
+        manifest["capture_health_details"] = {
+            "available": False,
+            "reason": "LEGACY_HEALTH_DETAILS_UNAVAILABLE",
+        }
     # The index is the completion marker; partial outputs without it are not complete.
     with (destination / "export.json").open("x", encoding="utf-8") as index_stream:
         json.dump(manifest, index_stream, ensure_ascii=False, sort_keys=True, allow_nan=False)
@@ -405,6 +441,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 result = _export(library, args.session_id, args.output)
         _print(result)
+        if args.command in {"recover", "finalize"} and isinstance(result, dict):
+            recovery = result.get("recovery", result)
+            if recovery.get("health_recovery", {}).get("status") == "DEFERRED":
+                return 2
         if args.command == "delete" and args.retry_only:
             # Only a confirmed local completion is success; pending/NOT_PENDING is 2.
             confirmed = (

@@ -67,7 +67,7 @@ class FakeLibrary:
 
 
 class FakeRecording:
-    def __init__(self, library, formats):
+    def __init__(self, library, formats, *, source_managed=False):
         self.library, self.formats = library, formats
         self.session_id = "s"
         self.epochs = {track: "epoch-1" for track in formats}
@@ -87,7 +87,13 @@ class FakeRecording:
     def health_snapshot(self):
         return {"accepting": self.accepting, "storage_failed": self.storage_failed}
 
-    def pause(self):
+    def observe_health(self, track, epoch, event):
+        return True
+
+    def sources_released(self):
+        pass
+
+    def pause(self, *, reason="PAUSE"):
         self.accepting, self.library.state = False, SessionState.PAUSED
 
     def resume(self):
@@ -297,10 +303,10 @@ def test_actual_capture_ack_failures_keep_pending_facts(monkeypatch, action):
     class Recording(FakeRecording):
         refuse = True
 
-        def pause(self):
+        def pause(self, *, reason="PAUSE"):
             if action == "pause" and self.refuse:
                 raise RecordingError("WRITER_ACK_PENDING")
-            return super().pause()
+            return super().pause(reason=reason)
 
         def stop(self, **kwargs):
             if action == "stop" and self.refuse:

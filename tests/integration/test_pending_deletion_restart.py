@@ -873,6 +873,8 @@ def test_deletion_linearizes_with_same_session_actions(
         if order == "other_first":
             first = describe(_call(action))
             exported = media_tree(output)
+            if mode == "new" and other in {"recover", "finalize"}:
+                generation = generation_of(library) + 1
             second = describe(_call(deletion))
             waited = False
         else:

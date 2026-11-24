@@ -194,6 +194,14 @@ class MainWindow(QMainWindow):
             controls.addWidget(widget)
         layout.addLayout(controls)
         layout.addWidget(self.captured)
+        self.track_health = QLabel("트랙 건강: 관측 대기")
+        self.track_health.setAccessibleName("트랙별 건강·확인된 큐 유실·미상 구간")
+        self.track_health.setWordWrap(True)
+        layout.addWidget(self.track_health)
+        self._health_query_generation = 0
+        self._health_selected_session: str | None = None
+        self._health_detail_cursor: str | None = None
+        self._health_detail_version: int | None = None
         self.warning = QLabel(
             "녹음 전 참여자 동의와 적용 규정을 확인하세요. 외부 전송은 기본 차단됩니다."
         )
@@ -223,6 +231,8 @@ class MainWindow(QMainWindow):
         for text, callback in (
             ("새로고침", self.refresh_sessions),
             ("복구 검토", self.recover_selected),
+            ("트랙 건강 상세", self.show_track_health_details),
+            ("건강 상세 다음 페이지", self.next_track_health_page),
             (None, None),
             ("오디오 내보내기", self.export_selected),
             ("세션 삭제", self.delete_selected),
@@ -579,6 +589,10 @@ class MainWindow(QMainWindow):
 
     def _session_selected(self, current: Any = None, previous: Any = None) -> None:
         session_id = self.selected_session()
+        if session_id != self._health_selected_session:
+            self._health_selected_session = session_id
+            self._health_query_generation += 1
+            self._health_detail_cursor = self._health_detail_version = None
         if (
             self._review_details is not None
             and session_id is not None
@@ -630,6 +644,55 @@ class MainWindow(QMainWindow):
     def _show_refusal(self, code: str) -> None:
         self.warning.setText(_REFUSALS[code])
         self.refresh_sessions()
+
+    def show_track_health_details(self, *, next_page: bool = False) -> None:
+        session_id = self.selected_session()
+        if session_id is None or self.busy:
+            return
+        self._health_query_generation += 1
+        generation = self._health_query_generation
+        cursor = self._health_detail_cursor if next_page else None
+        version = self._health_detail_version if next_page else None
+        self.details.setPlainText("건강 이력 확인 중 · 원본과 상태를 변경하지 않습니다")
+
+        def read() -> Any:
+            summary = self.library.capture_health(session_id)
+            return summary, self.library.capture_health_details(
+                session_id, cursor=cursor, expected_health_version=version
+            )
+
+        def done(value: Any) -> None:
+            if (
+                self._closing_requested
+                or generation != self._health_query_generation
+                or session_id != self.selected_session()
+            ):
+                return
+            import json
+
+            from recoryn.app.status import track_health_lines
+
+            summary, page = value
+            self._health_detail_cursor = page["next_cursor"]
+            self._health_detail_version = page["health_version"]
+            lines = track_health_lines(summary)
+            if page["legacy_only"]:
+                lines.append("legacy 건강 기록 · 전체 장치 유실은 미상")
+            lines.extend(
+                json.dumps(row, ensure_ascii=False, sort_keys=True) for row in page["rows"]
+            )
+            lines.append(
+                "다음 페이지 있음 · 미조회는 유실 0을 뜻하지 않습니다"
+                if page["next_cursor"] is not None
+                else "현재 snapshot 상세 마지막 페이지"
+            )
+            self.details.setPlainText("\n".join(lines))
+
+        self.operation(read, done)
+
+    def next_track_health_page(self) -> None:
+        if self._health_detail_cursor is not None:
+            self.show_track_health_details(next_page=True)
 
     def recover_selected(self) -> None:
         session_id = self.selected_session()
@@ -744,7 +807,11 @@ class MainWindow(QMainWindow):
             )
             self.details.setPlainText(text)
             self.warning.setText(
-                "세션을 확정했습니다. 내보내기와 전사를 요청할 수 있습니다. "
+                "이미 확정됨 · 건강 판정 보류 · 기존 확정 상태를 유지합니다."
+                if result.get("already_finalized") and result.get("finalized") is False
+                else "건강 판정 보류 · 확정하지 않았습니다. 원본을 보존합니다."
+                if result.get("finalized") is False
+                else "세션을 확정했습니다. 내보내기와 전사를 요청할 수 있습니다. "
                 "중단·누락 구간은 복원되지 않습니다."
             )
 
@@ -1127,6 +1194,9 @@ class MainWindow(QMainWindow):
         if recording is not None:
             self._show_capture_status()
             capture_health = recording.health_snapshot()
+            from recoryn.app.status import track_health_lines
+
+            self.track_health.setText("\n".join(track_health_lines(capture_health)))
             if capture_health["storage_failed"]:
                 self.indicator.setText("저장 오류 · 녹음 지속을 확인할 수 없습니다")
                 self._alert("확정된 원본은 보존됩니다. 정지 후 복구 정보를 확인하세요.")

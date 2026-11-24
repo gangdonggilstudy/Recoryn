@@ -89,9 +89,9 @@ def state_label(state: str) -> str:
     return f"{_STATE_LABELS.get(state, '알 수 없음')}({state})"
 
 
-def _known_epochs(health: Mapping[str, Any]) -> dict[tuple[str, str], int]:
+def _known_epochs(health: Mapping[str, Any]) -> dict[tuple[str, str], int | None]:
     """Epochs with a durable health record and their dropped frame totals."""
-    known: dict[tuple[str, str], int] = {}
+    known: dict[tuple[str, str], int | None] = {}
     epochs = health.get("epochs") if isinstance(health, Mapping) else None
     if not isinstance(epochs, list):
         return known
@@ -102,10 +102,12 @@ def _known_epochs(health: Mapping[str, Any]) -> dict[tuple[str, str], int]:
         for track, value in tracks.items():
             if not isinstance(value, Mapping) or not isinstance(value.get("epoch_id"), str):
                 continue
-            dropped = value.get("dropped_frames", 0)
-            dropped = dropped if type(dropped) is int and dropped >= 0 else 0
+            dropped = value.get("dropped_frames")
+            dropped = dropped if type(dropped) is int and dropped >= 0 else None
+            if value.get("legacy_prefix_known") is False:
+                dropped = None
             key = (str(track), value["epoch_id"])
-            known[key] = known.get(key, 0) + dropped
+            known[key] = dropped if key not in known or known[key] == dropped else None
     return known
 
 
@@ -206,6 +208,13 @@ def recovery_view(
     missing: list[str] = []
     candidates: list[str] = []
     notes: list[str] = []
+    health_result = result.get("health_recovery")
+    if isinstance(health_result, Mapping) and health_result.get("status") == "DEFERRED":
+        notes.append("건강 판정 보류 · " + str(health_result.get("code", "HEALTH_UNREADABLE")))
+    if health.get("has_unknown"):
+        notes.append(
+            "확인된 큐 유실 prefix 이후 미상(UNKNOWN_TAIL 또는 장치 미상 구간); 미상은 0이 아닙니다."
+        )
     if not has_verification:
         notes.append("복구 미디어 검증 정보가 없어 보존량을 확인하지 못했습니다.")
     details = result.get("details") or []
@@ -259,7 +268,11 @@ def finalize_lines(
 ) -> list[str]:
     """Lines for a finalize_unfinished result, followed by its recovery review."""
     head = [
-        "이미 확정된 세션입니다. 상태와 확정 목록은 바뀌지 않았습니다."
+        "이미 확정됨 · 건강 판정 보류 · 기존 확정 상태와 원본을 유지합니다."
+        if result.get("already_finalized") and result.get("finalized") is False
+        else "건강 판정 보류 · 확정하지 않았습니다. 원본을 보존합니다."
+        if result.get("finalized") is False
+        else "이미 확정된 세션입니다. 상태와 확정 목록은 바뀌지 않았습니다."
         if result.get("already_finalized")
         else "세션을 확정했습니다. 이 세션에는 더 녹음할 수 없습니다.",
         f"확정 목록: 청크 {result.get('chunk_count', 0)}개 · {result.get('frame_count', 0)}프레임",

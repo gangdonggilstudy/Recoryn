@@ -988,20 +988,28 @@ def _storage_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cause: str
 
                     patch.setattr(ChunkWriter, "seal", fail_seal)
                 else:
-                    original_health = library.record_capture_health
+                    original_health = library.finish_capture_health
 
-                    def fail_health(session_id: str, health: dict[str, Any]) -> None:
-                        patch.setattr(library, "record_capture_health", original_health)
+                    def fail_health(*args: Any, **kwargs: Any) -> None:
+                        patch.setattr(library, "finish_capture_health", original_health)
                         raise OSError("G04 injected health write failure")
 
-                    patch.setattr(library, "record_capture_health", fail_health)
+                    patch.setattr(library, "finish_capture_health", fail_health)
                 service.start()
                 count = 1 if cause == "seal_failed" else 3
                 for index in range(count):
                     assert service.submit(block("s", service.epochs["mic"], index))
-                with pytest.raises(RecordingError):
-                    service.stop()
-            assert library.get_session("s").state is SessionState.INTERRUPTED
+                if cause == "health_failed":
+                    result = service.stop()
+                    assert result["state"] == "FINALIZED"
+                    assert library.capture_health("s")["has_unknown"] is True
+                    assert not service.storage_failed
+                else:
+                    with pytest.raises(RecordingError):
+                        service.stop()
+            assert library.get_session("s").state is (
+                SessionState.FINALIZED if cause == "health_failed" else SessionState.INTERRUPTED
+            )
             assert not service.is_live()
         finally:
             service.join_writer()
@@ -1021,7 +1029,7 @@ def test_storage_failure_cause_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cause: str
 ) -> None:
     blocks = _storage_failure(tmp_path, monkeypatch, cause)
-    chain(tmp_path / "library", "s", payload(blocks), tmp_path)
+    chain(tmp_path / "library", "s", payload(blocks), tmp_path, sealed=cause == "health_failed")
 
 
 def _interrupted(root: Path) -> Library:

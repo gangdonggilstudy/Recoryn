@@ -127,7 +127,9 @@ class DesktopRecorder:
         self._begin_run()
         try:
             self.recording = RecordingService(
-                self.library, {item.track_id: item.format for item in selections}
+                self.library,
+                {item.track_id: item.format for item in selections},
+                source_managed=True,
             )
             self.recording.start()
         except Exception:
@@ -155,7 +157,11 @@ class DesktopRecorder:
             if run != self._run_generation or recorder is not self.recording:
                 return False
         accepted = recorder.submit(block)
-        if not accepted and recorder.health_snapshot()["storage_failed"]:
+        if not accepted and (
+            recorder.storage_failed
+            if hasattr(recorder, "storage_failed")
+            else recorder.health_snapshot()["storage_failed"]
+        ):
             raise RecordingError("STORAGE_FAILED_CAPTURE_STOP")
         with self._lock:
             if run != self._run_generation or recorder is not self.recording:
@@ -166,36 +172,40 @@ class DesktopRecorder:
         return accepted
 
     def _on_health(
-        self, track_id: str, event: dict[str, Any], *, generation: int | None = None
+        self,
+        track_id: str,
+        event: dict[str, Any],
+        *,
+        generation: int | None = None,
+        epoch: str | None = None,
     ) -> None:
+        # Never acquire the recording gate while holding the desktop callback lock.
         with self._lock:
-            if generation is not None and generation != self._run_generation:
+            recorder, run = self.recording, self._run_generation
+            if generation is not None and generation != run:
                 return
-            if event.get("event") == "error" and self._control_mode in {"STARTING", "ACTIVE"}:
-                self._failure = True
-        if event.get("event") == "ready":
-            # Preserve trusted format metadata separately from warning events.
-            # AudioFormat intentionally retains the original PCM core contract.
-            metadata = {
+        if recorder is not None and epoch is not None:
+            if recorder.epochs.get(track_id) != epoch:
+                return
+            recorder.observe_health(track_id, epoch, event)
+        kind = event.get("event")
+        metadata = (
+            {
                 key: event[key]
                 for key in ("format", "valid_bits", "container_bits", "channel_mask")
                 if key in event
             }
-            if metadata:
-                with self._lock:
-                    self._native_formats[track_id] = metadata
-        if event.get("event") in {"error", "stopped"}:
-            with self._lock:
-                self._meters.pop(track_id, None)
-        if event.get("event") == "stopped" and event.get("release_ack") is False:
+            if kind == "ready"
+            else {}
+        )
+        if kind == "stopped" and event.get("release_ack") is False:
             event = {**event, "code": "DEVICE_RELEASE_UNCONFIRMED"}
-        if event.get("event") in {"ready", "packet", "stopped"} and not event.get("code"):
-            # Normal readiness/packet accounting is not a warning. PCM flags and
-            # durable queue totals preserve discontinuities separately.
-            if event.get("event") != "packet" or not (set(event.get("flags", ())) - {"SILENT"}):
-                return
-            event = {**event, "code": "CAPTURE_PACKET_FLAGS"}
-        # Do not copy arbitrary backend exception text into persistent diagnostics.
+        warning = True
+        if kind in {"ready", "packet", "stopped"} and not event.get("code"):
+            if kind != "packet" or not (set(event.get("flags", ())) - {"SILENT"}):
+                warning = False
+            else:
+                event = {**event, "code": "CAPTURE_PACKET_FLAGS"}
         safe = {
             key: value
             for key, value in event.items()
@@ -205,9 +215,19 @@ class DesktopRecorder:
         }
         safe["track_id"] = track_id
         with self._lock:
-            if len(self._health) >= 256:
-                self._health.pop(0)
-            self._health.append(safe)
+            if run != self._run_generation or recorder is not self.recording:
+                return
+            if kind == "error" and self._control_mode in {"STARTING", "ACTIVE"}:
+                self._failure = True
+                self._ready.discard(track_id)
+            if metadata:
+                self._native_formats[track_id] = metadata
+            if kind in {"error", "stopped"}:
+                self._meters.pop(track_id, None)
+            if warning:
+                if len(self._health) >= 256:
+                    self._health.pop(0)
+                self._health.append(safe)
 
     def _open_sources(self) -> None:
         assert self.recording is not None
@@ -221,10 +241,18 @@ class DesktopRecorder:
                     item.track_id,
                     self.recording.epochs[item.track_id],
                     partial(self._submit, generation=generation),
-                    partial(self._on_health, item.track_id, generation=generation),
+                    partial(
+                        self._on_health,
+                        item.track_id,
+                        generation=generation,
+                        epoch=self.recording.epochs[item.track_id],
+                    ),
                 )
                 if actual != item.format:
                     raise RecordingError("DEVICE_FORMAT_CHANGED")
+                self.recording.observe_health(
+                    item.track_id, self.recording.epochs[item.track_id], {"event": "ready"}
+                )
                 with self._lock:
                     if generation != self._run_generation or self._control_mode != "STARTING":
                         return
@@ -264,23 +292,28 @@ class DesktopRecorder:
                 self._ack_pending = True
             raise RecordingError("CAPTURE_ACK_PENDING")
         self._sources.clear()
+        if self.recording is not None:
+            self.recording.sources_released()
         with self._lock:
             self._meters.clear()
 
     def _persist_backend_health(self) -> None:
         assert self.recording is not None
-        snapshot = self.library.capture_health(self.recording.session_id)
-        with self._lock:
-            snapshot["backend_events"] = list(self._health)
-            snapshot["native_formats"] = dict(self._native_formats)
-        self.library.record_capture_health(self.recording.session_id, snapshot)
+        try:
+            snapshot = self.library.capture_health(self.recording.session_id)
+            with self._lock:
+                snapshot["backend_events"] = list(self._health)
+                snapshot["native_formats"] = dict(self._native_formats)
+            self.library.record_capture_health(self.recording.session_id, snapshot)
+        except Exception:
+            self.recording._defer_health()
 
-    def pause(self) -> None:
+    def pause(self, *, reason: str = "PAUSE") -> None:
         if self.recording is None:
             raise StateConflict("NO_RECORDING")
         self._close_sources()
         try:
-            self.recording.pause()
+            self.recording.pause(reason=reason)
             self._persist_backend_health()
         except Exception:
             with self._lock:

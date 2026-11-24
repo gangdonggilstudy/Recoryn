@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from recoryn.jobs import JobRecord
 from recoryn.jobs.failures import BLOCK_REASONS, CODE_GROUPS, NormalizedFailure
@@ -53,6 +54,61 @@ def capture_status(facts: CaptureProgress) -> str:
     if valid_frames and facts.generation_match and not facts.all_sources_ready:
         return "시작 중 · 일부 오디오 수락 · 장치 준비 확인 중"
     return "시작 중 · 첫 오디오 블록 대기"
+
+
+def track_health_lines(snapshot: dict[str, Any]) -> list[str]:
+    """Observation only: accepted counters are never described as sealed media."""
+    labels = {"OK": "정상", "DEGRADED": "주의", "UNAVAILABLE": "사용 불가", "STOPPED": "입력 중지"}
+    lines = []
+    if snapshot.get("memory_observation"):
+        checkpoint = snapshot.get("persisted_checkpoint")
+        lines.append(
+            "메모리 관측 누계 · 마지막 영속 checkpoint: "
+            + (str(checkpoint["checkpoint_seq"]) if checkpoint else "미상/미기록")
+        )
+        if checkpoint:
+            lines.append(f"마지막 영속 앱 큐 유실 누계: {checkpoint['tracks']}")
+    if snapshot.get("health_status") == "DEFERRED":
+        lines.append("건강 판정 보류 · 마지막 영속 prefix 이후 미상 · 녹음 저장과 별개")
+    for track, value in snapshot.get("track_health", snapshot.get("tracks", {})).items():
+        count = value.get("dropped_frames")
+        known = (
+            str(count)
+            if type(count) is int and count >= 0 and value.get("legacy_prefix_known") is not False
+            else "미상"
+        )
+        lines.append(
+            f"{track}: {labels.get(value.get('state'), '건강 미상')} · 확인된 앱 큐 유실 {known} frame · 수락 {value.get('accepted_frames', 0)} frame(저장 확정과 별개)"
+        )
+        device = value.get("device_lost_frames")
+        if value.get("media_loss_unknown"):
+            lines.append(f"{track}: 장치 유실 미상 · 확인된 하한과 구별합니다")
+        elif type(device) is int and device >= 0:
+            lines.append(f"{track}: 확인된 장치 유실 {device} frame · 앱 큐 유실과 별도")
+        if "known_loss_frames" in value:
+            union = value["known_loss_frames"]
+            lines.append(
+                f"{track}: 같은 좌표의 확인된 유실 union {union} frame"
+                if union is not None
+                else f"{track}: 전체 유실 미상 · 확인 하한 {value['known_lower_bound']} frame"
+            )
+        if value.get("reason") == "DEVICE_LOST":
+            lines.append(
+                f"{track}: 장치 유실 범위 미상 · 장치 확인 후 전체 일시정지/재개가 필요합니다"
+            )
+        elif value.get("media_loss_unknown"):
+            lines.append(
+                f"{track}: 장치 유실 또는 미관측 범위 미상 · 전체 유실 0으로 확정하지 않습니다"
+            )
+        if value.get("detail_complete") is False or value.get("count_complete") is False:
+            lines.append(
+                f"{track}: 상세 또는 마지막 영속 prefix 이후 미상 · 0으로 확정하지 않습니다"
+            )
+    if snapshot.get("has_unknown"):
+        lines.append("장치 유실/UNKNOWN_TAIL 미상 구간 있음 · 앱 큐 유실과 합산하지 않습니다")
+    if snapshot.get("detail_complete") is False:
+        lines.append("상세 일부 미조회 · 전체 이력은 건강 상세에서 확인하세요")
+    return lines
 
 
 @dataclass(frozen=True, slots=True)
