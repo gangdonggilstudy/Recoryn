@@ -24,12 +24,19 @@ ORACLE = {
 }
 
 
+# G11 delta (G-P11a, contract G11 section 6 and amendment 1): the two device-policy
+# refusals, both CAPABILITY. The approved G07 table and its 110-row denominator above stay
+# as they were; the delta is audited here and in G11's C family (112 after G-P11a).
+G11A_DELTA = {"RESOURCE_POLICY_UNVERIFIED": "CAPABILITY", "RESOURCE_GPU_UNSUPPORTED": "CAPABILITY"}
+
+
 def test_closed_catalog_matches_independent_table():
     rows = [(code, group) for group, codes in ORACLE.items() for code in codes]
     assert len(rows) == len(dict(rows)) == 110
-    assert dict(CODE_GROUPS) == {
-        code: group for code, group in rows if code != "G07_UNREGISTERED_ERROR"
-    }
+    assert not set(G11A_DELTA) & set(dict(rows))
+    expected = {code: group for code, group in rows if code != "G07_UNREGISTERED_ERROR"}
+    assert len(expected | G11A_DELTA) == 109 + 2  # plus the unregistered sentinel: 112
+    assert dict(CODE_GROUPS) == expected | G11A_DELTA
 
 
 @pytest.mark.parametrize("group,code", [(g, c) for g, cs in ORACLE.items() for c in cs])

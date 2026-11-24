@@ -24,6 +24,7 @@ from recoryn.app.status import AIStatus, ai_status
 from recoryn.jobs import JobStore
 from recoryn.ui.ai_bridge import DesktopAI
 from recoryn.ui.content import ContentPanel
+from tests.resource_fakes import STT
 
 
 def _spin(app, condition, *, timeout=15):
@@ -304,7 +305,9 @@ def test_ui_continue_uses_real_privacy_ledger_gateway_and_fresh_authority(
             bridge, privacy = window.ai_bridge, window.privacy_panel
             service = bridge._service()
             if feature == "summary":
-                seed = service.transcribe(session, FakeSTT(), config_key="seed")
+                seed = service.transcribe(
+                    session, FakeSTT(), config_key="seed", resource_request=STT
+                )
                 _spin(app, lambda: service.jobs.get(seed).state.value == "SUCCEEDED")
                 bridge.panel.load(session)
             control = privacy.controls[feature]
@@ -775,7 +778,7 @@ def test_real_window_updates_a_queued_history_refusal_and_allows_explicit_readmi
             bridge = window.ai_bridge
             service = bridge._service()
             monkeypatch.setattr(Library, "job_authority", staticmethod(guarded))
-            job = service.transcribe(session, FakeSTT(), config_key="same")
+            job = service.transcribe(session, FakeSTT(), config_key="same", resource_request=STT)
             _spin(app, entered.is_set)
             bridge.tick()
             assert "QUEUED" in bridge.panel.job_status.text()
@@ -790,7 +793,7 @@ def test_real_window_updates_a_queued_history_refusal_and_allows_explicit_readmi
             assert window.tabs.currentWidget() is window.details
             assert "삭제 journal" in window.details.toPlainText()
             blocked = False
-            same = service.transcribe(session, FakeSTT(), config_key="same")
+            same = service.transcribe(session, FakeSTT(), config_key="same", resource_request=STT)
             assert same == job
             _spin(app, lambda: service.jobs.get(job).state.value == "SUCCEEDED")
             bridge.tick()

@@ -40,6 +40,7 @@ from recoryn.providers import (
     TranscriptSegment,
 )
 from recoryn.storage import Library
+from tests.resource_fakes import STT, SUMMARY
 
 pytestmark = pytest.mark.integration
 
@@ -556,7 +557,9 @@ def finished(service: AIService, job_id: str) -> Any:
 def test_a1_summary_selection_aba_keeps_late_job_a_candidate(tmp_path: Path) -> None:
     with app_world(tmp_path) as app:
         provider = GatedSummary()
-        job_id = app.service.summarize(app.session, provider, config_key="cfg")
+        job_id = app.service.summarize(
+            app.session, provider, config_key="cfg", resource_request=SUMMARY
+        )
         assert provider.entered.wait(5)
         assert app.content.select_summary(app.session, app.s2, expected_active=app.s1)
         assert app.content.select_summary(app.session, app.s1, expected_active=app.s2)
@@ -569,7 +572,9 @@ def test_a1_summary_selection_aba_keeps_late_job_a_candidate(tmp_path: Path) -> 
 def test_a2_transcript_selection_aba_during_summary_keeps_candidate(tmp_path: Path) -> None:
     with app_world(tmp_path) as app:
         provider = GatedSummary()
-        job_id = app.service.summarize(app.session, provider, config_key="cfg")
+        job_id = app.service.summarize(
+            app.session, provider, config_key="cfg", resource_request=SUMMARY
+        )
         assert provider.entered.wait(5)
         assert app.content.select_transcript(app.session, app.t2, expected_active=app.t1)
         assert app.content.select_transcript(app.session, app.t1, expected_active=app.t2)
@@ -581,9 +586,13 @@ def test_a2_transcript_selection_aba_during_summary_keeps_candidate(tmp_path: Pa
 def test_a3_latest_template_request_wins_over_older_running_job(tmp_path: Path) -> None:
     with app_world(tmp_path) as app:
         provider = GatedSummary()
-        older = app.service.summarize(app.session, provider, config_key="cfg", template="meeting")
+        older = app.service.summarize(
+            app.session, provider, config_key="cfg", template="meeting", resource_request=SUMMARY
+        )
         assert provider.entered.wait(5)
-        newer = app.service.summarize(app.session, provider, config_key="cfg", template="lecture")
+        newer = app.service.summarize(
+            app.session, provider, config_key="cfg", template="lecture", resource_request=SUMMARY
+        )
         provider.release.set()
         older_job, newer_job = finished(app.service, older), finished(app.service, newer)
         assert older_job.state is newer_job.state is JobState.SUCCEEDED
@@ -603,7 +612,12 @@ def test_a4_uncontested_summary_is_selected_and_records_its_settings(tmp_path: P
     with app_world(tmp_path) as app:
         provider = GatedSummary()
         provider.release.set()
-        job = finished(app.service, app.service.summarize(app.session, provider, config_key="cfg"))
+        job = finished(
+            app.service,
+            app.service.summarize(
+                app.session, provider, config_key="cfg", resource_request=SUMMARY
+            ),
+        )
         assert job.state is JobState.SUCCEEDED
         assert app.content.active_summary(app.session)["revision_id"] == job.result_ref
         key = app.content.summary(job.result_ref)["settings_key"]
@@ -614,7 +628,9 @@ def test_a4_uncontested_summary_is_selected_and_records_its_settings(tmp_path: P
 def test_a5_transcript_selection_aba_during_transcription_keeps_candidate(tmp_path: Path) -> None:
     with app_world(tmp_path) as app:
         provider = GatedSTT()
-        job_id = app.service.transcribe(app.session, provider, config_key="stt")
+        job_id = app.service.transcribe(
+            app.session, provider, config_key="stt", resource_request=STT
+        )
         assert provider.entered.wait(5)
         assert app.content.select_transcript(app.session, app.t2, expected_active=app.t1)
         assert app.content.select_transcript(app.session, app.t1, expected_active=app.t2)
@@ -629,7 +645,9 @@ def test_r1_refused_before_admission_records_no_settings(tmp_path: Path) -> None
     with app_world(tmp_path) as app:
         app.service.close()
         with pytest.raises(StateConflict, match="AI_SERVICE_CLOSED"):
-            app.service.summarize(app.session, GatedSummary(), config_key="cfg")
+            app.service.summarize(
+                app.session, GatedSummary(), config_key="cfg", resource_request=SUMMARY
+            )
         assert app.content.selection_state(app.session)["summary_settings_key"] is None
 
 
@@ -637,12 +655,22 @@ def test_r2_runner_refusal_after_admission_leaves_its_settings(tmp_path: Path) -
     """Documented consequence: in-flight older requests stay candidates, nothing is lost."""
     with app_world(tmp_path, capacity=1) as app:
         provider = GatedSummary()
-        first = app.service.summarize(app.session, provider, config_key="cfg", template="meeting")
+        first = app.service.summarize(
+            app.session, provider, config_key="cfg", template="meeting", resource_request=SUMMARY
+        )
         assert provider.entered.wait(5)
-        second = app.service.summarize(app.session, provider, config_key="cfg", template="lecture")
+        second = app.service.summarize(
+            app.session, provider, config_key="cfg", template="lecture", resource_request=SUMMARY
+        )
         queued_key = app.content.selection_state(app.session)["summary_settings_key"]
         with pytest.raises(StateConflict, match="AI_QUEUE_FULL"):
-            app.service.summarize(app.session, provider, config_key="cfg", template="key_points")
+            app.service.summarize(
+                app.session,
+                provider,
+                config_key="cfg",
+                template="key_points",
+                resource_request=SUMMARY,
+            )
         refused = [job for job in app.service.jobs.list_for_session(app.session)][-1]
         assert refused.state is JobState.CANCELLED
         assert app.content.selection_state(app.session)["summary_settings_key"] != queued_key
@@ -763,10 +791,16 @@ def test_mg1_request_merged_into_running_job_becomes_latest(tmp_path: Path) -> N
     """G03-MG1: K1 -> K2 -> K1, the third merging into the running K1 job."""
     with app_world(tmp_path) as app:
         provider = GatedSummary()
-        first = app.service.summarize(app.session, provider, config_key="cfg", template="meeting")
+        first = app.service.summarize(
+            app.session, provider, config_key="cfg", template="meeting", resource_request=SUMMARY
+        )
         assert provider.entered.wait(5)
-        second = app.service.summarize(app.session, provider, config_key="cfg", template="lecture")
-        third = app.service.summarize(app.session, provider, config_key="cfg", template="meeting")
+        second = app.service.summarize(
+            app.session, provider, config_key="cfg", template="lecture", resource_request=SUMMARY
+        )
+        third = app.service.summarize(
+            app.session, provider, config_key="cfg", template="meeting", resource_request=SUMMARY
+        )
         assert third == first != second
         assert {job.job_id for job in app.service.jobs.list_for_session(app.session)} == {
             first,
@@ -788,18 +822,32 @@ def test_mg2_refusal_before_admission_is_not_a_merge(tmp_path: Path) -> None:
     with app_world(tmp_path) as app:
         provider = GatedSummary()
         provider.release.set()
-        first = app.service.summarize(app.session, provider, config_key="cfg", template="meeting")
+        first = app.service.summarize(
+            app.session, provider, config_key="cfg", template="meeting", resource_request=SUMMARY
+        )
         k1 = app.content.summary(finished(app.service, first).result_ref)["settings_key"]
-        second = app.service.summarize(app.session, provider, config_key="cfg", template="lecture")
+        second = app.service.summarize(
+            app.session, provider, config_key="cfg", template="lecture", resource_request=SUMMARY
+        )
         k2 = app.content.summary(finished(app.service, second).result_ref)["settings_key"]
         assert requests(app.library) == [(k2, 2)]
-        again = app.service.summarize(app.session, provider, config_key="cfg", template="meeting")
+        again = app.service.summarize(
+            app.session, provider, config_key="cfg", template="meeting", resource_request=SUMMARY
+        )
         assert again == first and requests(app.library) == [(k1, 3)]
-        again = app.service.summarize(app.session, provider, config_key="cfg", template="lecture")
+        again = app.service.summarize(
+            app.session, provider, config_key="cfg", template="lecture", resource_request=SUMMARY
+        )
         assert again == second and requests(app.library) == [(k2, 4)]
         app.service.close()
         with pytest.raises(StateConflict, match="AI_SERVICE_CLOSED"):
-            app.service.summarize(app.session, provider, config_key="cfg", template="meeting")
+            app.service.summarize(
+                app.session,
+                provider,
+                config_key="cfg",
+                template="meeting",
+                resource_request=SUMMARY,
+            )
         assert requests(app.library) == [(k2, 4)]
         assert provider.calls == 2
 
@@ -810,7 +858,9 @@ def test_mg3_failed_merge_record_leaves_the_existing_job(
     """G03-MG3: the merged job is not ours; a recording failure neither cancels nor forgets it."""
     with app_world(tmp_path) as app:
         provider = GatedSummary()
-        first = app.service.summarize(app.session, provider, config_key="cfg")
+        first = app.service.summarize(
+            app.session, provider, config_key="cfg", resource_request=SUMMARY
+        )
         assert provider.entered.wait(5)
 
         def refuse(session_id: str, settings_key: str) -> None:
@@ -819,8 +869,13 @@ def test_mg3_failed_merge_record_leaves_the_existing_job(
         with monkeypatch.context() as patch:
             patch.setattr(app.content, "request_summary_settings", refuse)
             with pytest.raises(StateConflict, match="INJECTED_REQUEST_FAILURE"):
-                app.service.summarize(app.session, provider, config_key="cfg")
-        assert app.service.summarize(app.session, provider, config_key="cfg") == first
+                app.service.summarize(
+                    app.session, provider, config_key="cfg", resource_request=SUMMARY
+                )
+        assert (
+            app.service.summarize(app.session, provider, config_key="cfg", resource_request=SUMMARY)
+            == first
+        )
         provider.release.set()
         job = finished(app.service, first)
         assert job.state is JobState.SUCCEEDED and provider.calls == 1

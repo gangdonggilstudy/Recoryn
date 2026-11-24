@@ -36,6 +36,7 @@ from recoryn.providers import (
 )
 from recoryn.security import ConsentRequest, ConsentScope, ConsentStore, Gateway, SecurityError
 from recoryn.storage import Library
+from tests.resource_fakes import STT, SUMMARY
 
 pytestmark = pytest.mark.integration
 
@@ -135,12 +136,14 @@ class _Provider:
 
 def _submit(kind: str, service: AIService, session: str, provider: _Provider) -> str:
     if kind == "stt":
-        return service.transcribe(session, provider, config_key="fixture-stt")
+        return service.transcribe(session, provider, config_key="fixture-stt", resource_request=STT)
     if service.content.active_transcript(session) is None:
         service.content.create_transcript(
             session, [Segment("source-1", 0, 50, "Synthetic source", track_id="mic")]
         )
-    return service.summarize(session, provider, config_key="fixture-summary")
+    return service.summarize(
+        session, provider, config_key="fixture-summary", resource_request=SUMMARY
+    )
 
 
 @pytest.mark.parametrize("kind", ["stt", "summary"])
@@ -233,10 +236,14 @@ def test_cancel_then_delete_fences_late_known_result(tmp_path: Path, kind: str) 
 def test_changed_clock_origin_does_not_reuse_old_result(tmp_path: Path) -> None:
     with _service(tmp_path) as (_, content, service, session):
         provider = _Provider()
-        first = service.transcribe(session, provider, config_key="same", origin_ns=1_000_000_000)
+        first = service.transcribe(
+            session, provider, config_key="same", origin_ns=1_000_000_000, resource_request=STT
+        )
         assert _finished(service, first).state.value == "SUCCEEDED"
         assert content.active_transcript(session)["segments"][0]["start_ms"] == 0
-        second = service.transcribe(session, provider, config_key="same", origin_ns=0)
+        second = service.transcribe(
+            session, provider, config_key="same", origin_ns=0, resource_request=STT
+        )
         assert second != first
         assert _finished(service, second).state.value == "SUCCEEDED"
         assert content.active_transcript(session)["segments"][0]["start_ms"] == 1000
@@ -302,7 +309,7 @@ def test_clip_limit_splits_oversized_source_block_without_loss(
 def test_source_track_quality_and_bytes_survive_ai_round_trip(tmp_path: Path) -> None:
     with _service(tmp_path) as (library, content, service, session):
         before = [chunk.sha256 for chunk in library.chunks(session)]
-        job = service.transcribe(session, _Provider(), config_key="mapping")
+        job = service.transcribe(session, _Provider(), config_key="mapping", resource_request=STT)
         assert _finished(service, job).state.value == "SUCCEEDED"
         revision = content.active_transcript(session)
         segment = revision["segments"][0]
@@ -362,11 +369,13 @@ def test_queue_capacity_rejects_only_new_work_and_preserves_existing_jobs(tmp_pa
         service = AIService(library, content, capacity=1)
         gate = _Provider(gated=True)
         try:
-            first = service.transcribe(session, gate, config_key="first")
+            first = service.transcribe(session, gate, config_key="first", resource_request=STT)
             assert gate.entered.wait(5)
-            second = service.transcribe(session, _Provider(), config_key="second")
+            second = service.transcribe(
+                session, _Provider(), config_key="second", resource_request=STT
+            )
             with pytest.raises(StateConflict, match="AI_QUEUE_FULL_OR_JOB_NOT_READY"):
-                service.transcribe(session, _Provider(), config_key="third")
+                service.transcribe(session, _Provider(), config_key="third", resource_request=STT)
             assert service.jobs.get(first).state.value == "RUNNING"
             assert service.jobs.get(second).state.value == "QUEUED"
             assert sorted(job.state.value for job in service.jobs.list_for_session(session)) == [
@@ -564,13 +573,21 @@ def test_live_vad_checkpoint_restores_absolute_origin_and_keeps_edit(tmp_path: P
         try:
             seal(1_000_000_000, speech)
             first = service.transcribe(
-                session, provider, config_key="independent-vad", provisional=True
+                session,
+                provider,
+                config_key="independent-vad",
+                provisional=True,
+                resource_request=STT,
             )
             assert _finished(service, first).state.value == "SUCCEEDED"
             assert observed == [(300, speech[600:1400])]
             assert (
                 service.transcribe(
-                    session, provider, config_key="independent-vad", provisional=True
+                    session,
+                    provider,
+                    config_key="independent-vad",
+                    provisional=True,
+                    resource_request=STT,
                 )
                 == first
             )
@@ -586,7 +603,11 @@ def test_live_vad_checkpoint_restores_absolute_origin_and_keeps_edit(tmp_path: P
             recorder.resume()
             seal(3_000_000_000, b"\0\0" * 1000)
             silence = service.transcribe(
-                session, provider, config_key="independent-vad", provisional=True
+                session,
+                provider,
+                config_key="independent-vad",
+                provisional=True,
+                resource_request=STT,
             )
             assert _finished(service, silence).state.value == "SUCCEEDED"
             checkpoint = store.transcript(service.jobs.get(silence).result_ref)["coverage"][
@@ -598,7 +619,11 @@ def test_live_vad_checkpoint_restores_absolute_origin_and_keeps_edit(tmp_path: P
             recorder.resume()
             seal(5_000_000_000, speech)
             final = service.transcribe(
-                session, provider, config_key="independent-vad", provisional=True
+                session,
+                provider,
+                config_key="independent-vad",
+                provisional=True,
+                resource_request=STT,
             )
             assert _finished(service, final).state.value == "SUCCEEDED"
             assert [item[0] for item in observed] == [300, 4300]
@@ -627,11 +652,19 @@ def test_explicit_unknown_retry_preserves_old_job_without_automatic_resend(
         provider.unknown = False
         retry = (
             service.transcribe(
-                session, provider, config_key="fixture-stt", request_nonce="user-new-plan"
+                session,
+                provider,
+                config_key="fixture-stt",
+                request_nonce="user-new-plan",
+                resource_request=STT,
             )
             if kind == "stt"
             else service.summarize(
-                session, provider, config_key="fixture-summary", request_nonce="user-new-plan"
+                session,
+                provider,
+                config_key="fixture-summary",
+                request_nonce="user-new-plan",
+                resource_request=SUMMARY,
             )
         )
         assert retry != old and _finished(service, retry).state.value == "SUCCEEDED"
@@ -644,7 +677,9 @@ def test_playback_verification_reader_blocks_delete_until_finally_ack(
     from recoryn.ui.ai_bridge import DesktopAI
 
     with _service(tmp_path) as (library, content, service, session):
-        job = service.transcribe(session, _Provider(), config_key="playback-snapshot")
+        job = service.transcribe(
+            session, _Provider(), config_key="playback-snapshot", resource_request=STT
+        )
         assert _finished(service, job).state.value == "SUCCEEDED"
         source = content.active_transcript(session)["coverage"]["source_ranges"][0]
         bridge = DesktopAI.__new__(DesktopAI)

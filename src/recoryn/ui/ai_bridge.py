@@ -7,7 +7,7 @@ import threading
 import wave
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -22,6 +22,8 @@ from recoryn.content import ContentStore, Segment
 from recoryn.domain import AudioFormat, StateConflict
 from recoryn.jobs import JobStore
 from recoryn.jobs.failures import NormalizedFailure, normalize_failure
+from recoryn.models.resource_catalog import PROVIDER_BACKENDS
+from recoryn.models.resources import INTERACTIVE, LIVE, ResourceRequest, plan_static
 from recoryn.providers import ExecutionContext, ProviderError
 from recoryn.storage._coordination import root_mutex
 from recoryn.storage._safe import mkdir, open_file, safe_path
@@ -29,6 +31,46 @@ from recoryn.storage.chunks import verify_bundle
 from recoryn.ui.content import ContentPanel
 from recoryn.ui.pcm_playback import PlaybackPcm, SinkPlayback, prepare_playback
 from recoryn.ui.tasks import Task
+
+# Device-policy refusals that the user resolves in the execution policy control.
+POLICY_CODES = frozenset({"RESOURCE_POLICY_UNVERIFIED", "RESOURCE_GPU_UNSUPPORTED"})
+_GUIDANCE = {
+    "RESOURCE_POLICY_UNVERIFIED": (
+        "로컬 Ollama는 CPU·GPU 사용을 보장할 수 없어 {policy}에서 요약을 시작하지 않습니다. "
+        "AI 실행 정책에서 GPU_WITH_CPU_FALLBACK_ALLOWED를 직접 선택한 뒤 새로 요청하세요"
+        " · 정책은 자동으로 바뀌지 않으며, 앱을 다시 시작하면 기본값 CPU_ONLY로 돌아갑니다"
+    ),
+    "RESOURCE_GPU_UNSUPPORTED": (
+        "화자 구분은 CPU로만 실행하므로 {policy}에서 시작하지 않습니다. "
+        "CPU를 허용하는 AI 실행 정책을 직접 선택한 뒤 새로 요청하세요 · 자동 변경 없음"
+    ),
+}
+
+
+def policy_block_status(
+    code: str, policy: str, prefix: str = "실행 준비 차단·작업 미접수"
+) -> AIStatus:
+    """A device-policy refusal points at the execution policy control (G-P07 action)."""
+    return AIStatus(
+        f"{prefix} · {code} · " + _GUIDANCE[code].format(policy=policy),
+        "CAPABILITY",
+        EXECUTION_POLICY_ACTION,
+    )
+
+
+def resource_note(request: ResourceRequest | None, selected: str | None) -> str:
+    """The policy a Job was admitted with, never the control's current value."""
+    if request is None:
+        return "실행 정책: 이 실행에서 접수한 기록 없음"
+    if request.backend == "REMOTE":
+        return "원격 실행 — 이 PC의 장치 정책 적용 안 됨"
+    if request.backend == "OLLAMA":
+        text = f"로컬 Ollama · 접수 정책 {request.policy} · 장치 미보장·서버 메모리 통제 불가"
+    else:
+        text = f"이 PC · 접수 정책 {request.policy} · 메모리 요구량 미확인"
+    if selected and selected != request.policy:
+        text += f" · 현재 선택 {selected}은 새 요청부터 적용"
+    return text
 
 
 class DesktopAI:
@@ -182,9 +224,12 @@ class DesktopAI:
         kind: str = "stt",
         preserve_job: bool = False,
     ) -> None:
-        status = (
-            ai_status(preparation=failure) if isinstance(failure, NormalizedFailure) else failure
-        )
+        if not isinstance(failure, NormalizedFailure):
+            status = failure
+        elif failure.code in POLICY_CODES and failure.outcome_known is True:
+            status = policy_block_status(failure.code, self._selected_policy())
+        else:
+            status = ai_status(preparation=failure)
         if (
             preserve_job
             and isinstance(failure, NormalizedFailure)
@@ -218,6 +263,44 @@ class DesktopAI:
             (selected, kind, status.action_id) if selected and status.action_id else None
         )
         self.panel.show_ai_status(status)
+
+    def _selected_policy(self) -> str:
+        policy = getattr(self.window, "device_policy", None)
+        return policy.currentText() if policy is not None else "CPU_ONLY"
+
+    def _selected_provider(self, kind: str) -> str | None:
+        controls = getattr(self.privacy, "controls", None)
+        if kind == "diarization":
+            return "sherpa_onnx"  # the only diarization backend (no CT2 diarization)
+        if self.privacy is None:
+            return "faster_whisper" if kind == "stt" else None
+        if not isinstance(controls, dict) or kind not in controls:
+            return None
+        value = controls[kind].provider.currentData()
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _request(
+        kind: str, provider: str | None, policy: str, *, provisional: bool = False
+    ) -> ResourceRequest | None:
+        backend = PROVIDER_BACKENDS.get(provider or "")
+        if backend is None:
+            return None  # undecided until the prepared configuration names the provider
+        return ResourceRequest(kind, backend, policy, priority=LIVE if provisional else INTERACTIVE)
+
+    def _refused(self, request: ResourceRequest | None, kind: str, expected: Any) -> bool:
+        """Static device-policy admission (G-P11a) before attestation, prepare_execution,
+        an adapter or a Job: a refusal is a preparation block with nothing sent or read."""
+        if request is None:
+            return False
+        try:
+            plan_static(request)
+        except StateConflict as error:
+            self._show_preparation(
+                normalize_failure(error), kind=kind, preserve_job=expected is not None
+            )
+            return True
+        return False
 
     def _current_blocked(self) -> Any:
         target = self._blocked_target
@@ -366,6 +449,14 @@ class DesktopAI:
             and (not chunks or self._live_snapshots.get(session_id) == chunks)
         ):
             return
+        policy = self._selected_policy()  # captured once, on the UI thread, at request time
+        early = self._request(
+            "stt", self._selected_provider("stt"), policy, provisional=provisional
+        )
+        if self._refused(early, "stt", expected):
+            if provisional:
+                self._live_blocked.add(session_id)
+            return
         try:
             if self.privacy is not None:
                 execution = self.privacy.prepare_execution("stt", fixed_session, threading.Event())
@@ -378,7 +469,21 @@ class DesktopAI:
             if provisional:
                 self._live_blocked.add(session_id)
             return
-        model, policy = window.local_model.text(), window.device_policy.currentText()
+        resources = self._request(
+            "stt",
+            "faster_whisper" if config is None else config.provider_id,
+            policy,
+            provisional=provisional,
+        )
+        if resources is None or self._refused(resources, "stt", expected):
+            if resources is None:
+                self._show_preparation(
+                    NormalizedFailure("CAPABILITY_UNSUPPORTED"), preserve_job=expected is not None
+                )
+            if provisional:
+                self._live_blocked.add(session_id)
+            return
+        model = window.local_model.text()
         # Read on the UI thread: a queued GPU runtime install/removal excludes the runtime.
         # A removal is only queued while this bridge is idle, so the two never interleave.
         gpu_change_pending = bool(getattr(window.model_panel, "gpu_busy", False))
@@ -459,7 +564,13 @@ class DesktopAI:
                     self._local_generation = None if runtime_used is None else generation
                 assert self.local is not None
                 check_cancel()
-                return service.transcribe(fixed_session, self.local, config_key=key, **options)
+                return service.transcribe(
+                    fixed_session,
+                    self.local,
+                    config_key=key,
+                    resource_request=replace(resources, model_identity=digest),
+                    **options,
+                )
             from recoryn.transcription import GeminiTranscriber, OpenAITranscriber
 
             adapter = OpenAITranscriber if config.provider_id == "openai" else GeminiTranscriber
@@ -470,6 +581,7 @@ class DesktopAI:
                 fixed_session,
                 provider,
                 config_key=config_key,
+                resource_request=resources,
                 context_factory=self._context_factory(context),
                 **options,
             )
@@ -483,7 +595,11 @@ class DesktopAI:
                 self._live_jobs[fixed_session] = job_id
                 self._live_snapshots[fixed_session] = chunks
             self.panel.job_status.setText(
-                ("임시 전사" if provisional else "전체 정정 전사") + " 작업 등록: " + job_id[:12]
+                ("임시 전사" if provisional else "전체 정정 전사")
+                + " 작업 등록: "
+                + job_id[:12]
+                + " · "
+                + resource_note(resources, policy)
             )
 
         self.operation(
@@ -506,6 +622,15 @@ class DesktopAI:
         if session_id is None or self.busy or self.privacy is None:
             self.panel.job_status.setText("요약 제공업체와 데이터 범위를 설정하세요.")
             return
+        policy = self._selected_policy()
+        # T31: the strict Ollama refusal precedes the attestation check, so a refused
+        # request never asks the local server anything.
+        if self._refused(
+            self._request("summary", self._selected_provider("summary"), policy),
+            "summary",
+            expected,
+        ):
+            return
         try:
             if (
                 self.window.model_panel.ollama_owned
@@ -519,6 +644,15 @@ class DesktopAI:
             self._show_preparation(
                 normalize_failure(error), kind="summary", preserve_job=expected is not None
             )
+            return
+        resources = self._request("summary", config.provider_id, policy)
+        if resources is None or self._refused(resources, "summary", expected):
+            if resources is None:
+                self._show_preparation(
+                    NormalizedFailure("CAPABILITY_UNSUPPORTED"),
+                    kind="summary",
+                    preserve_job=expected is not None,
+                )
             return
         if expected is None:
             nonce = uuid4().hex if retry else None
@@ -548,6 +682,7 @@ class DesktopAI:
                 session_id,
                 provider,
                 config_key=config_key,
+                resource_request=resources,
                 template=template,
                 context_factory=self._context_factory(context),
                 request_nonce=nonce,
@@ -558,7 +693,9 @@ class DesktopAI:
         def submitted(job_id: str) -> None:
             self._last_snapshot = ""
             self._job_options[job_id] = ("summary", nonce, template)
-            self.panel.job_status.setText("요약 작업 등록: " + job_id[:12])
+            self.panel.job_status.setText(
+                "요약 작업 등록: " + job_id[:12] + " · " + resource_note(resources, policy)
+            )
 
         self.operation(
             submit, submitted, preparation_kind="summary", continuing=expected is not None
@@ -611,6 +748,12 @@ class DesktopAI:
                 "AI 설정에서 로컬 모델 manifest·SHA256·라이선스·CPU 사용을 확인하세요."
             )
             return
+        policy = self._selected_policy()
+        resources = self._request("diarization", self._selected_provider("diarization"), policy)
+        if resources is None or self._refused(resources, "stt", None):
+            if resources is None:
+                self._show_preparation(NormalizedFailure("CAPABILITY_UNSUPPORTED"))
+            return
         from recoryn.diarization import DiarizationConfig
 
         try:
@@ -634,8 +777,10 @@ class DesktopAI:
             if preparation_cancel.is_set():
                 raise StateConflict("CANCELLED")
             service = self._service()
+            admitted = service.admit_diarization(resources)  # before the Job exists
             job = service.jobs.create("diarization", uuid4().hex)
             service.jobs.bind_session(job.job_id, revision["session_id"])
+            service.capture_diarization(job.job_id, admitted)
 
             def task(attempt: Any, cancel: threading.Event) -> str:
                 from recoryn.diarization import (
@@ -644,6 +789,7 @@ class DesktopAI:
                     assign_speakers,
                 )
 
+                plan_static(admitted)  # dispatch re-check of the captured backend policy
                 with service.scheduler.acquire(cancel):
                     if cancel.is_set():
                         raise ProviderError("CANCELLED")
@@ -701,7 +847,10 @@ class DesktopAI:
         self.operation(
             submit,
             lambda job: self.panel.job_status.setText(
-                "선택 구간 익명 화자 추정 등록: " + job[:12] + " · 원문·기존 버전은 보존됩니다."
+                "선택 구간 익명 화자 추정 등록: "
+                + job[:12]
+                + " · 원문·기존 버전은 보존됩니다 · "
+                + resource_note(resources, policy)
             ),
         )
 
@@ -890,8 +1039,16 @@ class DesktopAI:
             admission_error = (
                 read_refusal(jobs[-1].job_id) if callable(read_refusal) and jobs else None
             )
+            selected_policy = self._selected_policy()
             key = str(
-                [session_id, [asdict(job) for job in jobs], reader, resource_ack, admission_error]
+                [
+                    session_id,
+                    [asdict(job) for job in jobs],
+                    reader,
+                    resource_ack,
+                    admission_error,
+                    selected_policy,
+                ]
             )
             if key != self._last_snapshot:
                 if not self.busy and not self.window.busy:
@@ -907,6 +1064,7 @@ class DesktopAI:
                         status = admission_status(
                             admission_error, failed=job.state.value == "FAILED"
                         )
+                    status = self._with_resources(job, status, selected_policy)
                     if job.kind == "diarization":
                         status = AIStatus(status.text, status.reason, status.action_id, False)
                     self._preparation_action = (
@@ -941,6 +1099,44 @@ class DesktopAI:
                         )
                     )
         self._live_tick()
+
+    def _with_resources(self, job: Any, status: AIStatus, selected: str) -> AIStatus:
+        """Add the captured policy; a job whose captured request the fixed table refuses
+        (a late callback of an old request) is shown refused, never as a normal run."""
+        service = getattr(self, "service", None)
+        reader = getattr(service, "resource_request", None)
+        request = reader(job.job_id) if callable(reader) else None
+        if job.kind not in {
+            "transcription",
+            "streaming_transcription",
+            "summarization",
+            "diarization",
+        }:
+            return status
+        if request is not None:
+            try:
+                plan_static(request)
+            except StateConflict as error:
+                code = str(error)
+                if code in POLICY_CODES:
+                    refused = policy_block_status(code, request.policy, f"AI: {job.state.value}")
+                    return AIStatus(refused.text, refused.reason, refused.action_id, False)
+                return AIStatus(
+                    f"AI: {job.state.value} · {code} · 이 작업·실행 위치 조합은 실행하지 않습니다",
+                    "CAPABILITY",
+                    "model",
+                    False,
+                )
+        if job.state.value == "BLOCKED" and job.error_code in POLICY_CODES:
+            policy = request.policy if request is not None else selected
+            refused = policy_block_status(job.error_code, policy, f"AI: {job.state.value}")
+            status = AIStatus(refused.text, refused.reason, refused.action_id, status.can_continue)
+        return AIStatus(
+            status.text + " · " + resource_note(request, selected),
+            status.reason,
+            status.action_id,
+            status.can_continue,
+        )
 
     def _live_tick(self) -> None:
         session = self.window.recorder.session_id

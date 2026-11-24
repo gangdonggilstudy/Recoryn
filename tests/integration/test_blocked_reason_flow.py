@@ -16,6 +16,7 @@ from recoryn.jobs.runner import BoundedRunner
 from recoryn.providers import ExecutionContext, ProviderConfig, ProviderError
 from recoryn.providers._common import Run
 from recoryn.security import SecurityError
+from tests.resource_fakes import STT
 
 ORACLE = runpy.run_path(str(Path(__file__).parents[1] / "unit/test_blocked_reasons.py"))["ORACLE"]
 WIRE = (
@@ -218,7 +219,7 @@ def test_history_refusal_releases_admission_cache_and_remains_fail_closed(
             pytest.fail("fake admission did not settle")
 
         try:
-            job_id = service.transcribe(session, provider, config_key="same")
+            job_id = service.transcribe(session, provider, config_key="same", resource_request=STT)
             assert released.wait(10)
             settled()
             before = service.jobs.get(job_id)
@@ -233,14 +234,16 @@ def test_history_refusal_releases_admission_cache_and_remains_fail_closed(
             assert "삭제 이력 확인 불가" in status.text and not status.can_continue
             pending_id = job_id if boundary == "claim" else None
             if persistent:
-                again = service.transcribe(session, provider, config_key="same")
+                again = service.transcribe(
+                    session, provider, config_key="same", resource_request=STT
+                )
                 settled()
                 assert (again == job_id) is (boundary == "claim")
                 assert provider.calls == 0
                 assert service.jobs.get(again).state.value == "QUEUED"
                 pending_id = again
             closed = True  # The canonical authority is verifiable again.
-            again = service.transcribe(session, provider, config_key="same")
+            again = service.transcribe(session, provider, config_key="same", resource_request=STT)
             settled()
             assert service.jobs.get(again).state.value == "SUCCEEDED" and provider.calls == 1
             assert (again == pending_id) if pending_id else (again != job_id)
@@ -997,7 +1000,9 @@ def test_real_runner_explicit_continue_preserves_an_independent_recording(tmp_pa
         service = AIService(library, content)
         provider = Provider()
         try:
-            job_id = service.transcribe(source.session_id, provider, config_key="same")
+            job_id = service.transcribe(
+                source.session_id, provider, config_key="same", resource_request=STT
+            )
             blocked = finish(service, job_id)
             assert (blocked.state.value, blocked.blocked_reason, blocked.attempt_count) == (
                 "BLOCKED",
@@ -1005,7 +1010,12 @@ def test_real_runner_explicit_continue_preserves_an_independent_recording(tmp_pa
                 1,
             )
             assert service.jobs.local_reader_active(job_id) is False
-            assert service.transcribe(source.session_id, provider, config_key="same") == job_id
+            assert (
+                service.transcribe(
+                    source.session_id, provider, config_key="same", resource_request=STT
+                )
+                == job_id
+            )
             assert service.jobs.get(job_id) == blocked and provider.calls == 1
             assert live.health_snapshot()["accepting"]
             assert live.submit(
@@ -1019,6 +1029,7 @@ def test_real_runner_explicit_continue_preserves_an_independent_recording(tmp_pa
                     config_key="same",
                     expected_job_id=job_id,
                     expected_job_version=blocked.state_version,
+                    resource_request=STT,
                 )
                 == job_id
             )

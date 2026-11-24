@@ -32,6 +32,14 @@ from recoryn.models.manager import parse_spec
 from recoryn.storage._safe import read_json
 from recoryn.ui.tasks import Task
 
+OLLAMA_POLICY_NOTE = (
+    "로컬 Ollama 요약은 AI 실행 정책이 GPU_WITH_CPU_FALLBACK_ALLOWED일 때만 실행합니다. "
+    "Recoryn은 Ollama 서버가 CPU와 GPU 중 무엇을 쓰는지와 서버 메모리를 통제하거나 보장하지 "
+    "못하므로, CPU_ONLY·GPU_ONLY에서는 요약을 시작하지 않습니다. 정책은 자동으로 바꾸지 "
+    "않으며, 앱을 다시 시작하면 기본값 CPU_ONLY로 돌아갑니다. 원격 제공업체는 이 PC의 "
+    "장치 정책 대상이 아니며 동의·비용 확인은 그대로 적용됩니다."
+)
+
 
 class _Progress(QObject):
     update = Signal(int)
@@ -154,6 +162,12 @@ class ModelPanel(QWidget):
         layout.addWidget(self.gpu_status)
         self.refresh_gpu()
         layout.addWidget(QLabel("로컬 Ollama — 이미 설치한 실행 파일과 모델만 사용합니다."))
+        # G-P11a (C00 decision 5): until the policy is remembered (G-P16) the default
+        # CPU_ONLY refuses local Ollama on every start; say so plainly, change nothing.
+        self.ollama_policy_note = QLabel(OLLAMA_POLICY_NOTE)
+        self.ollama_policy_note.setWordWrap(True)
+        self.ollama_policy_note.setAccessibleName("로컬 Ollama 요약의 AI 실행 정책 조건")
+        layout.addWidget(self.ollama_policy_note)
         self.ollama_executable = QLineEdit()
         self.ollama_executable.setPlaceholderText("이미 설치한 ollama 실행 파일")
         self.ollama_executable.setAccessibleName("Ollama 실행 파일 경로")

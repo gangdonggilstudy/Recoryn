@@ -37,6 +37,7 @@ from recoryn.security import (
 )
 from recoryn.security._core import Endpoint
 from recoryn.ui.privacy import PrivacyPanel
+from tests.resource_fakes import STT
 from tests.ui.test_cost_cap_ui import fixture_panel_balance, fixture_panel_catalog
 from tests.unit.test_cost_cap import fixture_wire
 
@@ -844,7 +845,11 @@ def test_permission_only_change_sends_only_new_stream_chunk(
                 completed(
                     service,
                     service.transcribe(
-                        sid, FakeSTT(), config_key=first.config_key, provisional=True
+                        sid,
+                        FakeSTT(),
+                        config_key=first.config_key,
+                        provisional=True,
+                        resource_request=STT,
                     ),
                 )
                 assert len(sent) == 1
@@ -859,7 +864,11 @@ def test_permission_only_change_sends_only_new_stream_chunk(
                 completed(
                     service,
                     service.transcribe(
-                        sid, FakeSTT(), config_key=second.config_key, provisional=True
+                        sid,
+                        FakeSTT(),
+                        config_key=second.config_key,
+                        provisional=True,
+                        resource_request=STT,
                     ),
                 )
                 # Two input chunks, exactly two calls in total, never 1 + 2.

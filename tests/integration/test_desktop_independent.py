@@ -16,6 +16,7 @@ from recoryn.app.media import prepare_clips
 from recoryn.app.recording import RecordingError, RecordingService
 from recoryn.domain import AudioFormat, PCMBlock, SessionState, StateConflict
 from recoryn.storage import Library
+from tests.resource_fakes import STT
 
 pytestmark = pytest.mark.integration
 _FORMAT = AudioFormat(48_000, 1)
@@ -758,7 +759,11 @@ def test_b21_incremental_stt_reuses_origin_across_gap_epochs_and_preserves_origi
                 )
                 recorder.pause()
                 job = service.transcribe(
-                    recorder.session_id, provider, config_key="fixed-no-model", provisional=True
+                    recorder.session_id,
+                    provider,
+                    config_key="fixed-no-model",
+                    provisional=True,
+                    resource_request=STT,
                 )
 
                 def completed(identifier: str = job) -> bool:
@@ -777,7 +782,11 @@ def test_b21_incremental_stt_reuses_origin_across_gap_epochs_and_preserves_origi
             assert len({chunk.epoch_id for chunk in chunks}) == 2
             original = tuple(chunk.sha256 for chunk in chunks)
             replay = service.transcribe(
-                recorder.session_id, provider, config_key="fixed-no-model", provisional=True
+                recorder.session_id,
+                provider,
+                config_key="fixed-no-model",
+                provisional=True,
+                resource_request=STT,
             )
             assert service.jobs.get(replay).state.value == "SUCCEEDED"
             assert provider.offsets == [0, 60_000]

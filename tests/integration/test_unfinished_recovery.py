@@ -37,6 +37,7 @@ from recoryn.storage import _coordination as coordination_module
 from recoryn.storage import chunks as chunk_module
 from recoryn.storage import library as library_module
 from recoryn.storage.chunks import has_active_writer
+from tests.resource_fakes import STT
 from tests.unit.test_unfinished_sessions import ClaimRecorder
 
 pytestmark = pytest.mark.integration
@@ -823,7 +824,7 @@ def transcription(library: Library, session: str) -> str:
     with ContentStore(library) as content:
         service = AIService(library, content)
         try:
-            job = service.transcribe(session, FakeSTT(), config_key="stt")
+            job = service.transcribe(session, FakeSTT(), config_key="stt", resource_request=STT)
             return "ACCEPTED" if isinstance(job, str) and job else "?"
         except StateConflict as error:
             return {

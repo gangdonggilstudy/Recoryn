@@ -35,6 +35,7 @@ from recoryn.content import ContentStore
 from recoryn.domain import AudioFormat, PCMBlock, SessionState, StateConflict, ValidationError
 from recoryn.providers import ProviderCapabilities, STTResult, TranscriptSegment
 from recoryn.storage import ChunkWriter, Library
+from tests.resource_fakes import STT
 
 pytestmark = pytest.mark.unit
 
@@ -350,7 +351,9 @@ def act(world: World, action: str, output: Path) -> str:
             with ContentStore(library) as content:
                 service = AIService(library, content)
                 try:
-                    job_id = service.transcribe(SID, FakeSTT(), config_key="stt")
+                    job_id = service.transcribe(
+                        SID, FakeSTT(), config_key="stt", resource_request=STT
+                    )
                 finally:
                     service.close()
             assert isinstance(job_id, str) and job_id

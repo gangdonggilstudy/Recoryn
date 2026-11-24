@@ -20,6 +20,7 @@ from recoryn.providers import (
     TranscriptSegment,
 )
 from recoryn.storage import Library
+from tests.resource_fakes import STT, SUMMARY
 
 pytestmark = pytest.mark.e2e
 
@@ -112,14 +113,16 @@ def test_record_transcribe_summary_edit_and_repeatable_srt(tmp_path: Path):
         source_hashes = [item.sha256 for item in library.chunks(session)]
         service = AIService(library, content)
         try:
-            job = service.transcribe(session, FakeSTT(), config_key="fake-v1")
+            job = service.transcribe(session, FakeSTT(), config_key="fake-v1", resource_request=STT)
             assert finished(service, job).state.value == "SUCCEEDED"
             transcript = content.active_transcript(session)
             assert transcript["complete"] and transcript["coverage"]["missing"] == []
             assert transcript["segments"][0]["track_id"] == "mic"
             first = content.export_transcript(transcript["revision_id"], "srt")
             assert "00:00:00,000 --> 00:00:00,500" in first
-            summary_job = service.summarize(session, FakeSummary(), config_key="fake-summary-v1")
+            summary_job = service.summarize(
+                session, FakeSummary(), config_key="fake-summary-v1", resource_request=SUMMARY
+            )
             assert finished(service, summary_job).state.value == "SUCCEEDED"
             summary = content.active_summary(session)
             assert summary["claims"][0]["segment_ids"] == ["sentence"]
@@ -144,7 +147,9 @@ def test_partial_inference_keeps_candidate_without_false_ready(tmp_path: Path):
         session = recording(library)
         service = AIService(library, content)
         try:
-            job = service.transcribe(session, FakeSTT(complete=False), config_key="partial")
+            job = service.transcribe(
+                session, FakeSTT(complete=False), config_key="partial", resource_request=STT
+            )
             assert finished(service, job).state.value == "FAILED"
             assert content.active_transcript(session) is None
             revisions = content.list_revisions(session, "transcript")
@@ -163,7 +168,10 @@ def test_user_edit_wins_against_late_complete_transcript(tmp_path: Path):
         service = AIService(library, content)
         try:
             job = service.transcribe(
-                session, FakeSTT(barrier=(entered, release)), config_key="late"
+                session,
+                FakeSTT(barrier=(entered, release)),
+                config_key="late",
+                resource_request=STT,
             )
             assert entered.wait(5)
             edited = content.edit_segment(
@@ -185,7 +193,10 @@ def test_cancel_revokes_publication_even_when_model_ignores_cancel(tmp_path: Pat
         service = AIService(library, content)
         try:
             job = service.transcribe(
-                session, FakeSTT(barrier=(entered, release)), config_key="cancel"
+                session,
+                FakeSTT(barrier=(entered, release)),
+                config_key="cancel",
+                resource_request=STT,
             )
             assert entered.wait(5)
             service.cancel_session(session)
@@ -234,7 +245,9 @@ def test_streaming_accumulates_only_fresh_chunks_and_protects_edits_and_config(t
         session = recorder.session_id
         first = frozenset(item.chunk_id for item in library.chunks(session))
         service, provider = AIService(library, content), CountingSTT()
-        options = dict(config_key="live", provisional=True, origin_ns=1_000_000_000)
+        options = dict(
+            config_key="live", resource_request=STT, provisional=True, origin_ns=1_000_000_000
+        )
         try:
             job = service.transcribe(session, provider, chunk_ids=first, **options)
             assert finished(service, job).state.value == "SUCCEEDED"
@@ -267,12 +280,13 @@ def test_streaming_accumulates_only_fresh_chunks_and_protects_edits_and_config(t
                 provisional=True,
                 chunk_ids=first,
                 origin_ns=1_000_000_000,
+                resource_request=STT,
             )
             assert finished(service, other).state.value == "SUCCEEDED"
             candidate = content.transcript(service.jobs.get(other).result_ref)
             assert len(candidate["segments"]) == 1  # Different scope never merges.
             recorder.stop()
-            full = service.transcribe(session, provider, config_key="full")
+            full = service.transcribe(session, provider, config_key="full", resource_request=STT)
             assert finished(service, full).state.value == "SUCCEEDED"
             assert content.transcript(service.jobs.get(full).result_ref)["complete"]
             assert content.active_transcript(session)["revision_id"] == edited
@@ -294,6 +308,7 @@ def test_vad_silence_completes_coverage_without_an_stt_request(tmp_path: Path):
                 config_key="silent",
                 provisional=True,
                 origin_ns=1_000_000_000,
+                resource_request=STT,
             )
             assert finished(service, job).state.value == "SUCCEEDED"
             result = content.active_transcript(recorder.session_id)
@@ -326,7 +341,11 @@ def test_slow_ai_conversion_does_not_hold_recording_writer_or_pause(tmp_path: Pa
         monkeypatch.setattr(media, "_int16", gated)
         try:
             job = service.transcribe(
-                recorder.session_id, CountingSTT(), config_key="gated", provisional=True
+                recorder.session_id,
+                CountingSTT(),
+                config_key="gated",
+                provisional=True,
+                resource_request=STT,
             )
             assert entered.wait(3)
             recorder.resume()
@@ -353,7 +372,11 @@ def test_streaming_origin_is_restored_from_checkpoint_after_service_restart(tmp_
         service = AIService(library, content)
         try:
             first = service.transcribe(
-                recorder.session_id, provider, config_key="live", provisional=True
+                recorder.session_id,
+                provider,
+                config_key="live",
+                provisional=True,
+                resource_request=STT,
             )
             assert finished(service, first).state.value == "SUCCEEDED"
         finally:
@@ -363,7 +386,11 @@ def test_streaming_origin_is_restored_from_checkpoint_after_service_restart(tmp_
         restarted = AIService(library, content)
         try:
             second = restarted.transcribe(
-                recorder.session_id, provider, config_key="live", provisional=True
+                recorder.session_id,
+                provider,
+                config_key="live",
+                provisional=True,
+                resource_request=STT,
             )
             assert finished(restarted, second).state.value == "SUCCEEDED"
             assert provider.calls == [0, 2000]
@@ -395,13 +422,20 @@ def test_unknown_requires_new_nonce_and_keeps_old_job_and_originals(tmp_path: Pa
         hashes = [chunk.sha256 for chunk in library.chunks(session)]
         service, provider = AIService(library, content), UnknownThenKnown()
         try:
-            first = service.transcribe(session, provider, config_key="same")
+            first = service.transcribe(session, provider, config_key="same", resource_request=STT)
             assert finished(service, first).blocked_reason == "REMOTE_UNKNOWN"
-            assert service.transcribe(session, provider, config_key="same") == first
+            assert (
+                service.transcribe(session, provider, config_key="same", resource_request=STT)
+                == first
+            )
             assert provider.calls == [0]
             provider.unknown = False
             retry = service.transcribe(
-                session, provider, config_key="same", request_nonce="explicit-user-action"
+                session,
+                provider,
+                config_key="same",
+                request_nonce="explicit-user-action",
+                resource_request=STT,
             )
             assert retry != first and finished(service, retry).state.value == "SUCCEEDED"
             assert service.jobs.get(first).blocked_reason == "REMOTE_UNKNOWN"

@@ -13,9 +13,9 @@ from uuid import uuid4
 
 from recoryn.app.media import prepare_clips
 from recoryn.content import Claim, ContentStore, Segment
-from recoryn.domain import SessionState, StateConflict
+from recoryn.domain import SessionState, StateConflict, ValidationError
 from recoryn.jobs import AttemptRecord, JobRecord, JobStore
-from recoryn.models import ResourceScheduler
+from recoryn.models import ResourceRequest, ResourceScheduler, plan_static
 from recoryn.providers import (
     ChunkSummary,
     ExecutionContext,
@@ -89,6 +89,9 @@ class AIService:
         self._session_jobs: dict[str, set[str]] = {}
         self._admission_lock = threading.RLock()
         self._admitted: set[str] = set()
+        # The resource intent each admitted attempt runs with (G-P11a). A merged
+        # duplicate never overwrites it; an explicit continue replaces it.
+        self._resource_requests: dict[str, ResourceRequest] = {}
         self._closed = False
         self.runner.on_admission_refused = self._admission_refused
         self.runner.start()
@@ -142,6 +145,38 @@ class AIService:
                 return job, False, created
             self._admitted.add(job.job_id)
             return job, True, created
+
+    @staticmethod
+    def _admit_resources(request: object, kind: str) -> ResourceRequest:
+        """Static admission before any Job, read or send (contract G11 section 3.2).
+
+        The request is required: a direct caller cannot bypass the device policy the
+        UI checks. A refusal raises before the Job exists, so it is a preparation block
+        (G-P07 'not admitted'), never a fabricated attempt.
+        """
+        if type(request) is not ResourceRequest or request.kind != kind:
+            raise ValidationError("INVALID_RESOURCE_REQUEST")
+        plan_static(request)
+        return request
+
+    def _capture(self, job_id: str, request: ResourceRequest) -> None:
+        with self._admission_lock:
+            self._resource_requests[job_id] = request
+
+    def admit_diarization(self, request: object) -> ResourceRequest:
+        """The diarization bridge creates its own Job; it passes the same static
+        admission first (contract G11 section 6) and captures the request afterwards."""
+        return self._admit_resources(request, "diarization")
+
+    def capture_diarization(self, job_id: str, request: ResourceRequest) -> None:
+        if self.jobs.get(job_id).kind != "diarization":
+            raise ValidationError("INVALID_RESOURCE_REQUEST")
+        self._capture(job_id, self._admit_resources(request, "diarization"))
+
+    def resource_request(self, job_id: str) -> ResourceRequest | None:
+        """The resource intent captured when this service last admitted the Job."""
+        with self._admission_lock:
+            return self._resource_requests.get(job_id)
 
     def _submit(
         self,
@@ -201,6 +236,7 @@ class AIService:
         provider: STTProvider,
         *,
         config_key: str,
+        resource_request: ResourceRequest,
         language: str | None = None,
         provisional: bool = False,
         context_factory: Callable[[threading.Event], ExecutionContext] | None = None,
@@ -210,6 +246,7 @@ class AIService:
         expected_job_id: str | None = None,
         expected_job_version: int | None = None,
     ) -> str:
+        resources = self._admit_resources(resource_request, "stt")
         state = self.library.get_session(session_id).state
         if not provisional and state != SessionState.FINALIZED:
             raise StateConflict("TRANSCRIPTION_REQUIRES_FINALIZED_AUDIO")
@@ -246,9 +283,11 @@ class AIService:
         )
         if not admitted:
             return job.job_id
+        self._capture(job.job_id, resources)
         scope = {"config_key": config_key, "language": language, "origin_ns": origin_ns}
 
         def task(attempt: AttemptRecord, cancel: threading.Event) -> str:
+            plan_static(resources)  # dispatch re-check of the captured backend policy
             base: dict[str, Any] | None = None
             if provisional:
                 for candidate in reversed(self.content.list_revisions(session_id, "transcript")):
@@ -466,12 +505,14 @@ class AIService:
         provider: SummaryProvider,
         *,
         config_key: str,
+        resource_request: ResourceRequest,
         template: str = "meeting",
         context_factory: Callable[[threading.Event], ExecutionContext] | None = None,
         request_nonce: str | None = None,
         expected_job_id: str | None = None,
         expected_job_version: int | None = None,
     ) -> str:
+        resources = self._admit_resources(resource_request, "summary")
         transcript = self.content.active_transcript(session_id)
         if not transcript or not transcript["complete"]:
             raise StateConflict("SUMMARY_REQUIRES_COMPLETE_TRANSCRIPT")
@@ -548,9 +589,11 @@ class AIService:
             if created:
                 self.jobs.cancel(job.job_id)
             raise
+        self._capture(job.job_id, resources)
         expected_summary = selection["summary_id"]
 
         def task(attempt: AttemptRecord, cancel: threading.Event) -> str:
+            plan_static(resources)  # dispatch re-check of the captured backend policy
             with self.scheduler.acquire(cancel), _OutcomeGuard() as observed:
                 supplied = (
                     context_factory(cancel) if context_factory else ExecutionContext(cancel=cancel)

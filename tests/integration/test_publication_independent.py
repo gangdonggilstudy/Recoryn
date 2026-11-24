@@ -31,6 +31,7 @@ from recoryn.security import (
 from recoryn.security._core import Endpoint
 from recoryn.storage import Library
 from recoryn.summarization import OpenAISummarizer
+from tests.resource_fakes import SUMMARY
 from tests.unit.test_cost_cap import fixture_balance, fixture_reservation
 
 pytestmark = pytest.mark.integration
@@ -476,6 +477,7 @@ def test_real_ai_reservation_wrapper_commits_marker_before_gateway(
                 context_factory=lambda cancel: ExecutionContext(
                     cancel=cancel, reservation_factory=reserve
                 ),
+                resource_request=SUMMARY,
             )
             deadline = time.monotonic() + 5
             while (
