@@ -7,6 +7,7 @@ reach the bridge's static gate; the gate itself, AIService, JobStore and tick ar
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Iterator
 from itertools import product
@@ -18,6 +19,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 import recoryn.ui.ai_bridge as bridge_module
+from recoryn.diarization import DiarizationConfig as REAL_DIARIZATION_CONFIG
 from recoryn.domain import StateConflict
 from recoryn.models import ResourceRequest
 from recoryn.providers import ExecutionContext
@@ -105,7 +107,7 @@ class Window:
         self.bridge.panel.load(self.session)
         self.real_submit = self.service.runner.submit
         # Fixture only: admitted intents stay QUEUED so each stage is set explicitly.
-        mp.setattr(self.service.runner, "submit", lambda *args: True)
+        mp.setattr(self.service.runner, "submit", lambda *args, **kwargs: True)
         self.prepared: list[str] = []
         self.attestations: list[str] = []
         self.diarization_configs: list[str] = []
@@ -445,3 +447,324 @@ def test_aux_blocked_policy_job_without_a_capture_is_shown_honestly(lone: Window
     assert PV in text and "GPU_ONLY에서 요약을 시작하지 않습니다" in text
     assert "실행 정책: 이 실행에서 접수한 기록 없음" in text and "접수 정책" not in text
     assert bridge._blocked_target is not None and bridge._blocked_target[3] == POLICY_ACTION
+
+
+# =====================================================================================
+# G-P11b UI: Ub 48 (estimate, device, observation, lease/ACK display), T29, and the
+# diarize() submit row (G11R-03). Expected display pieces are written by hand.
+# =====================================================================================
+
+from recoryn.models import ResourceScheduler  # noqa: E402
+from recoryn.models.resources import (  # noqa: E402
+    OBSERVED,
+    GpuDevice,
+    GpuObservation,
+    MemoryObservation,
+    ResourceSource,
+)
+from tests.resource_fakes import Factory, Observer, profile  # noqa: E402
+
+MIB = 2**20
+UB_PATHS = ("ct2_stt", "sherpa_diarization")
+UB_STAGES = ("queued", "blocked", "active", "ack_wait")
+UB = list(product(POLICIES, UB_PATHS, UB_STAGES, ("known", "unknown")))
+UB_IDS = [f"G11-UB-{n:02}" for n in range(1, 49)]
+NATIVE = ResourceSource("native", "READY")
+
+
+def test_ub_manifest() -> None:
+    assert len(UB) == len(set(UB)) == 3 * 2 * 4 * 2 == len(UB_IDS)
+
+
+def _ub_scheduler(path: str, known: bool) -> tuple[ResourceScheduler, Observer]:
+    def gpu() -> GpuObservation:
+        device = GpuDevice("GPU-UB", 0, 3, "fixture", 8192 * MIB, 8192 * MIB)
+        return GpuObservation(OBSERVED, time.monotonic_ns(), (device,), True, "fake")
+
+    def ram() -> MemoryObservation:
+        return MemoryObservation(OBSERVED, time.monotonic_ns(), 16384 * MIB, 32768 * MIB, "fake")
+
+    stt = path == "ct2_stt"
+    profiles = (
+        (
+            profile(
+                "ub",
+                kind="stt" if stt else "diarization",
+                backend="LOCAL_CT2" if stt else "LOCAL_SHERPA",
+                model="model-UB",
+                runtime="runtime-UB",
+                cpu=1024 * MIB,
+                gpu_host=1024 * MIB if stt else None,
+                gpu=2048 * MIB if stt else None,
+            ),
+        )
+        if known
+        else ()
+    )
+    observer = Observer(gpu, ram)
+    return ResourceScheduler(observe=observer, profiles=profiles), observer
+
+
+def ub_expected(row: tuple[str, str, str, str]) -> tuple[str, list[str]]:
+    """(kind of display, pieces) by hand from G11 section 6."""
+    policy, path, stage, estimate = row
+    if path == "sherpa_diarization" and policy == "GPU_ONLY":
+        return "refused", ["RESOURCE_GPU_UNSUPPORTED", "직접 선택한 뒤 새로 요청하세요"]
+    known = estimate == "known"
+    cuda = path == "ct2_stt" and policy != "CPU_ONLY"
+    pieces = [f"접수 정책 {policy}"]
+    if stage == "queued":
+        pieces.append("profile ub" if known else "메모리 요구량 미확인")
+        pieces.append("자원 계획은 실행 직전에 다시 관측")
+        return "note", pieces
+    if known:
+        pieces.append("계획 요구량 RAM 1,024 MiB" + (" · VRAM 2,048 MiB" if cuda else ""))
+        pieces.append("RAM 여유 16,384 MiB")
+    else:
+        pieces.append("메모리 요구량 미확인")
+        pieces.append("RAM 관측 NOT_OBSERVED")  # an UNKNOWN requirement never reads RAM
+    if cuda:
+        # The logical CUDA index, never the host tool's index 3.
+        pieces += [
+            "장치 GPU fixture (CUDA 논리 index 0)",
+            "VRAM 여유 8,192 MiB · 여유 기준 512 MiB",
+        ]
+    else:
+        pieces.append("장치 CPU")
+    pieces.append(
+        {
+            "active": "자원 사용 중",
+            "blocked": "자원 해제됨",
+            "ack_wait": "작업자 종료 ACK 대기 · RESOURCE_LEASE_HELD",
+        }[stage]
+    )
+    if stage == "blocked":
+        pieces.append("RESOURCE_DEVICE_MISMATCH")
+    return "note", pieces
+
+
+@pytest.mark.parametrize("row", UB, ids=UB_IDS)
+def test_ub_owned_resource_display(
+    env: Window, monkeypatch: pytest.MonkeyPatch, row: tuple[str, str, str, str]
+) -> None:
+    policy, path, stage, estimate = row
+    case = UB_IDS[UB.index(row)]
+    window, bridge, service = env.window, env.bridge, env.service
+    kind, backend = ("stt", "LOCAL_CT2") if path == "ct2_stt" else ("diarization", "LOCAL_SHERPA")
+    request = ResourceRequest(
+        kind, backend, policy, model_identity="model-UB", runtime_identity="runtime-UB"
+    )
+    scheduler, observer = _ub_scheduler(path, estimate == "known")
+    monkeypatch.setattr(service, "scheduler", scheduler)
+    monkeypatch.setattr(service.runner, "held", scheduler.held)
+    window.device_policy.setCurrentText(policy)
+    shown, pieces = ub_expected(row)
+    if shown == "refused":
+        job_id = inject_late(env, kind, request, case)
+        bridge.tick()
+        text = env.text()
+        assert all(piece in text for piece in pieces), text
+        assert "메모리 요구량" not in text
+        return
+    gate = threading.Event()
+    facts = (
+        {
+            "device": "cuda" if path == "ct2_stt" and policy != "CPU_ONLY" else "cpu",
+            "device_index": 9,
+            "compute_type": "wrong",
+        }
+        if stage == "blocked"
+        else None
+    )
+    factory = Factory(
+        "faster_whisper" if kind == "stt" else "sherpa_onnx",
+        source=NATIVE,
+        gate=gate if stage in ("active", "ack_wait") else None,
+        facts=facts,
+        close_ok=stage != "ack_wait",
+    )
+    if stage != "queued":
+        monkeypatch.setattr(service.runner, "submit", env.real_submit)
+    try:
+        if kind == "stt":
+            job_id = service.transcribe(
+                env.session, factory, config_key=case, resource_request=request
+            )
+        else:
+            admitted = service.admit_diarization(request, factory)
+            job = service.jobs.create("diarization", case)
+            service.jobs.bind_session(job.job_id, env.session)
+            service.capture_diarization(job.job_id, admitted)
+            job_id = job.job_id
+
+            def task(attempt: Any, cancel: threading.Event) -> str:
+                with service.owned_worker(admitted, factory, attempt, cancel, env.session) as use:
+                    use().transcribe(_Clip())
+                return "diarized"
+
+            assert service.runner.submit(job_id, task)
+        if stage in ("active", "ack_wait"):
+            spin(env.app, lambda: bool(factory.opened) and factory.opened[0].entered.is_set())
+        if stage == "ack_wait":
+            gate.set()
+            # The worker did not exit: the lease stays held whatever the Job's logical
+            # outcome (STT published its result under its fence before the exit ACK).
+            spin(
+                env.app,
+                lambda: (
+                    scheduler.held() == (job_id,)
+                    and service.jobs.get(job_id).state.value != "RUNNING"
+                ),
+            )
+        elif stage == "blocked":
+            spin(env.app, lambda: service.jobs.get(job_id).state.value == "BLOCKED")
+        bridge.tick()
+        text = env.text()
+        for piece in pieces:
+            assert piece in text, (piece, text)
+        if stage == "ack_wait":
+            done = service.jobs.get(job_id)
+            if kind == "stt":
+                assert done.state.value == "SUCCEEDED"  # logical result, physical exit pending
+            else:
+                assert (done.state.value, done.error_code) == ("BLOCKED", "INFERENCE_ACK_PENDING")
+            assert service.jobs.local_reader_active(job_id) is True  # deletion still waits
+            assert not bridge.panel.blocked_continue.isEnabled()
+        # Displaying never changes a setting or the captured intent.
+        assert window.device_policy.currentText() == policy
+        assert service.resource_request(job_id) == request
+        if estimate == "unknown":
+            assert observer.ram_reads == 0
+    finally:
+        gate.set()
+        if stage == "ack_wait" and factory.opened:
+            factory.opened[0].close_ok = True
+            spin(env.app, lambda: service.jobs.get(job_id).state.value != "RUNNING")
+            scheduler.reap_held()
+            assert service.jobs.local_reader_active(job_id) is False  # finished on the ACK
+        if stage in ("active", "blocked"):
+            spin(env.app, lambda: service.jobs.get(job_id).state.value in {"SUCCEEDED", "BLOCKED"})
+
+
+class _Clip:
+    offset_ms = 0
+    track_id = "mic"
+
+
+def test_t29_unknown_requirement_never_reaches_the_legacy_helper(
+    lone: Window, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """G11-T-29: the real bridge local STT path never calls the legacy 1 GiB ``choose``;
+    an UNKNOWN requirement is admitted, run and shown as unknown, not RESOURCE_ESTIMATE_REQUIRED."""
+    from recoryn.providers import STTResult, TranscriptSegment
+
+    window, bridge, service = lone.window, lone.bridge, lone.service
+    legacy: list[Any] = []
+    monkeypatch.setattr(
+        ResourceScheduler, "choose", lambda *args: legacy.append(args) or ("cpu", 0)
+    )
+    model = tmp_path / "model"
+    model.mkdir()
+    for name in ("model.bin", "config.json", "tokenizer.json"):
+        (model / name).write_bytes(b"synthetic-" + name.encode())
+    window.local_model.setText(str(model))
+    created: list[dict[str, Any]] = []
+
+    class Local:
+        def __init__(self, path: Any, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            created.append(kwargs)
+
+        def load(self, context: Any = None) -> dict[str, Any]:
+            return {"device": "cpu", "device_index": None, "compute_type": "int8"}
+
+        def transcribe(self, request: Any, context: Any = None) -> STTResult:
+            item = TranscriptSegment("t29", request.offset_ms, request.offset_ms + 1, "x")
+            return STTResult("faster_whisper", "local", (item,), True, processed_ms=1)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(bridge_module, "LocalSTTProcess", Local)
+    monkeypatch.setattr(service.runner, "submit", lone.real_submit)
+
+    def prepare(kind: str, *args: Any) -> Any:
+        return SimpleNamespace(
+            config=SimpleNamespace(provider_id="faster_whisper"),
+            context=ExecutionContext(),
+            config_key="local",
+            gateway=None,
+        )
+
+    monkeypatch.setattr(window.privacy_panel, "prepare_execution", prepare)
+    window.device_policy.setCurrentText("CPU_ONLY")
+    before = len(service.jobs.list_for_session(lone.session))
+    bridge.transcribe()
+    spin(lone.app, lambda: not bridge.busy)
+    jobs = service.jobs.list_for_session(lone.session)[before:]
+    assert len(jobs) == 1
+    done = finished(service, jobs[0].job_id)
+    assert done.state.value == "SUCCEEDED" and legacy == []
+    assert created == [
+        {"device": "cpu", "gpu_runtime": None, "device_index": None, "compute_type": "int8"}
+    ]
+    view = service.resource_view(jobs[0].job_id)
+    assert view is not None and view["estimate_status"] == "RESOURCE_ESTIMATE_UNKNOWN"
+    bridge.tick()
+    assert "메모리 요구량 미확인" in lone.text() and "자원 해제됨" in lone.text()
+
+
+def test_aux_diarize_submit_admits_and_captures(
+    lone: Window, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """G11-AUX-DIARIZE (G11R-03): the real diarize() submit runs the service admission
+    before the Job exists and captures the request the tick then shows."""
+    import recoryn.diarization as diarization
+
+    window, bridge, service = lone.window, lone.bridge, lone.service
+    monkeypatch.setattr(diarization, "DiarizationConfig", REAL_DIARIZATION_CONFIG)
+    window.device_policy.setCurrentText("GPU_WITH_CPU_FALLBACK_ALLOWED")
+    admissions: list[int] = []
+    captures: list[str] = []
+    real_admit, real_capture = service.admit_diarization, service.capture_diarization
+
+    def admit(request: Any, provider: Any = None) -> Any:
+        admissions.append(len(service.jobs.list_for_session(lone.session)))
+        return real_admit(request, provider)
+
+    def capture(job_id: str, request: Any) -> None:
+        captures.append(job_id)
+        real_capture(job_id, request)
+
+    monkeypatch.setattr(service, "admit_diarization", admit)
+    monkeypatch.setattr(service, "capture_diarization", capture)
+    panel = bridge.panel
+    panel.revision = {
+        "complete": True,
+        "session_id": lone.session,
+        "revision_id": "fixture",
+        "segments": [],
+        "coverage": {},
+        "kind": "corrected",
+    }
+    panel.diarization_ranges.clear()
+    panel.diarization_ranges.addItem("fixture", {"offset_ms": 0, "track_id": "mic"})
+    window.diarization_manifest.setText(str(tmp_path / "manifest.json"))
+    window.diarization_hash.setText("a" * 64)
+    window.diarization_approval.setChecked(True)
+    before = len(service.jobs.list_for_session(lone.session))
+    bridge.diarize()
+    spin(lone.app, lambda: not bridge.busy)
+    jobs = [
+        job
+        for job in service.jobs.list_for_session(lone.session)[before:]
+        if job.kind == "diarization"
+    ]
+    assert len(jobs) == 1, lone.text()
+    assert admissions == [before] and captures == [jobs[0].job_id]
+    captured = service.resource_request(jobs[0].job_id)
+    assert captured == ResourceRequest(
+        "diarization", "LOCAL_SHERPA", "GPU_WITH_CPU_FALLBACK_ALLOWED"
+    )
+    bridge.tick()
+    assert "접수 정책 GPU_WITH_CPU_FALLBACK_ALLOWED" in lone.text()

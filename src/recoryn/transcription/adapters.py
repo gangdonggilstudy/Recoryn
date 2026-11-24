@@ -83,11 +83,20 @@ class FasterWhisperProvider:
         compute_type: str | None = None,
         timeout_seconds: float = 300,
         model_factory: Callable[..., Any] | None = None,
+        device_index: int | None = None,
     ) -> None:
         if not isinstance(model_path, Path) or device not in {"cpu", "cuda"}:
             raise ProviderError("INPUT_INVALID")
+        if device_index is not None and (
+            type(device_index) is not int
+            or not 0 <= device_index < 1024
+            or (device == "cpu" and device_index != 0)
+        ):
+            raise ProviderError("INPUT_INVALID")
         self.model_path = model_path
         self.device = device
+        # The logical CUDA ordinal from the verified plan; None keeps the backend default.
+        self.device_index = device_index
         self.compute_type = compute_type or ("int8" if device == "cpu" else "float16")
         if self.compute_type not in {"int8", "int8_float16", "int8_float32", "float16", "float32"}:
             raise ProviderError("CAPABILITY_UNSUPPORTED")
@@ -106,6 +115,67 @@ class FasterWhisperProvider:
             "faster_whisper", transcription=True, segment_timestamps=True, audio_formats=("wav",)
         )
 
+    def _ensure_model(self, run: Run) -> None:
+        """Load once under the held model lock; never a download or another device."""
+        if self._model is not None:
+            return
+        run.progress("loading", 0, None, "model")
+        factory = self._factory
+        if factory is None:
+            try:
+                factory = importlib.import_module("faster_whisper").WhisperModel
+            except ImportError:
+                raise ProviderError("DEPENDENCY_MISSING") from None
+        assert factory is not None
+        options: dict[str, Any] = {
+            "device": self.device,
+            "compute_type": self.compute_type,
+            "local_files_only": True,
+        }
+        if self.device_index is not None:
+            options["device_index"] = self.device_index
+        self._model = factory(str(self.model_path), **options)
+
+    def _check_model_files(self) -> None:
+        try:
+            checked_local_path(self.model_path)
+            for name in ("model.bin", "config.json", "tokenizer.json"):
+                checked_local_path(self.model_path / name)
+                if not (self.model_path / name).is_file():
+                    raise ProviderError("MODEL_MISSING")
+        except ProviderError:
+            raise ProviderError("MODEL_MISSING") from None
+
+    def facts(self) -> dict[str, Any]:
+        """The loaded object's own device facts (CTranslate2 reports them), never ours."""
+        inner = getattr(self._model, "model", self._model)
+        device = getattr(inner, "device", None)
+        index = getattr(inner, "device_index", None)
+        if isinstance(index, (list, tuple)):
+            index = index[0] if len(index) == 1 else None
+        compute = getattr(inner, "compute_type", None)
+        return {
+            "device": device if isinstance(device, str) else None,
+            "device_index": index if type(index) is int else None,
+            "compute_type": compute if isinstance(compute, str) else None,
+        }
+
+    def load(self, context: ExecutionContext | None = None) -> dict[str, Any]:
+        """Load the model now (no inference) and return its real device facts."""
+        run = Run(self.config, context)
+        acquired = False
+        try:
+            run.check()
+            self._check_model_files()
+            while not acquired:
+                run.check()
+                acquired = self._lock.acquire(timeout=0.05)
+            self._ensure_model(run)
+            return self.facts()
+        finally:
+            if acquired:
+                self._lock.release()
+
     def transcribe(self, request: STTRequest, context: ExecutionContext | None = None) -> STTResult:
         run = Run(self.config, context)
         segments: list[TranscriptSegment] = []
@@ -116,32 +186,11 @@ class FasterWhisperProvider:
         try:
             run.check()
             audio_bytes, duration, audio_hash = read_audio(request, 128 * 1024 * 1024)
-            try:
-                checked_local_path(self.model_path)
-                for name in ("model.bin", "config.json", "tokenizer.json"):
-                    checked_local_path(self.model_path / name)
-                    if not (self.model_path / name).is_file():
-                        raise ProviderError("MODEL_MISSING")
-            except ProviderError:
-                raise ProviderError("MODEL_MISSING") from None
+            self._check_model_files()
             while not acquired:
                 run.check()
                 acquired = self._lock.acquire(timeout=0.05)
-            if self._model is None:
-                run.progress("loading", 0, None, "model")
-                factory = self._factory
-                if factory is None:
-                    try:
-                        factory = importlib.import_module("faster_whisper").WhisperModel
-                    except ImportError:
-                        raise ProviderError("DEPENDENCY_MISSING") from None
-                assert factory is not None
-                self._model = factory(
-                    str(self.model_path),
-                    device=self.device,
-                    compute_type=self.compute_type,
-                    local_files_only=True,
-                )
+            self._ensure_model(run)
             run.check()
             supported = getattr(self._model, "supported_languages", None)
             if language is not None and supported is not None and language not in supported:

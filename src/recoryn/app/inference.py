@@ -19,6 +19,9 @@ from recoryn.providers import (
     STTResult,
 )
 
+_LOAD_CODES = frozenset({"MODEL_MISSING", "DEPENDENCY_MISSING", "CANCELLED", "TIMEOUT"})
+_COMPUTE_TYPES = frozenset({"int8", "int8_float16", "int8_float32", "float16", "float32"})
+
 # Explicit failures of the opt-in GPU runtime (L01 D10); the parent re-raises them as is.
 GPU_RUNTIME_CODES = frozenset(
     {
@@ -48,10 +51,24 @@ def _activate_gpu(gpu_runtime: str | None) -> str | None:
 
 
 def _worker(
-    model_path: str, device: str, requests: Any, replies: Any, gpu_runtime: str | None = None
+    model_path: str,
+    device: str,
+    requests: Any,
+    replies: Any,
+    gpu_runtime: str | None = None,
+    device_index: int | None = None,
+    compute_type: str | None = None,
 ) -> None:
     # No Qt, capture, provider discovery, download or device fallback in this process.
-    os.environ.update({"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1"})
+    # CUDA enumerates by PCI bus id, the order the GPU inventory verified (G11 4.2).
+    os.environ.update(
+        {
+            "HF_HUB_OFFLINE": "1",
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+            "DO_NOT_TRACK": "1",
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+        }
+    )
     parent = multiprocessing.parent_process()
 
     def watch_parent() -> None:
@@ -72,15 +89,22 @@ def _worker(
             replies.put((command[0], failure))
     from recoryn.transcription import FasterWhisperProvider
 
-    provider = FasterWhisperProvider(Path(model_path), device=device)
+    provider = FasterWhisperProvider(
+        Path(model_path), device=device, device_index=device_index, compute_type=compute_type
+    )
     while True:
         command = requests.get()
         if command is None:
             return
         token, request = command
         try:
+            if request == "load":
+                replies.put((token, {"facts": provider.load()}))
+                continue
             result = provider.transcribe(request)
             replies.put((token, result))
+        except ProviderError as error:
+            replies.put((token, error.code if request == "load" else "INFERENCE_PROCESS_FAILED"))
         except Exception:
             replies.put((token, "INFERENCE_PROCESS_FAILED"))
 
@@ -99,6 +123,8 @@ class LocalSTTProcess:
         device: str = "cpu",
         timeout: float = 600,
         gpu_runtime: Path | None = None,
+        device_index: int | None = None,
+        compute_type: str | None = None,
     ) -> None:
         if (
             device not in ("cpu", "cuda")
@@ -106,9 +132,15 @@ class LocalSTTProcess:
             or not isinstance(timeout, (int, float))
             or not math.isfinite(timeout)
             or not 0 < timeout <= 86400
+            or (
+                device_index is not None
+                and (type(device_index) is not int or not 0 <= device_index < 1024)
+            )
+            or (compute_type is not None and compute_type not in _COMPUTE_TYPES)
         ):
             raise ProviderError("INPUT_INVALID")
         self.model_path, self.device, self.timeout = model_path, device, timeout
+        self.device_index, self.compute_type = device_index, compute_type
         self.gpu_runtime = gpu_runtime if device == "cuda" else None
         # The GPU runtime failure this worker answered with, if any (it answers every
         # later request the same way); the owner then stops offering that runtime.
@@ -133,15 +165,44 @@ class LocalSTTProcess:
         self._replies = self._context.Queue(maxsize=2)
         self._process = self._context.Process(
             target=_worker,
-            # The four-argument worker contract stays as is; only a GPU runtime adds one.
+            # The four-argument worker contract stays as is; a GPU runtime adds one and
+            # an explicit plan (device index / compute type) adds the last two.
             args=(str(self.model_path), self.device, self._requests, self._replies)
-            + (() if self.gpu_runtime is None else (str(self.gpu_runtime),)),
+            + self._extra_args(),
             name="recoryn-local-stt",
             daemon=True,
         )
         self._process.start()
 
+    def _extra_args(self) -> tuple[Any, ...]:
+        runtime = None if self.gpu_runtime is None else str(self.gpu_runtime)
+        if self.device_index is None and self.compute_type is None:
+            return () if runtime is None else (runtime,)
+        return (runtime, self.device_index, self.compute_type)
+
+    def is_live(self) -> bool:
+        """Lock-free: whether the owned child still exists (Library may ask under its mutex)."""
+        child = self._process
+        try:
+            return child is not None and bool(child.is_alive())
+        except (ValueError, OSError):
+            return False
+
+    def load(self, context: ExecutionContext | None = None) -> dict[str, Any]:
+        """Start the child, load the model without inference, and return its real facts."""
+        reply = self._call("load", context)
+        facts = reply.get("facts") if isinstance(reply, dict) else None
+        if not isinstance(facts, dict):
+            raise ProviderError("INFERENCE_PROCESS_FAILED")
+        return facts
+
     def transcribe(self, request: STTRequest, context: ExecutionContext | None = None) -> STTResult:
+        result = self._call(request, context)
+        if not isinstance(result, STTResult):
+            raise ProviderError("INFERENCE_PROCESS_FAILED")
+        return result
+
+    def _call(self, request: Any, context: ExecutionContext | None) -> Any:
         execution = context or ExecutionContext()
         deadline = time.monotonic() + self.timeout
         while not self._lock.acquire(timeout=0.05):
@@ -171,8 +232,12 @@ class LocalSTTProcess:
                 if isinstance(result, str) and result in GPU_RUNTIME_CODES:
                     self.gpu_failure = result
                     raise ProviderError(result)
-                if not isinstance(result, STTResult):
-                    raise ProviderError("INFERENCE_PROCESS_FAILED")
+                if isinstance(result, str):
+                    raise ProviderError(
+                        result
+                        if request == "load" and result in _LOAD_CODES
+                        else "INFERENCE_PROCESS_FAILED"
+                    )
                 return result
         finally:
             self._lock.release()

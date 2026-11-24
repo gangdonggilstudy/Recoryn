@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from types import TracebackType
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from recoryn.app.media import prepare_clips
@@ -16,6 +17,8 @@ from recoryn.content import Claim, ContentStore, Segment
 from recoryn.domain import SessionState, StateConflict, ValidationError
 from recoryn.jobs import AttemptRecord, JobRecord, JobStore
 from recoryn.models import ResourceRequest, ResourceScheduler, plan_static
+from recoryn.models.resource_catalog import PROVIDER_BACKENDS
+from recoryn.models.resources import NO_SOURCE, ResourceSource, check_facts
 from recoryn.providers import (
     ChunkSummary,
     ExecutionContext,
@@ -75,15 +78,46 @@ class _OutcomeGuard:
         return False
 
 
+class OwnedFactory(Protocol):
+    """An owned backend's worker factory: the service opens one worker per attempt
+    inside the lease, from the lease's plan (contract G11 section 5.1)."""
+
+    def capabilities(self) -> Any: ...
+
+    def open(self, plan: Any) -> Any: ...
+
+
+def provider_identity(provider: object) -> str | None:
+    """The registered identity a provider declares (pure capabilities, no I/O)."""
+    describe = getattr(provider, "capabilities", None)
+    if not callable(describe):
+        return None
+    value = describe()
+    identity = (
+        value.get("provider_id") if isinstance(value, dict) else getattr(value, "provider_id", None)
+    )
+    return identity if isinstance(identity, str) else None
+
+
 class AIService:
-    def __init__(self, library: Library, content: ContentStore, *, capacity: int = 8) -> None:
+    def __init__(
+        self,
+        library: Library,
+        content: ContentStore,
+        *,
+        capacity: int = 8,
+        resources: ResourceScheduler | None = None,
+    ) -> None:
         from recoryn.jobs.runner import BoundedRunner
 
         self.library, self.content = library, content
         self.jobs = JobStore(library.db_path)
         self.jobs.recover_abandoned(coordinator_exclusive=True)
         self.runner = BoundedRunner(self.jobs, capacity=capacity, workers=1, owner="desktop-ai")
-        self.scheduler = ResourceScheduler()
+        # The owned-heavy lease and its observation; the default observes nothing, so a
+        # needed GPU/RAM observation is UNAVAILABLE (refusing GPU_ONLY, never guessing).
+        self.scheduler = resources if resources is not None else ResourceScheduler()
+        self.runner.held = self.scheduler.held
         self._progress_lock = threading.Lock()
         self._progress: dict[str, ProgressEvent] = {}
         self._session_jobs: dict[str, set[str]] = {}
@@ -147,31 +181,90 @@ class AIService:
             return job, True, created
 
     @staticmethod
-    def _admit_resources(request: object, kind: str) -> ResourceRequest:
+    def _admit_resources(request: object, kind: str, provider: object = None) -> ResourceRequest:
         """Static admission before any Job, read or send (contract G11 section 3.2).
 
         The request is required: a direct caller cannot bypass the device policy the
         UI checks. A refusal raises before the Job exists, so it is a preparation block
-        (G-P07 'not admitted'), never a fabricated attempt.
+        (G-P07 'not admitted'), never a fabricated attempt. A provider whose registered
+        identity names another backend is refused (G11R-01): an Ollama or local adapter
+        labelled REMOTE cannot skip the policy or the owned lease. An identity the
+        registry does not know (an in-process test double) is taken at its label.
         """
         if type(request) is not ResourceRequest or request.kind != kind:
             raise ValidationError("INVALID_RESOURCE_REQUEST")
         plan_static(request)
+        if provider is not None:
+            backend = PROVIDER_BACKENDS.get(provider_identity(provider) or "")
+            if backend is not None and backend != request.backend:
+                raise ValidationError("INVALID_RESOURCE_REQUEST")
         return request
+
+    @contextmanager
+    def owned_worker(
+        self,
+        request: ResourceRequest,
+        provider: Any,
+        attempt: AttemptRecord,
+        cancel: threading.Event,
+        session_id: str,
+    ) -> Iterator[Callable[[], Any]]:
+        """The worker a task may use: the provider itself for a server/remote backend,
+        or, for an owned backend, a worker created after the lease grant (lazily, on
+        first use), checked against the plan's device facts and reaped before release.
+        """
+        plan = plan_static(request)  # dispatch re-check of the captured backend policy
+        if not plan.owned:
+            yield lambda: provider
+            return
+        source = getattr(provider, "resource_source", NO_SOURCE)
+        device = getattr(provider, "semantic_device", None)
+
+        def acknowledged() -> None:
+            # The held worker exited: finish the Job local reader the runner retained.
+            self.jobs.reader_finished(attempt)
+
+        with self.scheduler.lease(
+            request,
+            cancel=cancel,
+            job_id=attempt.job_id,
+            attempt_id=attempt.attempt_id,
+            session_id=session_id,
+            source=source if isinstance(source, ResourceSource) else NO_SOURCE,
+            device=device if device in ("cpu", "cuda") else None,
+            on_ack=acknowledged,
+        ) as lease:
+            opened: list[Any] = []
+
+            def use() -> Any:
+                if not opened:
+                    opener = getattr(provider, "open", None)
+                    worker = lease.open(opener) if callable(opener) else lease.attach(provider)
+                    assert lease.plan is not None
+                    check_facts(lease.plan, worker, ExecutionContext(cancel=cancel))
+                    opened.append(worker)
+                return opened[0]
+
+            yield use
 
     def _capture(self, job_id: str, request: ResourceRequest) -> None:
         with self._admission_lock:
             self._resource_requests[job_id] = request
 
-    def admit_diarization(self, request: object) -> ResourceRequest:
+    def admit_diarization(self, request: object, provider: object = None) -> ResourceRequest:
         """The diarization bridge creates its own Job; it passes the same static
         admission first (contract G11 section 6) and captures the request afterwards."""
-        return self._admit_resources(request, "diarization")
+        return self._admit_resources(request, "diarization", provider)
 
     def capture_diarization(self, job_id: str, request: ResourceRequest) -> None:
         if self.jobs.get(job_id).kind != "diarization":
             raise ValidationError("INVALID_RESOURCE_REQUEST")
         self._capture(job_id, self._admit_resources(request, "diarization"))
+
+    def resource_view(self, job_id: str) -> dict[str, Any] | None:
+        """The newest lease read model of this Job (plan, state, ACK), if any."""
+        views = [view for view in self.scheduler.leases() if view["job_id"] == job_id]
+        return views[-1] if views else None
 
     def resource_request(self, job_id: str) -> ResourceRequest | None:
         """The resource intent captured when this service last admitted the Job."""
@@ -184,9 +277,10 @@ class AIService:
         task: Callable[[AttemptRecord, threading.Event], str],
         *,
         created: bool,
+        priority: int = 0,
     ) -> None:
         try:
-            accepted = self.runner.submit(job.job_id, task)
+            accepted = self.runner.submit(job.job_id, task, priority=priority)
         except Exception:
             with self._admission_lock:
                 self._admitted.discard(job.job_id)
@@ -233,7 +327,7 @@ class AIService:
     def transcribe(
         self,
         session_id: str,
-        provider: STTProvider,
+        provider: STTProvider | OwnedFactory,
         *,
         config_key: str,
         resource_request: ResourceRequest,
@@ -246,7 +340,7 @@ class AIService:
         expected_job_id: str | None = None,
         expected_job_version: int | None = None,
     ) -> str:
-        resources = self._admit_resources(resource_request, "stt")
+        resources = self._admit_resources(resource_request, "stt", provider)
         state = self.library.get_session(session_id).state
         if not provisional and state != SessionState.FINALIZED:
             raise StateConflict("TRANSCRIPTION_REQUIRES_FINALIZED_AUDIO")
@@ -287,7 +381,10 @@ class AIService:
         scope = {"config_key": config_key, "language": language, "origin_ns": origin_ns}
 
         def task(attempt: AttemptRecord, cancel: threading.Event) -> str:
-            plan_static(resources)  # dispatch re-check of the captured backend policy
+            with self.owned_worker(resources, provider, attempt, cancel, session_id) as use:
+                return run(attempt, cancel, use)
+
+        def run(attempt: AttemptRecord, cancel: threading.Event, use: Callable[[], Any]) -> str:
             base: dict[str, Any] | None = None
             if provisional:
                 for candidate in reversed(self.content.list_revisions(session_id, "transcript")):
@@ -393,7 +490,7 @@ class AIService:
                     }
                 return value
 
-            with self.scheduler.acquire(cancel), _OutcomeGuard() as observed:
+            with _OutcomeGuard() as observed:
                 for unit, clip in zip(units, clips, strict=True):
                     if cancel.is_set():
                         raise ProviderError("CANCELLED")
@@ -405,7 +502,7 @@ class AIService:
                         if context_factory
                         else ExecutionContext(cancel=cancel)
                     )
-                    result = provider.transcribe(
+                    result = use().transcribe(
                         STTRequest(
                             clip.path,
                             language=language,
@@ -496,7 +593,7 @@ class AIService:
                     expected_transcript_version=expected_version,
                 )
 
-        self._submit(job, task, created=created)
+        self._submit(job, task, created=created, priority=resources.priority)
         return job.job_id
 
     def summarize(
@@ -512,7 +609,7 @@ class AIService:
         expected_job_id: str | None = None,
         expected_job_version: int | None = None,
     ) -> str:
-        resources = self._admit_resources(resource_request, "summary")
+        resources = self._admit_resources(resource_request, "summary", provider)
         transcript = self.content.active_transcript(session_id)
         if not transcript or not transcript["complete"]:
             raise StateConflict("SUMMARY_REQUIRES_COMPLETE_TRANSCRIPT")
@@ -594,7 +691,7 @@ class AIService:
 
         def task(attempt: AttemptRecord, cancel: threading.Event) -> str:
             plan_static(resources)  # dispatch re-check of the captured backend policy
-            with self.scheduler.acquire(cancel), _OutcomeGuard() as observed:
+            with _OutcomeGuard() as observed:
                 supplied = (
                     context_factory(cancel) if context_factory else ExecutionContext(cancel=cancel)
                 )
@@ -640,7 +737,7 @@ class AIService:
                     )
                 return revision
 
-        self._submit(job, task, created=created)
+        self._submit(job, task, created=created, priority=resources.priority)
         return job.job_id
 
     def cancel_session(self, session_id: str) -> None:

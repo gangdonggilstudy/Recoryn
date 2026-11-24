@@ -22,9 +22,21 @@ from recoryn.content import ContentStore, Segment
 from recoryn.domain import AudioFormat, StateConflict
 from recoryn.jobs import JobStore
 from recoryn.jobs.failures import NormalizedFailure, normalize_failure
+from recoryn.models.gpu_inventory import PROBE_OWNERS, Inventory
 from recoryn.models.resource_catalog import PROVIDER_BACKENDS
-from recoryn.models.resources import INTERACTIVE, LIVE, ResourceRequest, plan_static
-from recoryn.providers import ExecutionContext, ProviderError
+from recoryn.models.resources import (
+    ESTIMATE_UNKNOWN,
+    INTERACTIVE,
+    LIVE,
+    OBSERVED,
+    ResourcePlan,
+    ResourceRequest,
+    ResourceScheduler,
+    ResourceSource,
+    plan_static,
+    resolve_profile,
+)
+from recoryn.providers import ExecutionContext, ProviderCapabilities, ProviderError
 from recoryn.storage._coordination import root_mutex
 from recoryn.storage._safe import mkdir, open_file, safe_path
 from recoryn.storage.chunks import verify_bundle
@@ -58,7 +70,61 @@ def policy_block_status(
     )
 
 
-def resource_note(request: ResourceRequest | None, selected: str | None) -> str:
+# The production observer factory; tests replace it with fakes (no nvidia-smi/RAM API).
+make_observer: Callable[[], Any] = Inventory
+
+
+def _mib(value: int | None) -> str:
+    return "?" if value is None else f"{value // 2**20:,} MiB"
+
+
+_PHASE_TEXT = {
+    "WAITING": "자원 대기",
+    "ACTIVE": "자원 사용 중",
+    "REAP_PENDING": "작업자 종료 ACK 대기 · RESOURCE_LEASE_HELD · 다음 무거운 작업 배정 안 함",
+    "RELEASED": "자원 해제됨",
+}
+
+
+def resource_detail(view: dict[str, Any] | None, profile_text: str | None) -> str:
+    """Estimate, device, observation and lease facts of an owned Job (G11 section 6).
+
+    UNKNOWN stays "메모리 요구량 미확인" during and after the run; an unobserved RAM is
+    shown as such, never as a free value. Nothing here changes a setting.
+    """
+    if view is None or view.get("estimate_status") is None:
+        return (profile_text or "메모리 요구량 미확인") + " · 자원 계획은 실행 직전에 다시 관측"
+    parts = []
+    if view["estimate_status"] == ESTIMATE_UNKNOWN:
+        parts.append("메모리 요구량 미확인")
+    else:
+        needed = f"계획 요구량 RAM {_mib(view['planned_ram'])}"
+        if view["device"] == "cuda":
+            needed += f" · VRAM {_mib(view['planned_vram'])}"
+        parts.append(needed)
+    if view["device"] == "cuda":
+        parts.append(f"장치 GPU {view['gpu_name']} (CUDA 논리 index {view['cuda_index']})")
+        parts.append(
+            f"VRAM 여유 {_mib(view['vram_free'])} · 여유 기준 {_mib(view['gpu_headroom'])}"
+        )
+    else:
+        parts.append("장치 CPU")
+    if view["ram_state"] == OBSERVED:
+        parts.append(f"RAM 여유 {_mib(view['ram_free'])}")
+    else:
+        parts.append(f"RAM 관측 {view['ram_state']}")
+    parts.append(_PHASE_TEXT[view["phase"]])
+    if view.get("outcome_unknown"):
+        parts.append("결과 미확인 유지")
+    return " · ".join(parts)
+
+
+def resource_note(
+    request: ResourceRequest | None,
+    selected: str | None,
+    view: dict[str, Any] | None = None,
+    profile_text: str | None = None,
+) -> str:
     """The policy a Job was admitted with, never the control's current value."""
     if request is None:
         return "실행 정책: 이 실행에서 접수한 기록 없음"
@@ -67,10 +133,78 @@ def resource_note(request: ResourceRequest | None, selected: str | None) -> str:
     if request.backend == "OLLAMA":
         text = f"로컬 Ollama · 접수 정책 {request.policy} · 장치 미보장·서버 메모리 통제 불가"
     else:
-        text = f"이 PC · 접수 정책 {request.policy} · 메모리 요구량 미확인"
+        text = f"이 PC · 접수 정책 {request.policy} · " + resource_detail(view, profile_text)
     if selected and selected != request.policy:
         text += f" · 현재 선택 {selected}은 새 요청부터 적용"
     return text
+
+
+def local_source(
+    policy: str,
+    native_cuda: Callable[[], bool],
+    status: Callable[[], str],
+    root: Path,
+    *,
+    runtime_blocked: bool,
+) -> ResourceSource:
+    """Where CUDA would come from for a local STT request (L-P07, G11 section 6).
+
+    CPU_ONLY consults neither the runtime nor the CUDA source. A failure or pending
+    change of this runtime install excludes only that runtime, never a verified source
+    CUDA (``gpu_source``).
+    """
+    from recoryn.models.gpu_runtime import gpu_source
+
+    where = gpu_source(policy, native_cuda, status, runtime_blocked=runtime_blocked)
+    state = "NOT_CHECKED" if policy == "CPU_ONLY" else status()
+    return ResourceSource(where, state, root if where == "runtime" else None)
+
+
+class OwnedSTT:
+    """Creates one LocalSTTProcess per Job attempt from the lease's plan (G11 5.1).
+
+    The worker is created only after the lease grant, with the plan's device, logical
+    CUDA ordinal and compute type, and closed (exit ACK) before the lease is released.
+    No warm worker is kept between Jobs.
+    """
+
+    def __init__(self, model_path: Path, *, source: ResourceSource, semantic_device: str) -> None:
+        self.model_path = model_path
+        self.resource_source = source
+        self.semantic_device = semantic_device
+        self.last: Any = None
+
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            "faster_whisper", transcription=True, segment_timestamps=True, audio_formats=("wav",)
+        )
+
+    def open(self, plan: ResourcePlan) -> Any:
+        cuda = plan.device == "cuda"
+        runtime = (
+            self.resource_source.runtime_root if cuda and plan.cuda_source == "runtime" else None
+        )
+        options: dict[str, Any] = {"device": plan.device, "gpu_runtime": runtime}
+        options["device_index"] = plan.cuda_index if cuda else None
+        options["compute_type"] = plan.compute_type
+        worker = LocalSTTProcess(self.model_path, **options)
+        self.last = worker
+        return worker
+
+
+class OwnedDiarization:
+    """Creates the CPU-only diarization worker inside the lease (G11 5.1)."""
+
+    def __init__(self, config: Any) -> None:
+        self.config = config
+
+    def capabilities(self) -> dict[str, Any]:
+        return {"provider_id": "sherpa_onnx", "diarization": True}
+
+    def open(self, plan: ResourcePlan) -> Any:
+        from recoryn import diarization
+
+        return diarization.LocalDiarizationProcess(self.config)
 
 
 class DesktopAI:
@@ -79,8 +213,8 @@ class DesktopAI:
         self.store = ContentStore(window.library)
         self._history = JobStore(window.library.db_path)
         self.service: AIService | None = None
-        self.local: LocalSTTProcess | None = None
-        self.local_key: str | None = None
+        # The factory of the last local STT Job; its worker lived only inside the lease.
+        self._local_factory: OwnedSTT | None = None
         # L01 D7: Recoryn plays verified PCM itself; no Qt media decoder backend.
         self.playback = SinkPlayback(window, on_error=self._report_playback)
         self._playback_generation = 0
@@ -206,7 +340,11 @@ class DesktopAI:
 
     def _service(self) -> AIService:
         if self.service is None:
-            self.service = AIService(self.window.library, self.store)
+            self.service = AIService(
+                self.window.library,
+                self.store,
+                resources=ResourceScheduler(observe=make_observer()),
+            )
         return self.service
 
     def selection(self, session_id: str) -> None:
@@ -312,9 +450,13 @@ class DesktopAI:
         return job
 
     def _resource_acknowledged(self, job: Any) -> bool:
-        # close() retains its handle on ACK failure; only successful closure
-        # removes it. A logical Job reader receipt alone is insufficient.
-        return job.error_code == "INFERENCE_ACK_PENDING" and getattr(self, "local", None) is None
+        # A worker that did not exit keeps its lease held; only a later successful
+        # reap releases it. A logical Job reader receipt alone is insufficient.
+        if job.error_code not in ("INFERENCE_ACK_PENDING", "DIARIZATION_ACK_PENDING"):
+            return False
+        scheduler = getattr(getattr(self, "service", None), "scheduler", None)
+        held = getattr(scheduler, "held", None)
+        return job.job_id not in (held() if callable(held) else ())
 
     def open_blocked_action(self) -> None:
         """Only change the visible settings location, never authorization."""
@@ -511,8 +653,6 @@ class DesktopAI:
             if config is None or config.provider_id == "faster_whisper":
                 if not model:
                     raise StateConflict("LOCAL_MODEL_REQUIRED")
-                from recoryn.models import ResourceScheduler, probe_gpus
-
                 hasher = hashlib.sha256()
                 for name in ("model.bin", "config.json", "tokenizer.json"):
                     with open_file(Path(model).absolute() / name, "rb") as stream:
@@ -520,7 +660,7 @@ class DesktopAI:
                             check_cancel()
                             hasher.update(block)
                 digest = hasher.hexdigest()
-                from recoryn.models.gpu_runtime import GpuRuntimeManager, gpu_source
+                from recoryn.models.gpu_runtime import GpuRuntimeManager
                 from recoryn.transcription import cuda_runtime_available
 
                 # L01 D9/D10: a GPU is a candidate only with a CUDA-capable CTranslate2,
@@ -529,47 +669,28 @@ class DesktopAI:
                 self.observe_gpu_failure()
                 generation = runtime.generation()
                 failed = self._gpu_failed is not None and self._gpu_failed == generation
-                source = gpu_source(
+                source = local_source(
                     policy,
                     cuda_runtime_available,
                     runtime.status,
+                    runtime.root,
                     runtime_blocked=gpu_change_pending or failed,
                 )
-                runtime_root = runtime.root if source == "runtime" else None
-                _, gpus = probe_gpus() if source != "none" else ("UNAVAILABLE", ())
-                # Runtime adapter currently binds GPU zero; do not budget another GPU.
-                device, _ = ResourceScheduler().choose(
-                    policy, 1024 * 2**20, tuple(gpu for gpu in gpus if gpu.index == 0)
-                )
+                where = source.cuda_source
+                request = replace(resources, model_identity=digest)
+                # Plan now for the semantic key (digest:device, unchanged by G11); the lease
+                # re-observes at dispatch and keeps this device or refuses, never swaps it.
+                prepared = service.scheduler.prepare(request, source)
+                device = prepared.device
                 key = digest + ":" + device
-                runtime_used = runtime_root if device == "cuda" else None
-                # The worker is per model, device and runtime install; the job config key
-                # stays per model and device.
-                process_key = key + ("" if runtime_used is None else ":" + repr(generation))
-                if (
-                    self.local_key != process_key
-                    or self.local is None
-                    or getattr(self.local, "gpu_failure", None) is not None
-                ):
-                    activity = service.runner.snapshot()
-                    if activity["active"] or activity["pending"]:
-                        raise StateConflict("AI_MODEL_CHANGE_REQUIRES_IDLE")
-                    if self.local:
-                        self.local.close()
-                        self.local = None
-                    self.local = LocalSTTProcess(
-                        Path(model).absolute(), device=device, gpu_runtime=runtime_used
-                    )
-                    self.local_key = process_key
-                    self._local_generation = None if runtime_used is None else generation
-                assert self.local is not None
+                factory = OwnedSTT(Path(model).absolute(), source=source, semantic_device=device)
+                self._local_factory = factory
+                self._local_generation = (
+                    generation if device == "cuda" and where == "runtime" else None
+                )
                 check_cancel()
                 return service.transcribe(
-                    fixed_session,
-                    self.local,
-                    config_key=key,
-                    resource_request=replace(resources, model_identity=digest),
-                    **options,
+                    fixed_session, factory, config_key=key, resource_request=request, **options
                 )
             from recoryn.transcription import GeminiTranscriber, OpenAITranscriber
 
@@ -777,27 +898,27 @@ class DesktopAI:
             if preparation_cancel.is_set():
                 raise StateConflict("CANCELLED")
             service = self._service()
-            admitted = service.admit_diarization(resources)  # before the Job exists
+            worker = OwnedDiarization(config)
+            admitted = service.admit_diarization(resources, worker)  # before the Job exists
             job = service.jobs.create("diarization", uuid4().hex)
             service.jobs.bind_session(job.job_id, revision["session_id"])
             service.capture_diarization(job.job_id, admitted)
 
             def task(attempt: Any, cancel: threading.Event) -> str:
-                from recoryn.diarization import (
-                    DiarizationRequest,
-                    LocalDiarizationProcess,
-                    assign_speakers,
-                )
+                from recoryn.diarization import DiarizationRequest, assign_speakers
 
-                plan_static(admitted)  # dispatch re-check of the captured backend policy
-                with service.scheduler.acquire(cancel):
+                # Dispatch re-check, lease grant, worker after the grant, exit ACK before
+                # release (the same owned path as transcription).
+                with service.owned_worker(
+                    admitted, worker, attempt, cancel, revision["session_id"]
+                ) as use:
                     if cancel.is_set():
                         raise ProviderError("CANCELLED")
                     path = self._checked_playback_path(revision["session_id"], source)
                     derived = self._diarization_audio(revision["session_id"], path, cancel)
                     digest = hashlib.sha256(derived.read_bytes()).hexdigest()
                     request = DiarizationRequest(derived, source["offset_ms"], source["track_id"])
-                    provider = LocalDiarizationProcess(config)
+                    provider = use()
                     try:
                         result = provider.diarize(request, ExecutionContext(cancel=cancel))
                     finally:
@@ -1131,8 +1252,23 @@ class DesktopAI:
             policy = request.policy if request is not None else selected
             refused = policy_block_status(job.error_code, policy, f"AI: {job.state.value}")
             status = AIStatus(refused.text, refused.reason, refused.action_id, status.can_continue)
+        view = getattr(service, "resource_view", None)
+        lease = view(job.job_id) if callable(view) else None
+        profile_text = None
+        scheduler = getattr(service, "scheduler", None)
+        if request is not None and request.backend in ("LOCAL_CT2", "LOCAL_SHERPA"):
+            try:
+                profile = resolve_profile(request, getattr(scheduler, "profiles", ()))
+            except StateConflict:
+                profile_text = "명시 profile 불일치(RESOURCE_PROFILE_MISMATCH)"
+            else:
+                if profile is not None:
+                    profile_text = (
+                        f"profile {profile.profile_id} · CPU RAM {_mib(profile.cpu_host_ram)}"
+                        f" · GPU RAM {_mib(profile.gpu_host_ram)} · VRAM {_mib(profile.gpu_bytes)}"
+                    )
         return AIStatus(
-            status.text + " · " + resource_note(request, selected),
+            status.text + " · " + resource_note(request, selected, lease, profile_text),
             status.reason,
             status.action_id,
             status.can_continue,
@@ -1185,8 +1321,8 @@ class DesktopAI:
         self._transcribe(session_id=session, provisional=True)
 
     def observe_gpu_failure(self) -> None:
-        """Record the runtime install the current local worker failed on (this run only)."""
-        local = self.local
+        """Record the runtime install the last local worker failed on (this run only)."""
+        local = getattr(getattr(self, "_local_factory", None), "last", None)
         if (
             local is not None
             and getattr(local, "gpu_failure", None) is not None
@@ -1203,16 +1339,16 @@ class DesktopAI:
         if self.busy:
             raise StateConflict("AI_MODEL_CHANGE_REQUIRES_IDLE")
         if self.service is not None:
+            reap = getattr(getattr(self.service, "scheduler", None), "reap_held", None)
+            if callable(reap):
+                reap()  # a worker that has not exited keeps the runtime in use
             activity = self.service.runner.snapshot()
             if activity["active"] or activity["pending"]:
                 raise StateConflict("AI_MODEL_CHANGE_REQUIRES_IDLE")
-        local = self.local
-        if local is not None and getattr(local, "gpu_runtime", None) is not None:
-            self.observe_gpu_failure()
-            local.close()
-            self.local = None
-            self.local_key = None
-            self._local_generation = None
+        if PROBE_OWNERS.live():
+            raise StateConflict("AI_MODEL_CHANGE_REQUIRES_IDLE")
+        # Workers are per Job and already closed with their exit ACK; nothing stays warm.
+        self.observe_gpu_failure()
 
     def close(self) -> None:
         self._shutting_down = True
@@ -1221,7 +1357,5 @@ class DesktopAI:
             raise StateConflict("INFERENCE_ACK_PENDING")
         if self.service:
             self.service.close()
-        if self.local:
-            self.local.close()
         self.store.close()
         self._history.close()

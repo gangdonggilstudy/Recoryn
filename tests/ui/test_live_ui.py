@@ -164,16 +164,20 @@ def test_slow_model_preparation_cannot_disable_or_delay_recording_stop(ui, monke
     monkeypatch.setattr(ai_bridge, "LocalSTTProcess", gated)
     window.ai_bridge._transcribe(session_id=session, provisional=True)
     try:
+        # G-P11b: the model worker is created inside the owned lease on the AI runner,
+        # never on the UI or recording path; the slow creation holds only that runner.
         spin(app, entered.is_set)
-        assert window.ai_bridge.busy and not window.busy
+        runner = window.ai_bridge.service.runner
+        assert runner.snapshot()["active"] and not window.busy
         assert window.stop_button.isEnabled()
         window.stop_recording()
         spin(app, lambda: not window.busy)
         assert window.library.get_session(session).state is SessionState.FINALIZED
-        assert window.ai_bridge.busy  # stop completed before the model was released
+        assert runner.snapshot()["active"]  # stop completed before the model was released
     finally:
         release.set()
         spin(app, lambda: not window.ai_bridge.busy)
+        spin(app, lambda: not window.ai_bridge.service.runner.snapshot()["active"])
 
 
 def test_unknown_live_job_never_retries_new_chunks_without_explicit_action(ui, monkeypatch):

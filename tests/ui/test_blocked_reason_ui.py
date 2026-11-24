@@ -142,7 +142,7 @@ def test_continue_preparation_space_uses_actual_authority_and_reader_boundaries(
             # Only fixture setup holds the first QUEUED intent without dispatch.
             # Restore the real runner before the observed UI continue operation.
             original_submit = service.runner.submit
-            monkeypatch.setattr(service.runner, "submit", lambda *args: True)
+            monkeypatch.setattr(service.runner, "submit", lambda *args, **kwargs: True)
             bridge.transcribe()
             _spin(app, lambda: not bridge.busy)
             monkeypatch.setattr(service.runner, "submit", original_submit)
@@ -963,42 +963,55 @@ def test_preparation_and_existing_job_show_the_same_specific_budget_action(
 
 
 def test_local_reader_receipt_cannot_replace_retained_inference_process_ack(app):
+    """A worker that does not exit keeps its owned lease held (G-P11b); only a later
+    successful reap acknowledges it, never a logical Job reader receipt."""
+    import threading
+
+    from recoryn.domain import StateConflict
+    from recoryn.models import ResourceRequest, ResourceScheduler
     from recoryn.providers import ProviderError
 
     class Worker:
-        gpu_runtime = Path("fake-runtime")
-        gpu_failure = None
         allow_close = False
+        alive = True
 
         def close(self):
             if not self.allow_close:
                 raise ProviderError("INFERENCE_ACK_PENDING")
+            self.alive = False
+
+        def is_live(self):
+            return self.alive
 
     with JobStore(Path(":memory:")) as store:
         job = store.create("transcription", "same")
         job = store.block_pending(
             job.job_id, "RESOURCE", "INFERENCE_ACK_PENDING", expected_version=0
         )
+        scheduler, worker = ResourceScheduler(), Worker()
+        request = ResourceRequest("stt", "LOCAL_CT2", "CPU_ONLY")
+        with pytest.raises(StateConflict, match="^INFERENCE_ACK_PENDING$"):
+            with scheduler.lease(request, cancel=threading.Event(), job_id=job.job_id) as lease:
+                lease.open(lambda plan: worker)
+        assert scheduler.held() == (job.job_id,)
         bridge = DesktopAI.__new__(DesktopAI)
-        bridge.local = Worker()
-        bridge.local_key = "fixed"
         bridge._local_generation = None
         bridge._gpu_failed = None
         bridge.busy = False
         bridge.service = SimpleNamespace(
-            runner=SimpleNamespace(snapshot=lambda: {"active": 0, "pending": 0})
+            scheduler=scheduler,
+            runner=SimpleNamespace(snapshot=lambda: {"active": (), "pending": 0}),
         )
         status = ai_status(
             job, reader_active=False, resource_acknowledged=bridge._resource_acknowledged(job)
         )
         assert not status.can_continue and "종료 ACK" in status.text
-        old = bridge.local
         with pytest.raises(ProviderError, match="INFERENCE_ACK_PENDING"):
             bridge.release_gpu_runtime()
-        assert bridge.local is old and not bridge._resource_acknowledged(job)
-        old.allow_close = True
+        assert scheduler.held() == (job.job_id,) and not bridge._resource_acknowledged(job)
+        worker.allow_close = True
         bridge.release_gpu_runtime()
-        assert bridge.local is None and bridge._resource_acknowledged(job)
+        assert scheduler.held() == () and bridge._resource_acknowledged(job)
         assert ai_status(job, reader_active=False, resource_acknowledged=True).can_continue
         assert store.get(job.job_id) == job
 

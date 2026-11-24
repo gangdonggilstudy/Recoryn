@@ -581,3 +581,156 @@ mutation은 원문 28개를 유지하고 다음 4개를 더해 **32개**를 요�
 - offscreen Qt에서는 키보드 focus를 판정하지 않았다. 대신 "AI 실행 정책" control을 포함한 tab으로 바뀌는지를 확인했다.
 - 정책 값 저장·복원(재시작 뒤 CPU_ONLY)은 G-P16 전까지 그대로다.
 - 이번 단위는 원격 provider의 stream 단위 비용·동의 재검사를 새로 검증하지 않는다. 그 부분은 G-P02·G-P06의 기존 계약이다. T27·T28은 장치 정책 제외가 그 guard를 우회하지 않음만 확인한다.
+
+## §구현 결과(G-P11b, b925520 기준)
+
+### 기준과 범위
+
+- 작성자는 w5:p7 Claude다. 배정은 C00의 G-P11b 착수 신호다. 기준 HEAD는 `b925520`(G-P11a 푸시됨)이다.
+- 시작 때 §10.1의 G-P11b 26파일 hash를 고정했다. 26파일 모두 HEAD와 같았고, `models/gpu_inventory.py`는 신규였다.
+- 이 문서의 앞 내용(LF SHA-256 `5977dd9a…`)은 한 바이트도 바꾸지 않았다. G-P11a 결과 절의 정정(G11R-07)도 아래에 덧붙이는 방식으로 적었다.
+- 범위 밖 파일은 쓰지 않았다. 여기에는 G-P08 작업 파일(`app/status.py`, `ui/main.py`, `storage/library.py` 등)과 G-P11a 전용 8파일이 포함된다.
+- G11R-04(공용 `status.py`의 행동 식별자)는 C00 지시대로 G-P08 push 뒤로 미뤘다.
+
+- 26파일 중 **21파일을 바꿨다**: source 11(`ui/models.py` 제외), 신규 시험 4, fixture 1, 기존 UI 시험 3(`test_live_ui`·`test_gpu_runtime_ui`·`test_blocked_reason_ui`), `test_blocked_reasons.py`, 이 문서.
+- 바꿀 필요가 없었던 5파일은 모두 변경 없이 통과했다: `ui/models.py`, `tests/ui/test_consent_scope_ui.py`, `tests/ui/test_cost_cap_ui.py`, `tests/property/test_blocked_reason_case_space.py`, `tests/integration/test_blocked_reason_flow.py`.
+- 기존 UI 시험의 적응 내용은 다음과 같다.
+  - Job별 worker에 맞춘 fake 서명(`device_index`·`compute_type`)
+  - 관측기 seam(`make_observer`)
+  - warm worker 단언을 "Job 뒤 종료됨"으로 바꿈
+  - 보유 lease의 ACK 시험을 실제 scheduler로 바꿈
+  - runner `submit`의 `priority` keyword
+  - `test_live_ui`: worker 생성이 UI가 아니라 AI runner에서 일어나므로 "bridge busy" 단언을 "runner active"로 바꿈. 녹음 종료가 모델 준비를 기다리지 않는다는 원래 의미는 유지한다
+- G-P11a 전용 8파일(직접 service 시험 7과 `test_cost_cap.py`)은 바꾸지 않았다. 공통 fixture `STT`는 CPU_ONLY의 LOCAL_CT2로 관측과 profile이 전혀 필요 없어, 그대로 통과한다.
+
+### source 변경
+
+| 파일 | 변경 |
+| --- | --- |
+| `models/resources.py` | 관측 DTO: `GpuDevice`(UUID·논리 CUDA ordinal·host index), `GpuObservation`, `MemoryObservation`(OBSERVED/UNKNOWN/UNAVAILABLE/NOT_OBSERVED), `ResourceSource`(L-P07 source), `ResourceSnapshot`(관측 시각, 미래 관측 거부, display 전용 cache). 순수 `plan_resources`는 §4.3 산술 그대로다: known/UNKNOWN 분기, 경계 동일 허용, AUTO 최대 여유와 UUID tie, pin 불변, GPU_ONLY는 CPU를 만들지 않음, fallback은 CPU 독립 조건, 의미 키 장치 고정. `resolve_profile`은 명시 profile 불일치·손상 기록을 MISMATCH로 처리하고 부재로 낮추지 않는다. `observation_needs`는 필요한 관측만 고른다. `Lease`는 6상태·4사건 전이표, lock 없는 `is_live`, 실제 종료 ACK 뒤에만 해제한다. `ResourceScheduler.observe/plan/prepare/lease/leases/held/reap_held`를 추가했다. G11R-06에 따라 `ResourcePlan.applies`를 `owned`(소유 자원 단계)와 `policy_applies`(REMOTE만 False)로 나눴다. legacy `choose`/`acquire`/`probe_gpus`는 그대로다 |
+| `models/resource_catalog.py` | `MemoryProfile`(장치별 요구량, None이면 그 장치만 UNKNOWN), canonical `profile_digest`, `profile_intact`(digest·근거 hash·검토 상태)를 추가했다. 운영 `PROFILES`는 빈 tuple이다(§4.1 C00 결정) |
+| `models/gpu_inventory.py`(신규) | 운영 관측기 `Inventory`(필요한 것만 관측). RAM은 `GlobalMemoryStatusEx`, GPU는 UUID·PCI bus·MIG를 포함한 nvidia-smi 읽기다. CUDA ordinal은 소유 probe child가 runtime을 활성화한 뒤 CTranslate2를 import해 `CUDA_DEVICE_ORDER=PCI_BUS_ID`로 센다. `join_identity`는 bus id 순서로 ordinal을 정하고, 아래 조건을 모두 만족할 때만 VERIFIED다: `CUDA_VISIBLE_DEVICES` 없음, MIG 없음, UUID 유일, CUDA 수 = host 수. 응답 없는 probe child는 `PROBE_OWNERS`로 추적한다. 시험은 이 파일의 probe를 모두 fake로 주입한다 |
+| `jobs/failures.py` | RESOURCE에 10코드를 추가했다. 등록 121개, 미등록 대표를 더해 **122**다(결정 ①). RESOURCE는 17→27이다 |
+| `jobs/runner.py` | `submit(..., priority=)`과 pending 선택점 `_take`(최소 priority → 최소 ordinal, 세 번째 우선 선택 뒤에는 가장 오래된 것, 실행 중 비선점). G11R-02: 결과 기록과 settle을 runner lock 안에서 하고, `stop()`은 settle된 작업을 취소하지 않는다. held lease를 `snapshot()["active"/"held"]`에 포함한다. 종료 ACK가 실패한 작업은 Job local reader를 유지한다(아래 해석 1) |
+| `app/inference.py` | `LocalSTTProcess(device_index=, compute_type=)`, `load()`(추론 없이 로드한 실제 facts), lock 없는 `is_live()`를 추가했다. worker는 `CUDA_DEVICE_ORDER=PCI_BUS_ID`를 쓴다. 기존 4인자/runtime 5인자 계약은 그대로다(새 인자를 넘길 때만 7인자) |
+| `transcription/adapters.py` | `FasterWhisperProvider(device_index=)`, `load()`, `facts()`(CTranslate2 객체가 보고하는 device/device_index/compute_type)를 추가했다. `device_index`는 지정했을 때만 factory에 넘긴다 |
+| `diarization/process.py` | lock 없는 `is_live()`, CPU 전용 구성의 `device_facts()`를 추가했다 |
+| `app/ai.py` | G11R-01: 등록 identity가 요청 backend와 다르면 `INVALID_RESOURCE_REQUEST`. 미등록 in-process 대역은 표지를 신뢰하고 이 규칙을 문서화했다. `owned_worker`는 dispatch 재검사 → lease → 첫 사용 때 worker 생성(`open(plan)`) → facts 확인 → 종료 ACK 뒤 해제 순서다. 요약(OLLAMA/REMOTE)은 로컬 lease를 쓰지 않는다. runner priority 전달, `resource_view`, `OwnedFactory` 형식을 추가했다 |
+| `ui/ai_bridge.py` | GPU0 필터와 고정 1GiB `choose`를 없앴다. 준비 때 `scheduler.prepare`로 의미 키 `digest:device`를 정하고(G11은 키 구성을 바꾸지 않는다), dispatch lease가 그 장치를 유지하며 재관측한다. Job별 worker(`OwnedSTT`, `OwnedDiarization`)를 쓰고 warm worker는 없다. `local_source`(L-P07)를 두었다. 운영 관측기 seam은 `make_observer`다. 표시: 추정·장치·CUDA 논리 index·RAM/VRAM 여유와 기준·lease 단계·ACK 대기. held lease와 probe owner가 남아 있으면 runtime 제거를 거부한다 |
+
+`ui/models.py`는 이번 단위에서 바꿀 필요가 없었다. 모델 패널의 "AI가 사용 중"은 bridge의 거부를 그대로 쓴다.
+
+### 계약 해석과 C00 판단 요청
+
+1. **Library live owner 대신 Job local reader 유지**(§5.1 문구와 다름)
+   - 문제: lease를 `Library.register_live_owner`에 등록하면, AI 작업이 도는 동안 녹음 종료가 `FINALIZING`에서 멈췄다(`tests/ui/test_live_ui.py::test_slow_model_preparation_cannot_disable_or_delay_recording_stop`).
+     - 이 hook은 writer 생존을 뜻하며 seal, finalize, recover, 등록이 모두 쓴다.
+     - 녹음 독립 불변식에 어긋나므로 등록하지 않는다.
+   - 대신:
+     - 종료 ACK가 실패한 작업은 runner가 Job local reader를 끝내지 않는다.
+     - 삭제·복구는 기존 `ACTIVE_READER_OR_WRITER`로 실제 child 종료를 기다린다.
+     - 이후 reap이 성공하면 reader를 끝낸다.
+   - M15는 이 reader 유지 제거로 바꿔 검출했다.
+2. **필요한 관측만 수행**
+   - CPU_ONLY와 CPU 전용 backend는 GPU를 관측하지 않는다.
+   - RAM은 known 요구량의 후보 장치에만 읽는다. UNKNOWN 요구량에서는 RAM을 읽지 않고 "RAM 관측 NOT_OBSERVED"로 표시한다(§4.3 "RAM 관측 상태는 표시한다"의 해석).
+   - 이유: 운영 catalog가 비어 있어 RAM 값이 어떤 판단에도 쓰이지 않는다. 또 범위 밖 기존 시험이 bridge를 지날 때 실제 OS API를 부르지 않게 하기 위해서다.
+   - 실제 판단에 쓰지 않더라도 RAM 여유를 늘 보여 주기를 원하면 관측기 한 곳만 바꾸면 된다.
+3. **STT 결과 게시 뒤 종료 ACK 실패**
+   - 전사 task는 자기 fence로 결과를 게시한 뒤 lease 밖으로 나온다. 그래서 ACK가 실패해도 Job은 SUCCEEDED다.
+   - 이때 lease는 REAP_PENDING으로 유지되고 reader도 유지되며, "작업자 종료 ACK 대기 · RESOURCE_LEASE_HELD"로 표시된다. 다음 무거운 작업은 `RESOURCE_LEASE_HELD`로 배정되지 않는다(§7.2 "logical과 physical은 별개").
+   - 게시 전에 ACK를 요구하려면 task 구조를 바꾸는 별도 결정이 필요하다.
+4. **mutation 수:** 지시문은 23이었다. 승인된 개정 ⑧(P11b 32,593/24)에 따라 M30을 포함한 24개를 실행했다.
+5. **compute type 별칭:** CTranslate2가 CPU int8을 `int8_float32`로 보고할 수 있어 허용했다. 실제 로드 객체의 보고값은 외부 게이트다.
+6. **Job별 worker:** live STT도 Job마다 모델을 다시 로드한다(§5.1 C00 승인 내용). 지연 증가는 측정하지 않았다.
+
+### G11R 처리
+
+| ID | 처리 |
+| --- | --- |
+| G11R-01 | 등록 identity와 backend 대조(`app/ai.py`). 시험: ollama→REMOTE, faster_whisper→REMOTE, openai→LOCAL_CT2 표지가 세 정책 모두에서 Job 0으로 거부된다 |
+| G11R-02 | runner settle-under-lock(`jobs/runner.py`). 시험: `JobStore.fail` commit 직후 worker를 잡아 둔 barrier에서 `stop()`이 기다리고, RESOURCE·BUDGET·REMOTE_UNKNOWN BLOCKED가 모두 보존된다 |
+| G11R-03 | 요약·화자 dispatch 재검사 행, 실제 `diarize()` submit의 admission(Job 생성 전)·capture·tick 행, DTO 중복 key와 `2**63` 경계 행을 추가했다 |
+| G11R-04 | 미룸(G-P08 push 뒤 C00 결정) |
+| G11R-05 | T27·T28은 `prepare_execution` wrapper가 기록한 예외 코드를 손으로 쓴 집합과 대조하고, 표시 문자열에는 그 코드가 보이는지만 확인한다 |
+| G11R-06 | `owned`와 `policy_applies`로 분리했다. A 36행이 두 값을 모두 확인한다 |
+| G11R-07 | 아래 "G-P11a 결과 절 정정" |
+
+### G-P11a 결과 절 정정(G11R-07)
+
+G-P11a 결과의 "coverage가 닿지 않은 새 경로" 목록은 실제와 달랐다.
+
+- `ui/ai_bridge.py:470`은 기존 `prepare_execution` 예외 분기다. 새 1차 gate의 live 억제 줄은 458이었다.
+- 화자 구분 submit의 `admit_diarization`(780)·`capture_diarization`(783)은 coverage와 판정 assertion이 둘 다 없었다. 이 줄들은 QThreadPool thread에서 돌아 coverage가 추적하지 못하는 측정 공백이었다.
+- `resources.py`의 미적중은 기존 `probe_gpus`(52-61)와 legacy `acquire`(92-93)였다.
+
+이번 단위의 `test_aux_diarize_submit_admits_and_captures`는 실제 `diarize()`에서 admission이 Job 생성 전에 1회 불리고 capture가 그 Job에 1회 불리는 것을 assertion으로 확인한다.
+
+### 시험
+
+| 파일 | node | 의미 행(P11b) |
+| --- | ---: | --- |
+| `tests/unit/test_resource_policy.py` | 299 | P 31,104(한 node에서 batching, 행마다 ID와 손 oracle 대조), E 72, C017~096(직접 fail·runner)·C101~120(`block_pending`), T01~15·21·22·24·25·26. 보조: lease 전이표 24, DTO 중복 key·`2**63`, 등록 identity 3, inventory 3(nvidia-smi 출력·결합 사유·필요 관측과 cache, 모두 주입) |
+| `tests/integration/test_resource_policy.py` | 394 | G 120(실제 `join_identity`→plan→lease→bridge `OwnedSTT` 인자·facts), R 144(bridge `local_source`→plan→worker 인자), L 96(실제 scheduler의 waiter·ACK trace), S 20(AIService owned path), T16·17·18·23. 보조: stop barrier 3, 요약·화자 dispatch 재검사, 보유 lease 다음 Job, UNKNOWN+보유 worker |
+| `tests/ui/test_resource_policy_ui.py` | 200 | Ub 48(실제 MainWindow tick 표시), T29(실제 bridge 로컬 STT의 legacy `choose` 0). 보조: 실제 `diarize()` submit의 admission·capture |
+| `tests/property/test_resource_policy_case_space.py` | 6 | Q 864(행마다 실제 `BoundedRunner` trace, 한 node), 계속 도착하는 interactive 아래 background 진행 trace, 32,799 ID 감사 |
+
+- 기대값은 모두 손으로 쓴 표와 규칙이다(P·E·G·R·L·Q·Ub·C 각 oracle). 제품의 plan·선택·전이 함수를 기대값 계산에 쓰지 않는다.
+- fake는 관측(GPU·RAM)·worker·factory·profile만 바꾼다. plan·lease·runner·JobStore·AIService·bridge·tick은 제품 코드다.
+
+### 결과
+
+- 모든 실행은 격리 사본에서 했다: `git archive b925520` + 26파일, PYTHONPATH = 사본 src, 자식 import 출처가 사본임을 확인. 작업 트리의 G-P08 미완성 변경은 쓰지 않았다. 공통 옵션은 `-p no:cacheprovider`, OS TEMP 고유 basetemp, offscreen, `-W error::ResourceWarning`이다.
+- **신규 4파일 단독: 899 passed, 18.21초**(60초 게이트 안). 가장 긴 node는 Q 1.56초, T27·T28 각 약 1초, P cube 0.44초다.
+- **case ID 감사:**
+  - 개정 전체 32,799를 확인했다.
+  - P11a 206과 P11b 32,593이 각각 누락·중복·초과 0이고, 두 집합의 교집합은 0, 합집합은 전체다. skip은 0이다.
+- **CI core 동등**(`.github/workflows/core.yml` 단계와 flag 그대로):
+  - ruff check, format --check(184 files), mypy(90 source) 통과
+  - 전체 pytest **21,275 passed**(failures·errors·skipped 0), 1,276.4초, JUnit LF SHA-256 `23601156…`
+  - 총 coverage 92.29%
+  - `scripts/check_coverage.py` 묶음별 예산 전부 PASS(line/branch %): domain 100/100, capture 99.85/98.57, jobs 99.29/96.23, storage 96.52/92.43, security 98.11/94.43, content 99.59/98.75, all 93.69/88.05
+  - 새·변경 모듈 coverage: `resource_catalog.py` 100%, `failures.py` 100%, `resources.py` 89%(미적중은 legacy `probe_gpus` 본문과 방어·검증 분기), `gpu_inventory.py` 69%(실제 `GlobalMemoryStatusEx`·CUDA count child·child 실행은 계약상 시험에서 부르지 않음), `ai_bridge.py` 80%
+  - CI 사본의 이 문서는 결과 절을 쓰기 전 판이다. 그 차이는 실행 대상이 아닌 문서뿐이다
+- **mutation 24/24 검출, import·수집 오류에 따른 invalid 0.** mutant마다 새 격리 사본에 하나만 적용했고 import 출처를 확인했다. 실행 대상은 신규 4파일, `test_gpu_runtime_ui.py`, `test_blocked_reasons.py`다.
+
+| ID | 결함 | 실패 | 목표 적중(예) |
+| --- | --- | ---: | --- |
+| M04 | GPU_ONLY 실패 시 CPU 실행 | 86 | G 45, P cube |
+| M05 | UNKNOWN probe에 cache 값 사용 | 2 | T12, P cube |
+| M06 | probe UNKNOWN/UNAVAILABLE을 GPU 없음으로 | 3 | T12, T23, P cube |
+| M07 | 요구량 1GiB 고정 | 58 | E, P cube |
+| M08 | known CPU의 fallback RAM 검사 생략 | 18 | R 17 |
+| M09 | 여유 `>=`→`>` | 1 | P cube |
+| M10 | GPU0만 사용 | 24 | G 12(GPU1만 적합) |
+| M11 | host index를 CUDA ordinal로 | 33 | G 20(bus 순서 뒤바뀜) |
+| M12 | 명시 profile의 runtime 불일치 허용 | 7 | E 7 |
+| M13 | lease 전에 worker 생성 | 39 | S, Ub, 보유 lease 다음 Job |
+| M14 | 종료 ACK 실패에도 slot 해제 | 61 | T21, L |
+| M15 | ACK 전 Job local reader 해제 | 11 | Ub ACK 대기 10, 보유 lease 다음 Job |
+| M16 | priority를 FIFO로 | 2 | Q, 진행 trace |
+| M17 | 공정 oldest turn 제거 | 2 | Q, 진행 trace |
+| M18 | 취소된 waiter에 grant | 5 | T22, L |
+| M19 | runtime 실패를 source CUDA까지 | 6 | R(native+제외 runtime) |
+| M20 | CPU_ONLY에서 runtime/source 확인 | 48 | R(CPU_ONLY 전부) |
+| M21 | 로드 객체 facts 확인 제거 | 13 | T16·17·18, Ub blocked |
+| M22 | 새 코드를 FAILED로 소실 | 8 | C 7, catalog delta |
+| M23 | UNKNOWN을 ACK 코드로 덮음 | 1 | UNKNOWN+보유 worker |
+| M25 | UNKNOWN을 차단 예외로 | 169 | T25, S, P cube |
+| M27 | UNKNOWN GPU 여유 기준 생략 | 48 | T26, P cube |
+| M28 | UNKNOWN을 0/known으로 | 28 | S, Ub, P cube |
+| M30 | UNKNOWN 요구량을 legacy `choose`로 | 4 | T29 |
+
+- M14의 첫 형태(close 실패를 무시)는 살아남았다. 별도의 child 생존 확인이 같은 slot을 계속 보유하게 해 결함이 가려졌기 때문이다(이중 방어). 그래서 계약 의미에 맞게 "ACK 실패에도 slot 반환"으로 다시 정의했고, 이 형태는 61건으로 검출됐다.
+- M25의 setup 오류 240건은 import·수집 오류가 아니다. UI module fixture가 "UNKNOWN profile의 CPU Job은 성공해야 한다"고 단언한 assertion 실패다. 목표 행(T25·S)도 assertion으로 실패했다.
+- M09의 첫 판정 "미검출"은 대상 이름 목록에 P cube node를 빠뜨린 harness 오류였다. 이름을 고쳐 다시 실행해 검출을 확인했다.
+- mutation은 inventory 보조 시험 3건을 추가하기 전에 실행했다. 추가는 node를 늘릴 뿐이므로 검출 판정에 영향이 없다.
+
+### 미검증·한계
+
+- 실제 GPU·nvidia-smi·CUDA ordinal probe child·`GlobalMemoryStatusEx`·모델 로드·다중 GPU·MIG·remapping 환경은 실행하지 않았다. 모두 fake 주입으로 검증했다.
+- CUDA ordinal↔UUID 대응 조건(PCI bus 순서)이 실제 드라이버에서 성립하는지는 외부 게이트다.
+- 운영 profile catalog는 비어 있다. 첫 실제 profile은 측정 근거를 갖춘 별도 단위다. UNKNOWN 실행 허용은 모델별 메모리 검증 완료가 아니다.
+- priority·공정 turn은 유한 trace의 진행만 보인다. 시간 SLA와 영구 hang 진행 보증은 아니다.
+- 재시작 고아 child 종료 증명은 자동화하지 않았다. 재시작 뒤 캡처와 lease는 메모리에 없다.
+- 정책 값 저장(G-P16)과 공용 `status.py` 행동 연결(G11R-04)은 남아 있다.

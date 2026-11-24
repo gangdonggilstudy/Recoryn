@@ -1,9 +1,11 @@
 """GPU runtime choice through the real window, bridge, Task and ResourceScheduler (L07).
 
-Only the GPU probe, the CUDA source checks, the runtime's status/generation and the
-transcription worker are fakes; no process, model, GPU or network is used. Covers the
-review findings L07-U01 (failure tracking), L07-U02 (codes reach the user) and L07-U03
-(pending runtime removal versus a new transcription).
+Only the resource observer (GPU inventory), the CUDA source checks, the runtime's
+status/generation and the transcription worker are fakes; no process, model, GPU,
+nvidia-smi or network is used. Covers the review findings L07-U01 (failure tracking),
+L07-U02 (codes reach the user) and L07-U03 (pending runtime removal versus a new
+transcription). G-P11b: the worker exists only inside one Job's owned lease and is
+closed (exit ACK) before release, so no warm GPU worker survives between Jobs.
 """
 
 from __future__ import annotations
@@ -24,7 +26,15 @@ import recoryn.transcription
 from recoryn.app.desktop import DesktopRecorder, TrackSelection
 from recoryn.domain import AudioFormat, PCMBlock, StateConflict
 from recoryn.models.gpu_runtime import GpuRuntimeManager
-from recoryn.models.resources import GPUInfo
+from recoryn.models.resources import (
+    NOT_OBSERVED,
+    OBSERVED,
+    UNAVAILABLE,
+    GpuDevice,
+    GpuObservation,
+    MemoryObservation,
+    ResourceSnapshot,
+)
 from recoryn.providers import ProviderError, STTResult, TranscriptSegment
 from recoryn.storage import Library
 from recoryn.ui import ai_bridge
@@ -56,8 +66,17 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     plan = SimpleNamespace(status="READY", generation=(1, 1), gpu=True, fail_gpu=False, created=[])
 
     class FakeLocal:
-        def __init__(self, model: Path, *, device: str = "cpu", gpu_runtime: Any = None) -> None:
+        def __init__(
+            self,
+            model: Path,
+            *,
+            device: str = "cpu",
+            gpu_runtime: Any = None,
+            device_index: int | None = None,
+            compute_type: str | None = None,
+        ) -> None:
             self.device = device
+            self.device_index, self.compute_type = device_index, compute_type
             self.gpu_runtime = gpu_runtime if device == "cuda" else None
             self.gpu_failure: str | None = None
             self.closed = False
@@ -74,15 +93,20 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
             self.closed = True
 
     monkeypatch.setattr(ai_bridge, "LocalSTTProcess", FakeLocal)
-    monkeypatch.setattr(
-        recoryn.models,
-        "probe_gpus",
-        lambda: (
-            ("OBSERVED", (GPUInfo(0, "fake", 8 * 2**30, 8 * 2**30),))
-            if plan.gpu
-            else ("UNAVAILABLE", ())
-        ),
-    )
+    plan.observed = []
+
+    def observe(need_gpu: bool, need_ram: bool, source: Any) -> ResourceSnapshot:
+        plan.observed.append((need_gpu, source.cuda_source))
+        now = time.monotonic_ns()
+        if need_gpu and plan.gpu:
+            device = GpuDevice("GPU-fake-0", 0, 0, "fake", 8 * 2**30, 8 * 2**30)
+            gpu = GpuObservation(OBSERVED, now, (device,), True, "fake-inventory")
+        else:
+            gpu = GpuObservation(UNAVAILABLE if need_gpu else NOT_OBSERVED)
+        ram = MemoryObservation(UNAVAILABLE if need_ram else NOT_OBSERVED)
+        return ResourceSnapshot(now, gpu, ram, source)
+
+    monkeypatch.setattr(ai_bridge, "make_observer", lambda: observe)
     monkeypatch.setattr(recoryn.transcription, "cuda_runtime_available", lambda: False)
     monkeypatch.setattr(GpuRuntimeManager, "status", lambda self: plan.status)
     monkeypatch.setattr(
@@ -216,7 +240,9 @@ def test_pending_runtime_removal_and_new_transcription_never_interleave(
     panel = window.model_panel
     run(world, window)
     gpu_worker = plan.created[-1]
-    assert gpu_worker.device == "cuda" and window.ai_bridge.local is gpu_worker
+    # The Job's worker ran on the planned CUDA ordinal and was closed with the Job.
+    assert gpu_worker.device == "cuda" and gpu_worker.device_index == 0
+    assert gpu_worker.compute_type == "float16" and gpu_worker.closed
     # AI first: while the bridge is busy, removal is not even offered.
     window.ai_bridge.busy = True
     asked: list[str] = []
@@ -234,7 +260,7 @@ def test_pending_runtime_removal_and_new_transcription_never_interleave(
     spin(world.app, window._models_idle)  # the runner has retired the finished job
     panel.remove_gpu()
     assert asked == ["asked"] and len(held) == 1 and panel.gpu_busy
-    assert gpu_worker.closed and window.ai_bridge.local is None
+    assert gpu_worker.closed and window.ai_bridge.service.scheduler.held() == ()
     # ...and a transcription started meanwhile does not choose the runtime.
     run(world, window)
     assert plan.created[-1].device == "cpu" and plan.created[-1].gpu_runtime is None
@@ -248,7 +274,7 @@ def test_ai_started_during_the_delete_confirmation_keeps_its_worker(
     panel = window.model_panel
     run(world, window)
     gpu_worker = plan.created[-1]
-    assert gpu_worker.device == "cuda"
+    assert gpu_worker.device == "cuda" and gpu_worker.closed  # per Job, never warm
     spin(world.app, window._models_idle)
     held: list[Any] = []
     monkeypatch.setattr(panel.pool, "start", held.append)
@@ -260,12 +286,12 @@ def test_ai_started_during_the_delete_confirmation_keeps_its_worker(
     monkeypatch.setattr(QMessageBox, "question", answer_after_ai_started)
     try:
         panel.remove_gpu()
-        assert held == [] and not panel.gpu_busy and not gpu_worker.closed
-        assert window.ai_bridge.local is gpu_worker and "AI가 사용 중" in panel.gpu_status.text()
+        # The removal did not start; the runtime stays for the AI work that began.
+        assert held == [] and not panel.gpu_busy
+        assert "AI가 사용 중" in panel.gpu_status.text()
         # The bridge itself also refuses, whatever the caller checked before.
         with pytest.raises(StateConflict, match="AI_MODEL_CHANGE_REQUIRES_IDLE"):
             window.ai_bridge.release_gpu_runtime()
-        assert not gpu_worker.closed
     finally:
         window.ai_bridge.busy = False
         panel.task = None

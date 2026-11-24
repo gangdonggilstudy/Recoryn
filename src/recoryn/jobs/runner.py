@@ -16,6 +16,11 @@ from . import AttemptRecord, JobRecord, JobState, JobStore
 from .failures import normalize_failure
 
 Task = Callable[[AttemptRecord, threading.Event], str]
+# Contract G11 section 5.2: user-explicit, live, background. Equal priority is FIFO by
+# admission ordinal; after FAIR_TURN priority picks the next dispatch is the oldest
+# waiter regardless of priority. Running work is never preempted.
+INTERACTIVE, LIVE, BACKGROUND = 0, 1, 2
+FAIR_TURN = 3
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,8 @@ class _Work:
     job_id: str
     task: Task
     cancel: threading.Event
+    priority: int = INTERACTIVE
+    ordinal: int = 0
 
 
 class BoundedRunner:
@@ -67,6 +74,13 @@ class BoundedRunner:
         self._reader_ack_error: str | None = None
         self._admission_errors: dict[str, str] = {}
         self.on_admission_refused: Callable[[str], None] | None = None
+        # Job ids whose owned-heavy lease still holds the slot after the task returned
+        # (worker exit not yet acknowledged); they count as active work (G11 5.1).
+        self.held: Callable[[], tuple[str, ...]] | None = None
+        self._ordinal = 0
+        self._turns = 0  # priority picks since the last fair (oldest) turn
+        # Jobs whose outcome this runner already wrote; stop() never cancels them.
+        self._settled: set[str] = set()
 
     def admission_error(self, job_id: str) -> str | None:
         """Bounded display metadata, never permission to claim or resume work."""
@@ -89,10 +103,16 @@ class BoundedRunner:
 
     def snapshot(self) -> dict[str, Any]:
         with self._condition:
+            held = tuple(
+                job_id
+                for job_id in (self.held() if self.held is not None else ())
+                if job_id and job_id not in self._active
+            )
             return {
                 **self._counts,
                 "pending": len(self._queue),
-                "active": tuple(self._active),
+                "active": tuple(self._active) + held,
+                "held": held,
                 "running": any(thread.is_alive() for thread in self._threads),
                 "accepting": self._accepting,
                 "last_error": self._last_error,
@@ -114,9 +134,11 @@ class BoundedRunner:
             for thread in self._threads:
                 thread.start()
 
-    def submit(self, job_id: str, task: Task) -> bool:
+    def submit(self, job_id: str, task: Task, *, priority: int = INTERACTIVE) -> bool:
         if not callable(task):
             raise ValidationError("INVALID_RUNNER_TASK")
+        if type(priority) is not int or priority not in (INTERACTIVE, LIVE, BACKGROUND):
+            raise ValidationError("INVALID_RUNNER_PRIORITY")
         job = self.jobs.get(job_id)
         if job.state not in (JobState.QUEUED, JobState.BACKOFF) and not (
             job.state == JobState.BLOCKED and job.blocked_reason == "ABANDONED"
@@ -131,7 +153,8 @@ class BoundedRunner:
                 or any(item.job_id == job_id for item in self._queue)
             ):
                 return False
-            self._queue.append(_Work(job_id, task, threading.Event()))
+            self._ordinal += 1
+            self._queue.append(_Work(job_id, task, threading.Event(), priority, self._ordinal))
             self._admission_errors.pop(job_id, None)
             self._counts["submitted"] += 1
             self._counts["high_water"] = max(self._counts["high_water"], len(self._queue))
@@ -168,12 +191,20 @@ class BoundedRunner:
         deadline = time.monotonic() + timeout
         with self._condition:
             self._accepting, self._stopping = False, True
-            work = [*self._queue, *self._active.values()]
+            queued, active = [*self._queue], [*self._active.values()]
             self._counts["cancelled"] += len(self._queue)
             self._queue.clear()
             self._condition.notify_all()
-        for item in work:
+        for item in queued:
             self.jobs.cancel(item.job_id)
+            item.cancel.set()
+        for item in active:
+            # G11R-02: a worker writes its outcome under the same lock. Work it already
+            # settled (BLOCKED, FAILED, SUCCEEDED) keeps that outcome; only work still
+            # running is asked to cancel.
+            with self._condition:
+                if item.job_id not in self._settled:
+                    self.jobs.cancel(item.job_id)
             item.cancel.set()
         for thread in self._threads:
             thread.join(max(0.0, deadline - time.monotonic()))
@@ -187,14 +218,27 @@ class BoundedRunner:
                     self._condition.wait()
                 if self._stopping:
                     return
-                item = self._queue.popleft()
+                item = self._take()
                 self._active[item.job_id] = item
             try:
                 self._execute(item)
             finally:
                 with self._condition:
                     self._active.pop(item.job_id, None)
+                    self._settled.discard(item.job_id)
                     self._condition.notify_all()
+
+    def _take(self) -> _Work:
+        """The single pending-selection point (G11 section 5.2); caller holds the lock."""
+        waiting = [item for item in self._queue if not item.cancel.is_set()] or list(self._queue)
+        if self._turns >= FAIR_TURN:
+            chosen = min(waiting, key=lambda item: item.ordinal)
+            self._turns = 0
+        else:
+            chosen = min(waiting, key=lambda item: (item.priority, item.ordinal))
+            self._turns += 1
+        self._queue.remove(chosen)
+        return chosen
 
     @staticmethod
     def _failure(exc: Exception) -> tuple[str, bool, bool]:
@@ -222,9 +266,14 @@ class BoundedRunner:
                         raise
                     finally:
                         # A logical UNKNOWN/SUCCEEDED result is not a physical
-                        # read ACK. Record exit only after task I/O has unwound.
+                        # read ACK. Record exit only after task I/O has unwound. An
+                        # owned worker that did not exit keeps the reader active; its
+                        # lease finishes the reader on the later exit ACK (G-P11b).
                         try:
-                            self.jobs.reader_finished(attempt)
+                            if getattr(task_error, "reader_retained", False) is True:
+                                pass
+                            else:
+                                self.jobs.reader_finished(attempt)
                         except Exception:
                             with self._condition:
                                 self._reader_ack_error = "LOCAL_READER_ACK_FAILED"
@@ -232,33 +281,38 @@ class BoundedRunner:
                                 raise
                             # ACK storage failure must not mask a remote UNKNOWN
                             # with an ordinary local error (or release its reader).
-                    if item.cancel.is_set():
-                        self.jobs._ack_cancelled(attempt)
-                    else:
-                        self.jobs.complete(
-                            item.job_id, attempt.attempt_id, attempt.fence, result_ref
-                        )
+                    with self._condition:
+                        if item.cancel.is_set():
+                            self.jobs._ack_cancelled(attempt)
+                        else:
+                            self.jobs.complete(
+                                item.job_id, attempt.attempt_id, attempt.fence, result_ref
+                            )
+                        self._settled.add(item.job_id)
                     break
                 except Exception as exc:
                     code, retryable, known = self._failure(exc)
                     with self._condition:
                         self._last_error = code
-                    current = self.jobs.get(item.job_id)
-                    if current.state == JobState.CANCEL_REQUESTED:
-                        self.jobs._ack_cancelled(attempt, outcome_known=known)
-                        break
-                    if current.state != JobState.RUNNING or current.fence != attempt.fence:
-                        break
-                    failed = self.jobs.fail(
-                        item.job_id,
-                        attempt.attempt_id,
-                        attempt.fence,
-                        code,
-                        retryable=retryable,
-                        outcome_known=known,
-                    )
-                    if failed.state != JobState.BACKOFF:
-                        break
+                        # Read and write the outcome under the lock stop() checks.
+                        current = self.jobs.get(item.job_id)
+                        if current.state == JobState.CANCEL_REQUESTED:
+                            self.jobs._ack_cancelled(attempt, outcome_known=known)
+                            self._settled.add(item.job_id)
+                            break
+                        if current.state != JobState.RUNNING or current.fence != attempt.fence:
+                            break
+                        failed = self.jobs.fail(
+                            item.job_id,
+                            attempt.attempt_id,
+                            attempt.fence,
+                            code,
+                            retryable=retryable,
+                            outcome_known=known,
+                        )
+                        if failed.state != JobState.BACKOFF:
+                            self._settled.add(item.job_id)
+                            break
                     # Retries occupy their existing worker slot, never a new
                     # unbounded queue/timer or a blocking put into a full queue.
                     if item.cancel.wait(min(1.0, self.RETRY_DELAY * 2 ** (attempt.attempt_no - 1))):

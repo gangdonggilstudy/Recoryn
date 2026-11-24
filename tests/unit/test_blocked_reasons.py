@@ -24,10 +24,21 @@ ORACLE = {
 }
 
 
-# G11 delta (G-P11a, contract G11 section 6 and amendment 1): the two device-policy
-# refusals, both CAPABILITY. The approved G07 table and its 110-row denominator above stay
-# as they were; the delta is audited here and in G11's C family (112 after G-P11a).
-G11A_DELTA = {"RESOURCE_POLICY_UNVERIFIED": "CAPABILITY", "RESOURCE_GPU_UNSUPPORTED": "CAPABILITY"}
+# G11 delta (contract G11 section 6 and amendment 1): the two device-policy refusals
+# are CAPABILITY (G-P11a); the ten resource codes are RESOURCE (G-P11b). The approved G07
+# table and its 110-row denominator above stay as they were; the delta is audited here
+# and in G11's C family (112 after G-P11a, 122 after G-P11b).
+G11A_DELTA = {
+    "RESOURCE_POLICY_UNVERIFIED": "CAPABILITY",
+    "RESOURCE_GPU_UNSUPPORTED": "CAPABILITY",
+    **dict.fromkeys(
+        "RESOURCE_PROFILE_MISMATCH RESOURCE_GPU_PROBE_UNKNOWN RESOURCE_GPU_PROBE_UNAVAILABLE "
+        "RESOURCE_CPU_PROBE_UNKNOWN RESOURCE_CPU_PROBE_UNAVAILABLE RESOURCE_MEMORY_INSUFFICIENT "
+        "RESOURCE_GPU_IDENTITY_UNVERIFIED RESOURCE_SNAPSHOT_STALE RESOURCE_LEASE_HELD "
+        "RESOURCE_DEVICE_MISMATCH".split(),
+        "RESOURCE",
+    ),
+}
 
 
 def test_closed_catalog_matches_independent_table():
@@ -35,7 +46,8 @@ def test_closed_catalog_matches_independent_table():
     assert len(rows) == len(dict(rows)) == 110
     assert not set(G11A_DELTA) & set(dict(rows))
     expected = {code: group for code, group in rows if code != "G07_UNREGISTERED_ERROR"}
-    assert len(expected | G11A_DELTA) == 109 + 2  # plus the unregistered sentinel: 112
+    assert len(G11A_DELTA) == 12
+    assert len(expected | G11A_DELTA) == 109 + 12  # plus the unregistered sentinel: 122
     assert dict(CODE_GROUPS) == expected | G11A_DELTA
 
 

@@ -111,6 +111,18 @@ class LocalDiarizationProcess:
         self._guard: ChildJob | None = None
         self._cancel: Any = None
 
+    def is_live(self) -> bool:
+        """Lock-free: whether the owned child still exists (Library may ask under its mutex)."""
+        child = self._process
+        try:
+            return child is not None and child.pid is not None and bool(child.is_alive())
+        except (ValueError, OSError):
+            return False
+
+    def device_facts(self) -> dict[str, Any]:
+        """The fixed CPU-only backend this configuration runs (sherpa-onnx CPU provider)."""
+        return {"device": self.config.device, "device_index": None, "compute_type": "float32"}
+
     def capabilities(self) -> dict[str, Any]:
         # Distribution metadata only: no optional import, file/model probe or network.
         dependencies = {}
