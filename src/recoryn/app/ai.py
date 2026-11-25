@@ -703,7 +703,12 @@ class AIService:
                         "CANCELLED" if observed.known else "REMOTE_OUTCOME_UNKNOWN",
                         outcome_known=observed.known,
                     )
-                claims = [Claim(item.text, item.segment_ids, item.status) for item in result.claims]
+                # G-P12: keep the adapter's basis as a reference; the store still
+                # recomputes the canonical basis from the fixed source.
+                claims = [
+                    Claim(item.text, item.segment_ids, item.status, item.basis)
+                    for item in result.claims
+                ]
 
                 def unit(item: Any) -> str:
                     return f"{item.segment_id}:{item.start_char}:{item.end_char}"

@@ -8,7 +8,7 @@ import json
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -110,6 +110,162 @@ def _coverage(value: dict[str, Any] | None, units: list[str]) -> tuple[dict[str,
         except (TypeError, ValueError, RecursionError) as exc:
             raise ValidationError("INVALID_CONTENT_CHECKPOINT") from exc
     return result, done == planned and not failed
+
+
+BASES = ("transcript", "user_assertion", "unresolved", "model_inference")
+
+
+def canonical_basis(provenances: set[str] | frozenset[str], has_refs: bool) -> str:
+    """The stored basis from the referenced provenance set (G12 section 3.1 table).
+
+    unresolved outranks user_assertion, which outranks transcript; no reference at all
+    is model_inference. This classifies where references come from, not whether the
+    claim's meaning is supported.
+    """
+    if "unresolved" in provenances:
+        return "unresolved"
+    if "user_assertion" in provenances:
+        return "user_assertion"
+    return "transcript" if has_refs else "model_inference"
+
+
+@dataclass(frozen=True, slots=True)
+class SummarySelectionExpectation:
+    """The selection snapshot a candidate list was presented with (all fields required).
+
+    An observed empty ID or settings key is None; versions are non-negative ints. The
+    selection transaction compares every field, so an ABA return or a settings change
+    while a confirmation was open is refused instead of silently re-based.
+    """
+
+    session_id: str
+    transcript_id: str | None
+    transcript_version: int
+    summary_id: str | None
+    summary_version: int
+    summary_settings_key: str | None
+
+    def __post_init__(self) -> None:
+        try:
+            identifier(self.session_id)
+            for value in (self.transcript_id, self.summary_id):
+                if value is not None:
+                    identifier(value)
+            if self.summary_settings_key is not None:
+                text_value(self.summary_settings_key, maximum=256, empty=False)
+        except ValidationError:
+            raise ValidationError("INVALID_SUMMARY_SELECTION_EXPECTATION") from None
+        for version in (self.transcript_version, self.summary_version):
+            if type(version) is not int or not 0 <= version < 2**63:
+                raise ValidationError("INVALID_SUMMARY_SELECTION_EXPECTATION")
+
+    @classmethod
+    def from_state(cls, state: dict[str, Any]) -> SummarySelectionExpectation:
+        return cls(
+            state["session_id"],
+            state["transcript_id"],
+            state["transcript_version"],
+            state["summary_id"],
+            state["summary_version"],
+            state["summary_settings_key"],
+        )
+
+
+CLAIM_STATUSES = (
+    "uncertain",
+    "unreviewed",
+    "unsupported",
+    "disputed",
+    "user_assertion",
+    "model_inference",
+)
+# Why a claim's evidence cannot be shown (G12 section 3.2 / FIX1 G12R-01, G12R-05).
+CLAIM_RECORD_INVALID = "CONTENT_CLAIM_RECORD_INVALID"
+
+
+def _claim_view(
+    index: int, claim: object, segments: dict[str, Any], source_ok: bool
+) -> dict[str, Any]:
+    """One read-only evidence view; a malformed or contradictory record is a problem."""
+    record = claim if isinstance(claim, dict) else {}
+    text = record.get("text")
+    raw_refs = record.get("segment_ids")
+    stored, provider, status = (
+        record.get("basis"),
+        record.get("provider_basis"),
+        record.get("status"),
+    )
+    valid = (
+        isinstance(claim, dict)
+        and isinstance(text, str)
+        and isinstance(raw_refs, list)
+        and all(isinstance(ref, str) for ref in raw_refs)
+        and len(set(raw_refs)) == len(raw_refs)
+        and status in CLAIM_STATUSES
+        and (stored is None or stored in BASES)
+        and (provider is None or provider in ("transcript", "user_assertion", "model_inference"))
+    )
+    if not valid:
+        return {
+            "index": index,
+            "text": text if isinstance(text, str) else "",
+            "status": status if status in CLAIM_STATUSES else None,
+            "basis": None,
+            "computed_basis": None,
+            "basis_recorded": False,
+            "provider_basis": None,
+            "refs": [],
+            "problem": CLAIM_RECORD_INVALID,
+        }
+    assert isinstance(raw_refs, list)
+    refs = []
+    for segment_id in raw_refs:
+        segment = segments.get(segment_id)
+        refs.append(
+            {
+                "segment_id": segment_id,
+                "found": segment is not None,
+                "provenance": None if segment is None else segment["provenance"],
+                "timing_quality": None if segment is None else segment.get("timing_quality"),
+                "start_ms": None if segment is None else segment["start_ms"],
+                "track_id": None if segment is None else segment.get("track_id"),
+            }
+        )
+    computed = (
+        canonical_basis({item["provenance"] for item in refs if item["found"]}, bool(refs))
+        if source_ok and all(item["found"] for item in refs)
+        else None
+    )
+    problem = None
+    if not source_ok or computed is None:
+        problem = "CONTENT_CLAIM_SOURCE_UNAVAILABLE"
+    elif stored is not None and stored != computed:
+        problem = "CONTENT_CLAIM_BASIS_MISMATCH"
+    return {
+        "index": index,
+        "text": text,
+        "status": status,
+        "basis": stored,
+        "computed_basis": computed,
+        "basis_recorded": stored is not None,
+        "provider_basis": provider,
+        "refs": refs,
+        "problem": problem,
+    }
+
+
+def summary_is_current(summary: dict[str, Any], expected: SummarySelectionExpectation) -> bool:
+    """Current only when built from the expected transcript with the same recorded key.
+
+    Two missing keys (legacy) are not a verified current setting.
+    """
+    key = summary.get("settings_key")
+    return (
+        summary.get("transcript_revision_id") == expected.transcript_id
+        and key is not None
+        and expected.summary_settings_key is not None
+        and key == expected.summary_settings_key
+    )
 
 
 class ContentStore:
@@ -279,7 +435,12 @@ class ContentStore:
             )
 
     def _load(
-        self, connection: sqlite3.Connection, revision_id: str, revision_type: str
+        self,
+        connection: sqlite3.Connection,
+        revision_id: str,
+        revision_type: str,
+        *,
+        checked_session: str | None = None,
     ) -> dict[str, Any]:
         identifier(revision_id)
         row = connection.execute(
@@ -287,7 +448,10 @@ class ContentStore:
         ).fetchone()
         if row is None:
             raise KeyError(revision_id)
-        self._live(connection, row["session_id"])
+        if checked_session is None or row["session_id"] != checked_session:
+            # A caller that already checked this session under the same held mutex
+            # (list_revisions) skips only that repeated filesystem/journal check.
+            self._live(connection, row["session_id"])
         if row["revision_type"] != revision_type:
             raise ValidationError("CONTENT_REVISION_TYPE_MISMATCH")
         body = row["body"]
@@ -532,23 +696,16 @@ class ContentStore:
             if any(ref not in source_segments for ref in claim.segment_ids):
                 raise ValidationError("UNKNOWN_CLAIM_SEGMENT")
             provenance = {source_segments[ref]["provenance"] for ref in claim.segment_ids}
-            basis = (
-                "unresolved"
-                if "unresolved" in provenance
-                else "user_assertion"
-                if "user_assertion" in provenance
-                else "transcript"
-                if claim.segment_ids
-                else "model_inference"
-            )
-            encoded_claims.append(
-                {
-                    "text": claim.text,
-                    "segment_ids": list(claim.segment_ids),
-                    "status": claim.status,
-                    "basis": basis,
-                }
-            )
+            encoded: dict[str, Any] = {
+                "text": claim.text,
+                "segment_ids": list(claim.segment_ids),
+                "status": claim.status,
+                "basis": canonical_basis(provenance, bool(claim.segment_ids)),
+            }
+            if claim.provider_basis is not None:
+                # Optional v1 envelope field: the adapter's reference value only.
+                encoded["provider_basis"] = claim.provider_basis
+            encoded_claims.append(encoded)
         active_transcript, active_summary = self._selection(connection, session_id)
         transcript_version, summary_version = self._selection_versions(connection, session_id)
         requested = self._requested_settings(connection, session_id)
@@ -744,7 +901,7 @@ class ContentStore:
                 "WHERE session_id=? ORDER BY rowid",
                 (session_id,),
             ).fetchall():
-                value = self._load(self._db, row[0], row[1])
+                value = self._load(self._db, row[0], row[1], checked_session=session_id)
                 if kind is not None and kind not in (row[1], value.get("kind")):
                     continue
                 value["selected"] = value["revision_id"] in (active_transcript, active_summary)
@@ -816,6 +973,89 @@ class ContentStore:
                 expected_summary,
                 coverage=coverage,
             )
+
+    def claim_evidence(self, revision_id: str) -> list[dict[str, Any]]:
+        """Read-only evidence view of a summary against its fixed source revision.
+
+        Recomputes each claim's canonical basis from the original transcript revision
+        and compares it with the stored value; nothing is rewritten. A mismatch, an
+        invalid stored value or an unreadable source is "evidence unverifiable"
+        (``CONTENT_CLAIM_BASIS_MISMATCH`` / ``source_ok=False``) and never seekable.
+        """
+        with self._mutex:
+            self._ensure_open()
+            summary = self._load(self._db, revision_id, "summary")
+            try:
+                source = self._load(self._db, summary["transcript_revision_id"], "transcript")
+                segments = {item["segment_id"]: item for item in source["segments"]}
+                source_ok = source["content_hash"] == summary.get("transcript_hash")
+            except (KeyError, ValidationError, StateConflict):
+                segments, source_ok = {}, False
+            claims = summary.get("claims", [])
+            if not isinstance(claims, list):
+                raise ValidationError("CONTENT_REVISION_SCHEMA")
+            views = []
+            for index, claim in enumerate(claims):
+                views.append(_claim_view(index, claim, segments, source_ok))
+            return views
+
+    def select_summary_candidate(
+        self,
+        session_id: str,
+        revision_id: str,
+        *,
+        expected: SummarySelectionExpectation,
+        allow_outdated: bool = False,
+    ) -> bool:
+        """Select a summary only if the presented snapshot still holds exactly.
+
+        Every snapshot field (both IDs, both versions, the requested settings key, None
+        included) is compared inside the transaction; a mismatch returns False with no
+        write. A partial candidate is refused; an earlier-transcript/settings or
+        unverifiable candidate needs ``allow_outdated`` after an explicit confirmation.
+        """
+        if type(expected) is not SummarySelectionExpectation or type(allow_outdated) is not bool:
+            raise ValidationError("INVALID_SUMMARY_SELECTION_EXPECTATION")
+        identifier(revision_id)
+        if expected.session_id != session_id:
+            raise ValidationError("CONTENT_SELECTION_SESSION_MISMATCH")
+        with self._transaction() as connection:
+            target = self._load(connection, revision_id, "summary")
+            self._live(connection, session_id)
+            if target["session_id"] != session_id:
+                raise ValidationError("CONTENT_SELECTION_SESSION_MISMATCH")
+            if not target.get("complete"):
+                raise StateConflict("CONTENT_SUMMARY_NOT_COMPLETE")
+            transcript_id, summary_id = self._selection(connection, session_id)
+            transcript_version, summary_version = self._selection_versions(connection, session_id)
+            observed = (
+                transcript_id,
+                transcript_version,
+                summary_id,
+                summary_version,
+                self._requested_settings(connection, session_id),
+            )
+            if observed != (
+                expected.transcript_id,
+                expected.transcript_version,
+                expected.summary_id,
+                expected.summary_version,
+                expected.summary_settings_key,
+            ):
+                return False
+            if not summary_is_current(target, expected) and not allow_outdated:
+                raise StateConflict("CONTENT_SUMMARY_OUTDATED_CONFIRMATION_REQUIRED")
+            connection.execute(
+                "UPDATE content_selections SET summary_id=?,summary_version=summary_version+1 "
+                "WHERE session_id=?",
+                (revision_id, session_id),
+            )
+            connection.execute(
+                "INSERT INTO content_events(session_id,revision_id,revision_type,selected) "
+                "VALUES(?,?,?,1)",
+                (session_id, revision_id, "select_summary"),
+            )
+            return True
 
     def summary(self, revision_id: str) -> dict[str, Any]:
         with self._mutex:

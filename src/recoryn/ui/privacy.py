@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -48,6 +47,7 @@ from recoryn.security import (
     cost_catalog,
 )
 from recoryn.security._core import endpoint as parse_endpoint
+from recoryn.ui import a11y
 
 
 def _micros(control: QDoubleSpinBox) -> int:
@@ -230,6 +230,7 @@ class PrivacyPanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self.consents, self.ledger, self.vault, self._gateway = consents, ledger, vault, gateway
+        self.announcer = a11y.Announcer()
         self._attestation: LocalModelAttestation | None = None
         self._selected_session: str | None = None
         self._selection_pending = False
@@ -260,6 +261,28 @@ class PrivacyPanel(QWidget):
             tabs.addTab(controls, "전사" if kind == "stt" else "요약")
             controls.allow.clicked.connect(lambda checked=False, k=kind: self._action(k, "grant"))
             controls.revoke.clicked.connect(lambda checked=False, k=kind: self._action(k, "revoke"))
+            # G-P12: Enter and Space activate these explicit commands once; arrows/Tab only move.
+            for button in (
+                controls.allow,
+                controls.revoke,
+                controls.apply_budget,
+                controls.reset_clock,
+                controls.adopt_legacy,
+                controls.settle,
+                controls.refresh,
+            ):
+                a11y.activate_button(button)
+            a11y.name(
+                controls.revoke,
+                "선택 범위 전송 동의 철회",
+                "이 기능·범위의 동의를 철회합니다. 이후 새 전송이 차단되며 이미 넘긴 데이터는 "
+                "회수할 수 없습니다. 다른 범위의 동의는 바꾸지 않습니다.",
+            )
+            a11y.name(
+                controls.allow,
+                "선택한 데이터 범위만 전송 동의",
+                "확인 창이 뜨면 기본은 거부(아니요)이며 Esc도 거부입니다.",
+            )
             controls.save_key.clicked.connect(lambda checked=False, k=kind: self._action(k, "save"))
             controls.delete_key.clicked.connect(
                 lambda checked=False, k=kind: self._action(k, "delete")
@@ -438,16 +461,13 @@ class PrivacyPanel(QWidget):
             f"정책 version: {version}\n만료: {_local_expiry(deadline)}\n"
             "철회 뒤 새 전송 단위는 차단되지만 이미 OS/TLS에 넘긴 bytes는 회수할 수 없습니다."
         )
-        return (
-            QMessageBox.question(
-                self,
-                "라이브러리 전체 전송 동의",
-                text,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
-        )
+        return a11y.confirm(
+            self,
+            "라이브러리 전체 전송 동의",
+            text,
+            still_current=self._same_selection(),
+            fallback=self._safe_focus(kind),
+        )[0]
 
     def _controls(self, kind: str) -> _Controls:
         if kind not in self.controls:
@@ -746,19 +766,25 @@ class PrivacyPanel(QWidget):
         )
 
     def _confirm_general(self, kind: str) -> bool:
-        return (
-            QMessageBox.question(
-                self,
-                "미검증 비용 위험 확인",
-                "일반 모드는 가격 또는 요청 상한을 검증하지 못해도 사용자 cap을 예약할 수 있습니다.\n"
-                "USER_CAP은 실제 최대 청구액의 보장이 아니며 strict 합격 근거가 아닙니다. "
-                "미확인 비용은 철회·재시작으로 해제되지 않습니다. 중복 청구 위험이 있습니다. "
-                "이 선택은 전송 동의를 대신하지 않습니다. 일반 모드를 직접 선택하시겠습니까?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
-        )
+        return a11y.confirm(
+            self,
+            "미검증 비용 위험 확인",
+            "일반 모드는 가격 또는 요청 상한을 검증하지 못해도 사용자 cap을 예약할 수 있습니다.\n"
+            "USER_CAP은 실제 최대 청구액의 보장이 아니며 strict 합격 근거가 아닙니다. "
+            "미확인 비용은 철회·재시작으로 해제되지 않습니다. 중복 청구 위험이 있습니다. "
+            "이 선택은 전송 동의를 대신하지 않습니다. 일반 모드를 직접 선택하시겠습니까?",
+            still_current=self._same_selection(),
+            fallback=self._safe_focus(kind),
+        )[0]
+
+    def _safe_focus(self, kind: str) -> QWidget:
+        """Where focus goes when a modal's opener is gone: the kind's scope list."""
+        return self._controls(kind).scope
+
+    def _same_selection(self) -> Callable[[], bool]:
+        """Focus returns to a modal's opener only while the same session is selected."""
+        opened = self._selected_session
+        return lambda: self._selected_session == opened
 
     def _mode_changed(self, kind: str) -> None:
         control = self._controls(kind)
@@ -901,18 +927,15 @@ class PrivacyPanel(QWidget):
         control = self._controls(kind)
         try:
             if action == "reset_clock":
-                if (
-                    QMessageBox.question(
-                        self,
-                        "시계 기준 재설정 확인",
-                        "운영체제의 현재 시각을 확인하셨습니까? 시계 기준 변경은 감사 이력에 남습니다. "
-                        "기존 예약·UNKNOWN·확정 지출은 줄어들지 않습니다. 모든 기간의 같은 제공업체·통화 "
-                        "확정액을 현재 예산에 보수적으로 합산합니다. 재설정하시겠습니까?",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.No,
-                    )
-                    != QMessageBox.StandardButton.Yes
-                ):
+                if not a11y.confirm(
+                    self,
+                    "시계 기준 재설정 확인",
+                    "운영체제의 현재 시각을 확인하셨습니까? 시계 기준 변경은 감사 이력에 남습니다. "
+                    "기존 예약·UNKNOWN·확정 지출은 줄어들지 않습니다. 모든 기간의 같은 제공업체·통화 "
+                    "확정액을 현재 예산에 보수적으로 합산합니다. 재설정하시겠습니까?",
+                    still_current=self._same_selection(),
+                    fallback=self._safe_focus(kind),
+                )[0]:
                     return
                 self.ledger.reset_clock(confirmed=True)
                 for target_kind, target_control in self.controls.items():
@@ -963,6 +986,13 @@ class PrivacyPanel(QWidget):
                     policy_version=version,
                 )
                 self._granted[kind].discard((provider, target, data_type, scope, version))
+                self.announcer.announce(
+                    "privacy",
+                    control.revoke,
+                    "REVOCATION_PERSISTED",
+                    f"{kind} 전송 동의 철회를 저장했습니다 · 이미 전송한 결과는 별도로 표시합니다",
+                    version=("revoke", kind, provider, target, data_type, scope.kind, version),
+                )
             elif action == "save":
                 self._revoke_endpoint(provider, target)
                 self.vault.set(self._vault_key(provider, target), control.key.text())
@@ -976,18 +1006,15 @@ class PrivacyPanel(QWidget):
                 self.ledger.apply_policy(provider, self._cost_policy(kind, advance=True))
             elif action == "adopt":
                 policy = self._cost_policy(kind)
-                if (
-                    QMessageBox.question(
-                        self,
-                        "이전 비용 이력 승계 확인",
-                        f"이전 이력은 통화·기간 근거가 없습니다. 제공업체 {provider}의 이력을 "
-                        f"{policy.currency}, UTC [{policy.period_start_utc}, {policy.period_end_utc})로 "
-                        "직접 확인하여 승계합니까? UNKNOWN과 예약 노출은 그대로 유지합니다.",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.No,
-                    )
-                    != QMessageBox.StandardButton.Yes
-                ):
+                if not a11y.confirm(
+                    self,
+                    "이전 비용 이력 승계 확인",
+                    f"이전 이력은 통화·기간 근거가 없습니다. 제공업체 {provider}의 이력을 "
+                    f"{policy.currency}, UTC [{policy.period_start_utc}, {policy.period_end_utc})로 "
+                    "직접 확인하여 승계합니까? UNKNOWN과 예약 노출은 그대로 유지합니다.",
+                    still_current=self._same_selection(),
+                    fallback=self._safe_focus(kind),
+                )[0]:
                     return
                 self.ledger.adopt_legacy(provider, policy, confirmed=True)
             elif action == "settle":

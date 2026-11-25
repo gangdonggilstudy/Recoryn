@@ -57,13 +57,28 @@ class Segment:
             raise ValidationError("INVALID_SEGMENT_TIMING_QUALITY")
 
 
+PROVIDER_BASES = ("transcript", "user_assertion", "model_inference")
+
+
 @dataclass(frozen=True, slots=True)
 class Claim:
+    """One automatic summary claim.
+
+    ``provider_basis`` keeps the adapter's normalized basis as a reference only: None
+    means "not recorded", never "transcript". The stored canonical basis is always
+    recomputed from the referenced source provenance (G12 section 3.1).
+    """
+
     text: str
     segment_ids: tuple[str, ...]
     status: str = "uncertain"
+    provider_basis: str | None = None
 
     def __post_init__(self) -> None:
+        if self.provider_basis is not None and (
+            type(self.provider_basis) is not str or self.provider_basis not in PROVIDER_BASES
+        ):
+            raise ValidationError("INVALID_CLAIM_PROVIDER_BASIS")
         text_value(self.text, empty=False)
         if type(self.segment_ids) is not tuple or len(self.segment_ids) > 100_000:
             raise ValidationError("INVALID_CLAIM_REFERENCES")

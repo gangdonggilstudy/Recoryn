@@ -13,7 +13,6 @@ from typing import Any
 from uuid import uuid4
 
 from PySide6.QtCore import QThreadPool, QTimer
-from PySide6.QtWidgets import QMessageBox
 
 from recoryn.app.ai import AIService
 from recoryn.app.inference import LocalSTTProcess
@@ -40,6 +39,7 @@ from recoryn.providers import ExecutionContext, ProviderCapabilities, ProviderEr
 from recoryn.storage._coordination import root_mutex
 from recoryn.storage._safe import mkdir, open_file, safe_path
 from recoryn.storage.chunks import verify_bundle
+from recoryn.ui import a11y
 from recoryn.ui.content import ContentPanel
 from recoryn.ui.pcm_playback import PlaybackPcm, SinkPlayback, prepare_playback
 from recoryn.ui.tasks import Task
@@ -160,6 +160,62 @@ def local_source(
     return ResourceSource(where, state, root if where == "runtime" else None)
 
 
+POLICY_NAME = "AI 실행 정책"
+POLICY_DESCRIPTION = (
+    "CPU_ONLY는 GPU를 쓰지 않고, GPU_ONLY는 GPU가 없을 때 CPU로 바꾸지 않습니다. "
+    "GPU_WITH_CPU_FALLBACK_ALLOWED만 CPU 대체를 허용합니다. 정책은 자동으로 바뀌지 "
+    "않으며 새 요청부터 적용됩니다."
+)
+_ANNOUNCEMENT_TEXT = {
+    "QUEUED": "AI 작업 대기",
+    "RUNNING": "AI 작업 실행 중",
+    "CANCEL_REQUESTED": "취소 요청됨 · 종료 확인 대기",
+    "LOCAL_ACK": "로컬 종료 확인",
+    "REMOTE_UNKNOWN": "원격 결과·비용 미확인",
+    "BLOCKED": "AI 작업 차단",
+    "BACKOFF": "재시도 대기",
+    "ABANDONED": "중단된 작업 · 확인 필요",
+    "FAILED": "AI 작업 실패",
+}
+
+
+def job_announcement(job: Any) -> str | None:
+    """Which fact a Job state announces (G12 5.2): a local cancel ACK is never a remote
+    cancellation, and a cancel request on an UNKNOWN Job stays UNKNOWN."""
+    state = job.state.value
+    if state == "BLOCKED":
+        if job.blocked_reason == "REMOTE_UNKNOWN":
+            return "REMOTE_UNKNOWN"
+        return "ABANDONED" if job.blocked_reason == "ABANDONED" else "BLOCKED"
+    return {
+        "QUEUED": "QUEUED",
+        "RUNNING": "RUNNING",
+        "CANCEL_REQUESTED": "CANCEL_REQUESTED",
+        "CANCELLED": "LOCAL_ACK",
+        "BACKOFF": "BACKOFF",
+        "FAILED": "FAILED",
+    }.get(state)
+
+
+def announcement_version(job: Any) -> tuple[object, ...]:
+    """A new meaning is a new state version, state, reason, code or cancel request."""
+    return (
+        job.job_id,
+        job.state_version,
+        job.state.value,
+        job.blocked_reason,
+        job.error_code,
+        job.cancel_requested,
+    )
+
+
+def announcement_text(kind: str, job: Any) -> str:
+    text = _ANNOUNCEMENT_TEXT[kind]
+    if kind == "REMOTE_UNKNOWN" and job.cancel_requested:
+        text = "취소 요청됨 · " + text
+    return text
+
+
 class OwnedSTT:
     """Creates one LocalSTTProcess per Job attempt from the lease's plan (G11 5.1).
 
@@ -235,6 +291,10 @@ class DesktopAI:
         self._live_nonces: dict[str, str] = {}
         self.panel = ContentPanel(self.store, self.operation)
         window.tabs.addTab(self.panel, "전사 · 요약 · 근거")
+        self._announce_counter = 0
+        # The window creates its policy control after this bridge: name it on the next
+        # event-loop turn (and again from tick, idempotently).
+        QTimer.singleShot(0, self._name_policy_control)
         self.panel.transcribeRequested.connect(self.transcribe)
         self.panel.summarizeRequested.connect(self.summarize)
         self.panel.cancelRequested.connect(self.cancel)
@@ -368,6 +428,17 @@ class DesktopAI:
             status = policy_block_status(failure.code, self._selected_policy())
         else:
             status = ai_status(preparation=failure)
+        announcer = getattr(getattr(self, "panel", None), "announcer", None)
+        if isinstance(failure, NormalizedFailure) and announcer is not None:
+            self._announce_counter = getattr(self, "_announce_counter", 0) + 1
+            unknown = failure.outcome_known is not True or failure.code == "REMOTE_OUTCOME_UNKNOWN"
+            announcer.announce(
+                "content",
+                self.panel.job_status,
+                "REMOTE_UNKNOWN" if unknown else "PREPARATION_BLOCKED",
+                status.text,
+                version=("preparation", self._announce_counter, failure.code),
+            )
         if (
             preserve_job
             and isinstance(failure, NormalizedFailure)
@@ -822,19 +893,25 @@ class DesktopAI:
             submit, submitted, preparation_kind="summary", continuing=expected is not None
         )
 
+    def _name_policy_control(self) -> None:
+        """G-P12 decision 4 (a): only accessibility text; the value is never touched."""
+        policy = getattr(getattr(self, "window", None), "device_policy", None)
+        if policy is None or not a11y.alive(policy) or policy.accessibleName() == POLICY_NAME:
+            return
+        a11y.name(policy, POLICY_NAME, POLICY_DESCRIPTION)
+
     def _confirm_retry(self) -> bool:
-        return (
-            QMessageBox.question(
-                self.window,
-                "새 AI 작업으로 명시 재실행",
-                "이전 결과·취소·원격 UNKNOWN 이력을 유지한 채 새 작업을 실행합니다. "
-                "원격 처리와 비용이 미확인이라면 중복 처리·과금이 발생할 수 있습니다. "
-                "현재 권한과 새 비용 예약을 검사하여 실행할까요?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
-        )
+        selected = getattr(getattr(self, "window", None), "selected_session", None)
+        opened = selected() if callable(selected) else None
+        return a11y.confirm(
+            self.window,
+            "새 AI 작업으로 명시 재실행",
+            "이전 결과·취소·원격 UNKNOWN 이력을 유지한 채 새 작업을 실행합니다. "
+            "원격 처리와 비용이 미확인이라면 중복 처리·과금이 발생할 수 있습니다. "
+            "현재 권한과 새 비용 예약을 검사하여 실행할까요?",
+            still_current=lambda: (selected() if callable(selected) else None) == opened,
+            fallback=getattr(getattr(self, "panel", None), "versions", None),
+        )[0]
 
     def retry_transcribe(self) -> None:
         if not self.busy and self._confirm_retry():
@@ -1026,6 +1103,32 @@ class DesktopAI:
             self.panel.job_status.setText(
                 "취소 요청됨 · 로컬 종료 확인과 원격 UNKNOWN은 별도로 표시됩니다."
             )
+            # Say which work the request reaches: a preparation not yet admitted as a
+            # Job, existing Jobs, or both (G12 section 5.1, FIX1 G12R-07).
+            parts = []
+            if getattr(self, "busy", False):
+                parts.append("실행 준비(작업 미접수) 취소")
+            history = getattr(self, "_history", None)
+            try:
+                existing = [
+                    job
+                    for job in (history.list_for_session(session_id) if history else [])
+                    if job.state.value not in ("SUCCEEDED", "FAILED", "CANCELLED")
+                ]
+            except Exception:
+                existing = []
+            if existing:
+                parts.append(f"기존 AI 작업 {len(existing)}건 취소")
+            self._announce_counter = getattr(self, "_announce_counter", 0) + 1
+            self.panel.announcer.announce(
+                "content",
+                self.panel.job_status,
+                "CANCEL_REQUESTED",
+                "취소 요청됨 · "
+                + (" · ".join(parts) or "대상 확인 중")
+                + " · 로컬 종료 확인과 원격 결과는 아직 확인되지 않았습니다",
+                version=("cancel", self._announce_counter, session_id),
+            )
 
     def before_delete(self, session_id: str) -> None:
         if self.privacy is not None:
@@ -1142,6 +1245,7 @@ class DesktopAI:
         self.panel.status.setText("재생할 수 없습니다: " + code + " · 원본은 보존됩니다.")
 
     def tick(self) -> None:
+        self._name_policy_control()
         self.window.model_panel.request_attestation_check()
         session_id = self.window.selected_session()
         if session_id:
@@ -1203,6 +1307,15 @@ class DesktopAI:
                         else None
                     )
                     self.panel.show_ai_status(status)
+                    kind = job_announcement(job)
+                    if kind is not None:
+                        self.panel.announcer.announce(
+                            "content",
+                            self.panel.job_status,
+                            kind,
+                            announcement_text(kind, job) + " · " + status.text,
+                            version=announcement_version(job),
+                        )
                     self.panel.job_status.setText(
                         status.text
                         + (
