@@ -734,3 +734,133 @@ G-P11a 결과의 "coverage가 닿지 않은 새 경로" 목록은 실제와 달�
 - priority·공정 turn은 유한 trace의 진행만 보인다. 시간 SLA와 영구 hang 진행 보증은 아니다.
 - 재시작 고아 child 종료 증명은 자동화하지 않았다. 재시작 뒤 캡처와 lease는 메모리에 없다.
 - 정책 값 저장(G-P16)과 공용 `status.py` 행동 연결(G11R-04)은 남아 있다.
+
+## §G-P11c 범위(31bc88b 기준)
+
+작성자 w5:p7 Claude. 배정은 C00의 G-P11c 신호다(배정표 G11c 행, G-P11b 검토 `b3973536…655c`의 G11BR-01~04·06, G-P11a 검토의 G11R-04). G11BR-05(live STT 재기동 지연)는 실장비 출시 게이트로 남는다. 이 절 앞의 내용(LF SHA-256 `655e606e…5fde`)은 바꾸지 않는다.
+
+### 결정
+
+| ID | 처리 |
+| --- | --- |
+| G11BR-02 | runner는 결과 기록(complete·fail·취소 ACK·상태 조회)을 runner lock 밖에서 한다. lock 안에서는 작업별 단계 표시(`running`→`settling`→`settled`, stop이 먼저 정하면 `cancelling`)만 바꾼다. stop()은 `settling`이 끝날 때까지 condition으로 기다린 뒤 `settled`가 아닌 작업만 취소한다. worker는 `cancelling` 작업의 결과를 쓰지 않고 취소 ACK만 한다. 그래서 G11R-02(settle된 BLOCKED를 stop이 CANCELLED로 바꾸지 않음)는 유지되고, `admission_error()`·`snapshot()`은 DB·root mutex 대기와 무관하게 즉시 돌아온다. lock 안에서 DB·root mutex를 잡지 않으므로 교착 순서가 생기지 않는다 |
+| G11BR-03 | ACK가 실패해 slot이 보유되면 `ResourceScheduler`가 daemon reaper를 띄운다. reaper는 lock 없는 `child_live()`로 주기 확인(기본 0.25초)하고, worker가 실제로 끝났을 때만 기존 `reap()`으로 ACK·해제·`on_ack`(Job local reader 종료)를 한다. 살아 있는 worker는 해제하지 않는다. 보유가 끝나면 reaper도 끝난다. bridge tick(G-P12 검토 중 파일)은 바꾸지 않는다. 다음 grant의 ACK 재시도는 그대로 둔다 |
+| G11BR-04 | 원래 실패가 UNKNOWN이고 reap도 실패하면, UNKNOWN 예외를 그대로 올리되 `reader_retained=True`를 붙인다. 논리 UNKNOWN과 물리 종료 대기를 함께 보존한다 |
+| G11BR-01 | 구현과 P oracle을 계약 §4.3 문장 순서로 맞춘다: 적용 관측의 시각 유효성 → known profile의 host RAM 관측 UNKNOWN/UNAVAILABLE → GPU 관측 UNKNOWN/UNAVAILABLE·장치 부재 → identity → host RAM 부족 → VRAM 부족. snapshot TTL 기본값을 §4.3 제안대로 2초로 바꾼다. 계약 정정은 요청하지 않는다 |
+| G11BR-06 | N03(다음 grant의 ACK 재시도)·N07(CPU `device_index` 사실)·N11(close 성공 뒤 `child_live()` 확인)·N12(held를 runner `snapshot()["active"]`에 포함)를 직접 보는 행을 둔다 |
+| G11R-04 | 공용 `app/status.py:_action`이 `RESOURCE_POLICY_UNVERIFIED`·`RESOURCE_GPU_UNSUPPORTED`에 `execution_policy`를 돌려준다. bridge의 같은 override(`ui/ai_bridge.py`의 `POLICY_CODES`)는 G-P12 검토 중이라 지우지 않는다. 두 경로의 결과가 같으므로 사용자 표시 변화는 없고, override 제거는 G-P12 뒤 후속으로 남긴다 |
+
+### 쓰기 범위
+
+- source: `src/recoryn/jobs/runner.py`, `src/recoryn/models/resources.py`, `src/recoryn/app/status.py`. `src/recoryn/app/inference.py`는 필요할 때만 쓴다.
+- 시험: 신규 `tests/unit/test_resource_followup.py`, `tests/integration/test_resource_followup.py`. 기존 `tests/unit/test_resource_policy.py`(P oracle 순서·TTL), 그리고 기대값이 G11R-04·TTL에 걸리는 기존 자원·차단 사유 시험.
+- 이 문서의 이 절과 결과 절.
+- 쓰지 않음: G-P12 검토 중 파일(`ui/ai_bridge.py`, `app/ai.py`, `content/*`, `ui/content.py`, `ui/privacy.py`, `ui/a11y.py`), `ui/main.py`, `storage/library.py`, `jobs/__init__.py`. 필요해지면 먼저 보고한다.
+
+### 분모·oracle
+
+| family | 축 | 행 |
+| --- | --- | ---: |
+| G11C-L | 결과{SUCCEEDED, BLOCKED RESOURCE, FAILED, BACKOFF 뒤 성공, 사용자 취소 ACK, REMOTE_UNKNOWN} × 대기 원인{root mutex 보유, 다른 연결의 SQLite 쓰기 lock} × 관측{`admission_error`, `snapshot`} | 24 |
+| G11C-S | stop 시점{결과 기록 전, 기록 중, 기록 뒤} × 결과{SUCCEEDED, BLOCKED RESOURCE, BLOCKED BUDGET, FAILED, REMOTE_UNKNOWN} | 15 |
+| G11C-R | 보유 원인{close 예외, close 성공·child 생존} × worker{나중에 종료, 끝내 생존} × 해제 경로{주기 reaper, 다음 grant} × 결과{게시 성공, known 로컬 실패, UNKNOWN} | 24 |
+| G11C-F | plan 장치{cpu, cuda} × 보고 `device_index`{없음, 0, 1, 문자열 "0"} | 8 |
+| G11C-TTL | 관측 나이{TTL−1ns, TTL, TTL+1ns}(기본 TTL) × 장치{known cpu, cuda} | 6 |
+| G11C-A | 코드{POLICY_UNVERIFIED, GPU_UNSUPPORTED, GPU_UNAVAILABLE, MEMORY_INSUFFICIENT, 일반 CAPABILITY} × 경로{준비 실패, BLOCKED Job} | 10 |
+| **합계** | | **87** |
+
+- 기존 P cube 31,104행은 ID 그대로 두고 oracle만 계약 문장 순서로 다시 쓴다(작성자 oracle과 달라지는 행은 GPU_ONLY×LOCAL_CT2×GPU known profile의 256행으로 예상).
+- 기대값은 손으로 쓴 표다. L은 관측이 0.1초 안에 돌아오고(대기 원인은 0.4초 이상 유지) 최종 상태가 G-P07 결정표와 같은지 본다. S는 기록 전 stop만 취소가 이기고 UNKNOWN은 BLOCKED REMOTE_UNKNOWN을 유지한다. R은 실제로 끝난 worker만 해제되고, 해제 전에는 reader·slot·삭제 대기가 유지된다.
+- 신규 시험 단독 60초 게이트, CI 동등 coverage·묶음 예산, 전체 회귀를 수락 조건으로 한다.
+
+### mutation 13
+
+| ID | 결함 | 검출 목표 |
+| --- | --- | --- |
+| C01 | 결과 기록을 다시 runner lock 안에서 | L |
+| C02 | stop이 settle된 작업도 취소 | S 기록 뒤 |
+| C03 | stop이 기록 중 작업을 기다리지 않음 | S 기록 중 |
+| C04 | worker가 `cancelling` 작업에도 결과를 씀 | S 기록 전 |
+| C05 | 주기 reaper 제거 | R 주기·종료 |
+| C06 | reaper가 살아 있는 worker도 해제 | R 생존 |
+| C07 | UNKNOWN에서 reader 해제(G11BR-04) | R UNKNOWN |
+| C08 | 다음 grant의 ACK 재시도 제거(N03) | R 다음 grant·종료 |
+| C09 | CPU `device_index` 사실 무시(N07) | F |
+| C10 | close 성공 뒤 `child_live()` 확인 제거(N11) | R close 성공·생존 |
+| C11 | held를 `snapshot()["active"]`에서 제외(N12) | R |
+| C12 | 실패 순서를 구현 이전 순서로 | P cube |
+| C13 | 정책 코드 행동을 `model`로 | A |
+
+## §구현 결과(G-P11c, 31bc88b 기준)
+
+### 기준과 범위
+
+- 작성자는 w5:p7 Claude다. 기준 HEAD는 `31bc88b`(G-P08 푸시됨)다.
+- 시작 때 범위 파일 hash를 고정했다. source 4파일과 `tests/unit/test_resource_policy.py`는 HEAD와 같았다.
+- 이 문서는 §G-P11c 범위 절 앞의 내용(`655e606e…`)과 그 절을 바꾸지 않고, 이 절만 덧붙였다.
+- 도중에 C00 지시로 G-P12 FIX1을 먼저 처리했다. 멈춘 지점에서 범위 파일 hash가 그대로임을 확인한 뒤, mutation을 처음부터 다시 실행했다.
+- 모든 실행은 격리 사본에서 했다(`git archive 31bc88b` + G-P11c 범위 파일, PYTHONPATH = 사본 src). 작업 트리의 G-P12 변경은 쓰지 않았다.
+
+### 변경
+
+| 파일 | 변경 |
+| --- | --- |
+| `jobs/runner.py` | G11BR-02. 결과 기록(complete·fail·취소 ACK·상태 조회)을 runner lock 밖에서 한다. lock 안에서는 작업별 단계만 바꾼다: worker의 `settling`, stop의 `cancelling`. stop()은 `settling`이 끝나기를 condition으로 기다린 뒤, 여전히 active인 같은 항목이고 settle되지 않은 작업만 취소한다. worker는 stop이 먼저 맡은 작업의 결과를 쓰지 않고 취소 ACK만 한다. 이 과정에서 기존 코드의 경쟁 창도 닫았다: stop이 목록을 잡은 뒤 worker가 작업을 끝내고 active에서 빠지면 settle 표시가 지워져, 끝난 BLOCKED 작업을 취소할 수 있었다 |
+| `models/resources.py` | G11BR-01: `_gpu_plan` 순서를 계약 §4.3대로 바꿨다(아래 해석 1). TTL 기본값을 2초(`DEFAULT_TTL_NS`)로 바꿨다. G11BR-03: ACK가 실패하면 daemon reaper를 띄운다. reaper는 기본 0.25초마다 lock 없는 `child_live()`로 확인하고, worker가 실제로 끝났을 때만 기존 `reap()`·해제·`on_ack`를 한다. G11BR-04: UNKNOWN 원래 예외에 `reader_retained=True`를 붙인다 |
+| `app/status.py` | G11R-04: `POLICY_ACTION_CODES`(`RESOURCE_POLICY_UNVERIFIED`·`RESOURCE_GPU_UNSUPPORTED`)가 `execution_policy`로 연결된다 |
+| `app/inference.py` | 변경 없음. 제품 worker의 `close()`는 이미 종료된 child를 다시 닫아도 멱등이어서 reaper 재시도에 그대로 맞는다 |
+| `tests/unit/test_resource_policy.py` | P cube oracle의 `gpu()`를 §4.3 문장 순서로 다시 썼다(ID·축 불변) |
+| 신규 `tests/unit/test_resource_followup.py` | F 8, TTL 6, A 10, 87 ID 감사, P cube 순서 차이 보조 |
+| 신규 `tests/integration/test_resource_followup.py` | L 24, S 15, R 24 |
+
+### 해석과 C00 판단 요청
+
+1. **identity를 지정 장치 부재보다 먼저 판정**
+   - §4.3 문장은 "GPU 관측·장치 부재 → GPU identity"다.
+   - 그러나 UUID가 비었거나 중복되어 identity가 확인되지 않으면, 지정 UUID가 "없다"는 판단 자체가 성립하지 않는다.
+   - 처음에 문장 순서대로 바꾸자 승인된 G family 24행(identity 손상 + 지정 UUID 없음)이 IDENTITY_UNVERIFIED 대신 GPU_UNAVAILABLE이 됐다. 그래서 identity를 먼저 판정하는 기존 순서를 유지했다.
+   - 다른 순서(시각 → known RAM 관측 → GPU 관측 → RAM 부족 → VRAM 부족)는 문장대로다. 계약 문장의 정정 여부는 C00 결정이다.
+2. **G11BR-03 위치:** bridge tick(G-P12 파일)을 바꾸지 않으려고 reaper를 `ResourceScheduler` 안에 두었다. 다음 grant의 ACK 재시도도 그대로 남겼다(N03 행으로 고정).
+3. **G11R-04의 bridge override:** 공용 표와 같은 결과를 내므로 지우지 않았다. G-P12 뒤 후속이다.
+4. **관찰(JobStore, 범위 밖):**
+   - root mutex는 `fail`의 ACK authority 경로만 잡는다. `complete`·`_ack_cancelled`는 SQLite lock만 잡는다. L 행은 이 손 규칙으로 "실제로 기록이 기다렸는지"를 함께 단언한다.
+   - claim 직후 `reader_started` 전에 사용자 취소가 들어오면, task는 실행되지 않고 취소 ACK로 끝난다(기존 동작).
+5. **신규 행의 시간:** L과 R은 실제 대기(0.4초 blocker, 0.2초 reaper 관찰)를 포함한다. 신규 2파일 합계 25.8초다.
+
+### 결과
+
+- **신규 2파일 단독: 89 passed, 25.77초**(87 의미 행 + 감사 + 순서 차이 보조).
+- **ID 감사:** G11C 87행(L 24·S 15·R 24·F 8·TTL 6·A 10)이 누락·중복 0이다.
+- **G11BR-01 순서 차이:** 계약 순서 oracle과 이전 순서 사이에 대표 코드가 달라지는 P행은 정확히 **256행**이다(GPU_ONLY×LOCAL_CT2×GPU known profile, 검토자 재현과 같음). 구현은 새 oracle로 P cube 31,104행을 모두 통과한다.
+- **관련 기존 시험:** 자원·runner·job·차단 사유·AI 독립·queue model 묶음 **5,747 passed**다. 이 중 기존 시험 기대값은 P oracle 한 곳만 바꿨다.
+- **CI core 동등**(`31bc88b` + G-P11c 범위, 단계·flag 그대로)
+  - ruff check, format --check(193 files), mypy(91 source) 통과
+  - 전체 pytest **22,539 passed**(failures·errors·skipped 0), 1,332.0초, JUnit LF SHA-256 `dca4e0a7…`
+  - 총 coverage 92.32%
+  - 묶음별 예산 전부 PASS(line/branch %): domain 99.18/97.89, capture 99.85/98.57, jobs 99.19/95.61, storage 95.92/91.20, security 98.11/94.43, content 99.59/98.75, all 93.72/88.23
+  - 모듈 coverage: `jobs/runner.py` 98.1/90.2, `models/resources.py` 92.0/81.3(미적중 대부분은 legacy `probe_gpus`·방어 분기), `app/status.py` 96.9/93.4
+  - CI 사본의 이 문서는 결과 절을 쓰기 전 판이다
+- **mutation 13/13 검출, invalid 0**(사본마다 하나, import 출처 확인)
+
+| ID | 결함 | 실패 | 목표 |
+| --- | --- | ---: | --- |
+| C01 | 결과 기록을 runner lock 안에서 | 20 | L 20(기록이 실제로 기다리는 행 전부) |
+| C02 | stop이 settle된 작업도 취소 | 4 | S 기록 뒤 BLOCKED·UNKNOWN |
+| C03 | stop이 기록 중 작업을 기다리지 않음 | 2 | S 기록 중 BLOCKED |
+| C04 | worker가 stop이 맡은 작업에 결과를 씀 | 4 | S 기록 전 |
+| C05 | 주기 reaper 제거 | 6 | R 주기·종료 |
+| C06 | reaper가 살아 있는 worker도 해제 | 18 | R 생존 |
+| C07 | UNKNOWN에서 reader 해제 | 8 | R UNKNOWN |
+| C08 | 다음 grant의 ACK 재시도 제거(N03) | 6 | R 다음 grant·종료 |
+| C09 | CPU `device_index` 무시(N07) | 2 | F cpu 1·"0" |
+| C10 | close 성공 뒤 `child_live()` 확인 제거(N11) | 12 | R close 성공·생존 |
+| C11 | held를 `snapshot()["active"]`에서 제외(N12) | 23 | R |
+| C12 | 이전 실패 순서 | 1 | P cube |
+| C13 | 정책 코드 행동을 `model`로 | 4 | A 정책 코드 |
+
+### 미검증·한계
+
+- 실제 GPU·모델 worker·nvidia-smi는 실행하지 않았다(fake worker·관측).
+- reaper 주기와 실제 child 종료 지연의 상호작용은 fake `is_live`로만 확인했다.
+- G11BR-05(live STT 재기동 지연)는 실장비 출시 게이트로 남는다.
+- L의 "0.1초 안 응답"은 이 장치에서 측정한 값이며, 부하 하의 지연 SLA는 아니다.

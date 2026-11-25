@@ -425,13 +425,17 @@ def _fresh(observed_ns: int | None, now_ns: int, ttl_ns: int) -> bool:
     return observed_ns is not None and 0 <= now_ns - observed_ns < ttl_ns
 
 
+# G11 section 4.3: a snapshot is fresh for two seconds by default.
+DEFAULT_TTL_NS = 2_000_000_000
+
+
 def plan_resources(
     request: ResourceRequest,
     snapshot: ResourceSnapshot,
     *,
     now_ns: int,
     profiles: tuple[MemoryProfile, ...] = PROFILES,
-    ttl_ns: int = 5_000_000_000,
+    ttl_ns: int = DEFAULT_TTL_NS,
     ram_headroom: int = 512 * MIB,
     gpu_headroom: int = 512 * MIB,
     device: str | None = None,
@@ -529,13 +533,24 @@ def _gpu_plan(
 ) -> ResourcePlan:
     if snapshot.source.cuda_source == "none":
         raise _Refused(GPU_UNAVAILABLE)
-    gpu = snapshot.gpu
+    gpu, ram = snapshot.gpu, snapshot.ram
+    vram = None if profile is None else profile.gpu_bytes
+    host = None if profile is None else profile.gpu_host_ram
+    # G11 section 4.3 order: time validity of every applied observation -> known host
+    # RAM observation -> GPU observation -> identity -> device presence -> host RAM
+    # capacity -> VRAM capacity. An UNKNOWN GPU requirement applies no RAM at all.
+    if gpu.state == OBSERVED and not _fresh(gpu.observed_ns, now_ns, ttl_ns):
+        raise _Refused(SNAPSHOT_STALE)
+    if host is not None and ram.state == OBSERVED and not _fresh(ram.observed_ns, now_ns, ttl_ns):
+        raise _Refused(SNAPSHOT_STALE)
+    if host is not None and ram.state != OBSERVED:
+        raise _Refused(CPU_PROBE_UNKNOWN if ram.state == UNKNOWN else CPU_PROBE_UNAVAILABLE)
     if gpu.state == UNKNOWN:
         raise _Refused(GPU_PROBE_UNKNOWN)
     if gpu.state != OBSERVED:
         raise _Refused(GPU_PROBE_UNAVAILABLE)
-    if not _fresh(gpu.observed_ns, now_ns, ttl_ns):
-        raise _Refused(SNAPSHOT_STALE)
+    # A device can only be called absent once identities are verified: with a missing
+    # or duplicated UUID a pinned device's absence is not knowable (G-P11c reading).
     if not gpu.identity_verified:
         raise _Refused(IDENTITY_UNVERIFIED)
     devices = list(gpu.devices)
@@ -543,14 +558,12 @@ def _gpu_plan(
         devices = [item for item in devices if item.uuid == request.preferred_gpu]
     if not devices:
         raise _Refused(GPU_UNAVAILABLE)
-    vram = None if profile is None else profile.gpu_bytes
-    host = None if profile is None else profile.gpu_host_ram
+    if host is not None:
+        _ram_fit(snapshot, host, now_ns, ttl_ns, ram_headroom)
     needed = gpu_headroom + (0 if vram is None else vram)
     fitting = [item for item in devices if item.free_bytes >= needed]
     if not fitting:
         raise _Refused(MEMORY_INSUFFICIENT)
-    if host is not None:
-        _ram_fit(snapshot, host, now_ns, ttl_ns, ram_headroom)
     chosen = sorted(fitting, key=lambda item: (-item.free_bytes, item.uuid))[0]
     return ResourcePlan(
         request.digest,
@@ -818,10 +831,17 @@ class ResourceScheduler:
         observe: Observer | None = None,
         profiles: tuple[MemoryProfile, ...] = PROFILES,
         clock: Callable[[], int] = time.monotonic_ns,
-        ttl_ns: int = 5_000_000_000,
+        ttl_ns: int = DEFAULT_TTL_NS,
+        reap_interval: float = 0.25,
     ) -> None:
         if type(headroom_bytes) is not int or headroom_bytes < 0:
             raise ValidationError("RESOURCE_HEADROOM")
+        if (
+            type(reap_interval) not in (int, float)
+            or not 0 < reap_interval <= 3600
+            or reap_interval != reap_interval
+        ):
+            raise ValidationError("RESOURCE_REAP_INTERVAL")
         if (
             not _count(ram_headroom_bytes)
             or not _count(ttl_ns)
@@ -841,6 +861,8 @@ class ResourceScheduler:
         self._holder: Lease | None = None
         self._waiters: deque[Lease] = deque()
         self._recent: deque[Lease] = deque(maxlen=64)
+        self.reap_interval = float(reap_interval)
+        self._reaper: threading.Thread | None = None
 
     # legacy helpers (existing small contract; not used by the product paths)
     def choose(
@@ -929,6 +951,30 @@ class ResourceScheduler:
         with self._condition:
             holder = self._holder
             return () if holder is None else (holder.job_id,)
+
+    def _watch_held(self) -> None:
+        """Start the reaper for a slot whose worker exit ACK failed (G11BR-03)."""
+        with self._condition:
+            if self._reaper is not None:
+                return
+            self._reaper = threading.Thread(
+                target=self._reap_loop, name="recoryn-lease-reaper", daemon=True
+            )
+            self._reaper.start()
+
+    def _reap_loop(self) -> None:
+        """Release a held slot only after its worker really exited (lock-free check)."""
+        while True:
+            with self._condition:
+                holder = self._holder
+                if holder is None or holder.state != "REAP_PENDING" or holder.ack_code is None:
+                    self._reaper = None  # decided under the lock that _watch_held reads
+                    return
+                self._condition.wait(self.reap_interval)
+                if self._holder is not holder:
+                    continue
+            if not holder.child_live():
+                self._try_ack(holder)
 
     def _try_ack(self, holder: Lease) -> None:
         try:
@@ -1029,12 +1075,19 @@ class ResourceScheduler:
             try:
                 lease.reap()
             except Exception as error:
+                self._watch_held()
                 if failure is None or getattr(failure, "outcome_known", True) is not False:
                     held = StateConflict(lease.ack_code or LEASE_HELD)
                     # The runner keeps the Job local reader active until on_ack, so
                     # deletion/recovery wait for the real exit (never seal/finalize).
                     held.reader_retained = True  # type: ignore[attr-defined]
                     raise held from error
+                # A logical UNKNOWN is kept as raised, and so is the physical wait for
+                # the worker's exit: the reader stays until on_ack (G11BR-04).
+                try:
+                    failure.reader_retained = True  # type: ignore[attr-defined]
+                except AttributeError:
+                    pass
             else:
                 lease.on_ack = None
                 with self._condition:

@@ -403,14 +403,18 @@ def p_oracle(row: tuple[Any, ...]) -> tuple[Any, ...]:
         return ("plan", "cpu", "RESOURCE_ESTIMATE_KNOWN", 100, None)
 
     def gpu() -> tuple[Any, ...]:
+        # G11 section 4.3, in its sentence order (G-P11c, G11BR-01): known host RAM
+        # observation -> GPU observation -> host RAM capacity -> VRAM capacity. The
+        # fixture's observations are fresh and its identity is verified.
+        if gpu_known and rprobe != OBSERVED:
+            return ("refused", CPU_PROBE[rprobe])
         if gprobe != OBSERVED:
             return ("refused", GPU_PROBE[gprobe])
+        if gpu_known and rfree < 100 + RAM_HEAD:
+            return ("refused", MI)
         if gfree < (80 + GPU_HEAD if gpu_known else GPU_HEAD):
             return ("refused", MI)
         if gpu_known:
-            failure = ram_ok(100)
-            if failure:
-                return ("refused", failure)
             return ("plan", "cuda", "RESOURCE_ESTIMATE_KNOWN", 100, 80)
         return ("plan", "cuda", "RESOURCE_ESTIMATE_UNKNOWN", None, None)
 

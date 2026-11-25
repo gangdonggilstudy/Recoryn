@@ -120,6 +120,8 @@ class AIStatus:
 
 
 EXECUTION_POLICY_ACTION = "execution_policy"
+# Device-policy refusals resolved in the execution policy control (G11 decision 6).
+POLICY_ACTION_CODES = frozenset({"RESOURCE_POLICY_UNVERIFIED", "RESOURCE_GPU_UNSUPPORTED"})
 
 _ACTIONS = {
     "CONSENT": ("동의/전송 정책 확인", "consent"),
@@ -136,6 +138,13 @@ def _action(reason: str, code: str) -> tuple[str, str] | None:
         return "원본 확정 필요; 녹음 중이면 정지 후 세션 확정 화면을 확인하세요", "finalize"
     if code == "SUMMARY_REQUIRES_COMPLETE_TRANSCRIPT":
         return "완전한 전사 필요; 전사 화면에서 범위·완료 상태를 확인하세요", "transcription"
+    if code in POLICY_ACTION_CODES:
+        # G11 decision 6 / G11R-04: a device-policy refusal points at the execution
+        # policy control (the same place the bridge sends it), never at model settings.
+        return (
+            "AI 실행 정책을 직접 확인하세요; 현재 정책에서는 시작하지 않으며 자동으로 바꾸지 않음",
+            EXECUTION_POLICY_ACTION,
+        )
     if reason == "RESOURCE" and code == "RESOURCE_GPU_UNAVAILABLE":
         return (
             "GPU 실행 조건을 확인하거나 장치 실행 정책을 직접 선택하세요",

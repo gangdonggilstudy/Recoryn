@@ -81,6 +81,10 @@ class BoundedRunner:
         self._turns = 0  # priority picks since the last fair (oldest) turn
         # Jobs whose outcome this runner already wrote; stop() never cancels them.
         self._settled: set[str] = set()
+        # G11BR-02: outcome writes run outside the lock. Under the lock a worker only
+        # marks "settling" (it owns the write) and stop() only marks "cancelling" (it
+        # owns the cancellation); whichever marks first wins, the other side waits.
+        self._phase: dict[str, str] = {}
 
     def admission_error(self, job_id: str) -> str | None:
         """Bounded display metadata, never permission to claim or resume work."""
@@ -199,13 +203,27 @@ class BoundedRunner:
             self.jobs.cancel(item.job_id)
             item.cancel.set()
         for item in active:
-            # G11R-02: a worker writes its outcome under the same lock. Work it already
-            # settled (BLOCKED, FAILED, SUCCEEDED) keeps that outcome; only work still
-            # running is asked to cancel.
+            # G11R-02: work a worker already settled (BLOCKED, FAILED, SUCCEEDED) keeps
+            # that outcome; only work still running is cancelled. A write in progress is
+            # waited for (it holds no runner lock, so displays are never blocked by it).
             with self._condition:
-                if item.job_id not in self._settled:
-                    self.jobs.cancel(item.job_id)
-            item.cancel.set()
+                while self._phase.get(item.job_id) == "settling":
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(remaining)
+                owned = (
+                    self._active.get(item.job_id) is item
+                    and item.job_id not in self._settled
+                    and self._phase.get(item.job_id) is None
+                )
+                if owned:
+                    self._phase[item.job_id] = "cancelling"
+            try:
+                if owned:
+                    self.jobs.cancel(item.job_id)  # durable fence revocation first
+            finally:
+                item.cancel.set()
         for thread in self._threads:
             thread.join(max(0.0, deadline - time.monotonic()))
         if self.running:
@@ -226,6 +244,7 @@ class BoundedRunner:
                 with self._condition:
                     self._active.pop(item.job_id, None)
                     self._settled.discard(item.job_id)
+                    self._phase.pop(item.job_id, None)
                     self._condition.notify_all()
 
     def _take(self) -> _Work:
@@ -239,6 +258,29 @@ class BoundedRunner:
             self._turns += 1
         self._queue.remove(chosen)
         return chosen
+
+    STOP_ACK_WAIT = 10.0
+
+    def _claim_settle(self, item: _Work) -> bool:
+        """Under the lock: take the right to write this outcome (False if stop owns it)."""
+        with self._condition:
+            if self._phase.get(item.job_id) == "cancelling":
+                return False
+            self._phase[item.job_id] = "settling"
+            return True
+
+    def _end_settle(self, item: _Work, settled: bool) -> None:
+        with self._condition:
+            if self._phase.get(item.job_id) == "settling":
+                del self._phase[item.job_id]
+            if settled:
+                self._settled.add(item.job_id)
+            self._condition.notify_all()
+
+    def _ack_stop(self, item: _Work, attempt: AttemptRecord, known: bool) -> None:
+        """stop() owns this Job: after its fence revocation, acknowledge the cancel."""
+        item.cancel.wait(self.STOP_ACK_WAIT)
+        self.jobs._ack_cancelled(attempt, outcome_known=known)
 
     @staticmethod
     def _failure(exc: Exception) -> tuple[str, bool, bool]:
@@ -281,38 +323,51 @@ class BoundedRunner:
                                 raise
                             # ACK storage failure must not mask a remote UNKNOWN
                             # with an ordinary local error (or release its reader).
-                    with self._condition:
+                    if not self._claim_settle(item):
+                        self._ack_stop(item, attempt, True)
+                        break
+                    settled = False
+                    try:
                         if item.cancel.is_set():
                             self.jobs._ack_cancelled(attempt)
                         else:
                             self.jobs.complete(
                                 item.job_id, attempt.attempt_id, attempt.fence, result_ref
                             )
-                        self._settled.add(item.job_id)
+                        settled = True
+                    finally:
+                        self._end_settle(item, settled)
                     break
                 except Exception as exc:
                     code, retryable, known = self._failure(exc)
                     with self._condition:
                         self._last_error = code
-                        # Read and write the outcome under the lock stop() checks.
+                    if not self._claim_settle(item):
+                        self._ack_stop(item, attempt, known)
+                        break
+                    # The outcome is read and written outside the lock; the phase mark
+                    # is what stop() checks (G11BR-02).
+                    settled = retry = False
+                    try:
                         current = self.jobs.get(item.job_id)
                         if current.state == JobState.CANCEL_REQUESTED:
                             self.jobs._ack_cancelled(attempt, outcome_known=known)
-                            self._settled.add(item.job_id)
-                            break
-                        if current.state != JobState.RUNNING or current.fence != attempt.fence:
-                            break
-                        failed = self.jobs.fail(
-                            item.job_id,
-                            attempt.attempt_id,
-                            attempt.fence,
-                            code,
-                            retryable=retryable,
-                            outcome_known=known,
-                        )
-                        if failed.state != JobState.BACKOFF:
-                            self._settled.add(item.job_id)
-                            break
+                            settled = True
+                        elif current.state == JobState.RUNNING and current.fence == attempt.fence:
+                            failed = self.jobs.fail(
+                                item.job_id,
+                                attempt.attempt_id,
+                                attempt.fence,
+                                code,
+                                retryable=retryable,
+                                outcome_known=known,
+                            )
+                            retry = failed.state == JobState.BACKOFF
+                            settled = not retry
+                    finally:
+                        self._end_settle(item, settled)
+                    if not retry:
+                        break
                     # Retries occupy their existing worker slot, never a new
                     # unbounded queue/timer or a blocking put into a full queue.
                     if item.cancel.wait(min(1.0, self.RETRY_DELAY * 2 ** (attempt.attempt_no - 1))):
