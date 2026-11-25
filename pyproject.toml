@@ -44,6 +44,7 @@ recoryn-desktop = "recoryn.ui:launch"
 where = ["src"]
 
 [tool.pytest.ini_options]
+faulthandler_timeout = 600
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "--strict-markers --import-mode=importlib"

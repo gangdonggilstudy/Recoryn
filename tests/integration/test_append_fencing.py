@@ -490,6 +490,11 @@ def sqlite_writer_lock(library):
 
 
 def registration_trace(library, prefix):
+    """Only for serialized readers; remove after all actors' real termination ACK.
+
+    While installed, concurrent test reads of library._db must own library._mutex.
+    Prefer the off-root registration retry hook when observing a BUSY attempt.
+    """
     entered, begins = threading.Event(), []
 
     def trace(sql):
@@ -640,7 +645,15 @@ def test_registration_busy_keeps_live_capabilities_and_withholds_pause_ack(
         )
         service._gate = TrackedLock(service._gate)
         service.start()
-        entered, _ = registration_trace(library, "recoryn-sealer")
+        entered = threading.Event()
+        retry_wait = library_module._registration_wait
+
+        def waiting(seconds):
+            if threading.current_thread().name.startswith("recoryn-sealer"):
+                entered.set()  # BUSY observed and root released, not just SQL entry
+            retry_wait(seconds)
+
+        monkeypatch.setattr(library_module, "_registration_wait", waiting)
         try:
             with sqlite_writer_lock(library):
                 for track in service.formats:
@@ -649,11 +662,12 @@ def test_registration_busy_keeps_live_capabilities_and_withholds_pause_ack(
                 with pytest.raises(RecordingError, match="WRITER_ACK_PENDING"):
                     service.pause(timeout=0.01)
                 assert service.worker_alive and has_active_writer(library.root, "s")
-                assert library._db.execute("SELECT count(*) FROM chunks").fetchone()[0] == 0
-                assert (
-                    library._db.execute("SELECT status FROM capture_health_runs").fetchone()[0]
-                    == "OPEN"
-                )
+                with library._mutex:
+                    assert library._db.execute("SELECT count(*) FROM chunks").fetchone()[0] == 0
+                    assert (
+                        library._db.execute("SELECT status FROM capture_health_runs").fetchone()[0]
+                        == "OPEN"
+                    )
                 assert not service.storage_failed
             service.pause(timeout=30)
             assert library.get_session("s").state.value == "PAUSED"
@@ -664,8 +678,18 @@ def test_registration_busy_keeps_live_capabilities_and_withholds_pause_ack(
                 == "CLOSED"
             )
         finally:
+            with service._gate:
+                service._accepting = False
+                if service._queue is not None:
+                    service._queue.close()
+            deadline = time.monotonic() + 30
+            for worker in (service._thread, service._sealer):
+                if worker is not None:
+                    worker.join(max(0, deadline - time.monotonic()))
+                    assert not worker.is_alive(), (
+                        "capture worker exceeded the finite cleanup deadline"
+                    )
             service.join_writer()
-            library._db.set_trace_callback(None)
 
 
 def raw_capabilities(library, count):

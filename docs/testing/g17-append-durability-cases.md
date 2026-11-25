@@ -1009,3 +1009,86 @@ all: line=94.05%/85% branch=88.75%/80% PASS
 - 정상 stop 뒤 연기된 건강 누계의 최종 수선은 C00 지정 G-P08b(S2) 후속 그대로다. FIX2의 건강 제품 코드 수정0이다.
 - PER_BLOCK 기본·내구성 의미는 바뀌지 않았다. 처리량 개선 완료를 주장하지 않으며17b·실제 HDD/백신/전원 장애 외부 게이트는 그대로다.
 - GS-P06 10파일은 중단 시점 LF 해시와10/10 동일하다(`gs06-preservation.json`). GS-P06으로 복귀하며 기존 SCOPE_NEEDED(app/media.py 경계와 B008 실현 가능 상한) 결정 요청은 유지한다. GS-P11a의 library.py 구현은 G-P17a push·C00 시작 신호 전까지 착수하지 않는다.
+
+## 23. G-P17c — 공유 SQLite 시험 관측의 교착 제거
+
+### 23.1 범위·근거·판정 경계
+
+2026-11-26 C00 우선 배정에 따라 GS-P11a를 안전한 중간 상태로 멈췄다. 기준은 `de27a81f57f5e80e71fa4f65b0b4b0565e37dee4`이며 수정은 `tests/integration/test_append_fencing.py`, `pyproject.toml`, 이 문서 세 파일뿐이다. GS-P11a 소유 파일의 중단 시점 LF 해시는 `build/g17c-evidence-c4b2ad9918/input.json`에 별도로 보존했다.
+
+검토자의 HANG 조사(`docs/reviews/g17a-append-durability-review.md`, H 절·G17R-06)의 17/481 멈춤과 3,600/3,600 수정 변형 무멈춤은 **검토 문서에서 옮긴 근거**다. 이번 작성자의 직접 측정으로 집계하지 않는다. 제품 Library에는 해당 Python trace 콜백이 없고, 제품 경로를 고치거나 제품 교착을 재현했다고 주장하지 않는다.
+
+### 23.2 기존 입력과 독립 oracle 유지
+
+분모와 case ID는 바꾸지 않는다. R01/R02는 1·2트랙 × 외부 SQLite 쓰기 잠금 3초의 원본 보존·관리 root 보유 관측, R03/R04는 1·2트랙 × 등록 BUSY 중 pause ACK 보류다. R03/R04의 입력·실제 SQLite 잠금·대기 시간·성공/실패 기대를 그대로 둔다. 관찰 방법만 다음과 같이 바꾼다.
+
+| 변경 | 관찰 사실·유지하는 단언 |
+| --- | --- |
+| R03/R04 진입 신호 | 공유 연결의 SQL trace 대신 `_registration_wait`를 감싼다. sealer가 실제 BUSY 뒤 root 밖 재시도 대기에 도달한 뒤 Event를 게시한다. 단순 BEGIN 진입보다 강한 증거이며 `entered.wait(5)`는 유지한다. |
+| 잠금 중 chunks/health 조회 | `with library._mutex` 안에서 읽는다. chunks=0, health=OPEN, worker/활성 capability 유지, storage_failed=False 단언은 바꾸지 않는다. |
+| 잠금 해제 뒤 ACK | 기존 pause(timeout=30), PAUSED, 저장 청크 수=트랙 수, worker/활성 capability 종료, health=CLOSED 단언은 유지한다. |
+| finally 수명 | 수락 gate·queue를 닫고 worker/sealer를 합계 30초 안에 join하여 살아 있지 않음을 단언한 뒤 기존 `join_writer()`를 호출한다. 미종료를 종료로 해석하지 않는다. |
+| 다른 trace 사용자 | 도우미에 공유 연결 읽기는 mutex로 직렬화하고 실제 actor 종료 뒤 콜백을 해제한다는 규칙을 적었다. 다른 R 가족의 동작은 바꾸지 않는다. |
+| pytest 진단 | `faulthandler_timeout=600` 한 줄을 추가한다. stack을 출력할 뿐 시험을 종료하거나 통과시키지 않는다. |
+
+### 23.3 검증 계획
+
+HEAD와 위 세 파일만인 TEMP archive, 사본 src로 고정한 PYTHONPATH, 부모·자식 import 경로 확인을 사용한다. R01~R04는 부하 아래 각 100회(총 400회)를 목표로 반복한다. 반복은 새 case 분모가 아니며 동일 네 node의 재실행 횟수다. 유한한 외부 실행 기한을 두고 미종료·단언 실패·수집 오류를 각각 구분한다. 이어 파일 전체와 CI 동등 전체 오프라인 회귀·branch coverage 및 check_coverage를 실행한다. 실제 장치·음성·모델·네트워크는 사용하지 않는다.
+
+아직 위 반복·전체 검증의 직접 결과를 집계하지 않았다. 결과와 최종 LF 해시는 실행 뒤 이 절 끝에 추가하며, 독립 검토·최종 수용은 C00/검토자의 몫이다.
+
+### 23.4 직접 실행 — 반복·선택·정적 검사
+
+다음은 이번 작성자가 직접 실행한 결과다. 검토자의 HANG 조사 수치와 합산하지 않는다.
+
+| 실행 | 결과 |
+| --- | --- |
+| 기본 R01~R04 | 4 PASS, 25.45초. 동일 node 인자를 중복 지정해도 pytest가 중복을 수집하지 않아 실제 4건만 집계했다. |
+| 부하 반복 | 서로 다른 basetemp의 pytest 프로세스 4개를 동시에 실행. 별도 TEMP 반복 plugin으로 각 프로세스 R01~R04를 25회씩 실제 수집했다. **400/400 PASS, 원 node별100회, 실패0·오류0·skip0·멈춤0·watchdog 만료0**. |
+| 반복 소요 | 프로세스별 890.83 / 941.49 / 940.74 / 930.25초. 유한한 전체 프로세스 기한은 3,600초이며 시험별 600초 stack 출력·30초 cleanup은 변경하지 않았다. |
+| 반복의 등록 관측 | R01/R02 200건 모두 OBSERVED, NOT_OBSERVED0. 외부 잠금 중 관측된 sealer root 보유 최장 **99.402ms < 기존500ms 상한**. R03/R04 200건은 모두 BUSY 재시도 Event와 pause ACK 보류·해제 뒤 완료 단언을 통과했다. |
+| 반복의 보존·유실 구분 | R01/R02의 수락186,555블록 = 저장89,546,400frame(블록당480frame). 부하 아래 큐 거부8,821블록은 시험의 정확/미상 회계 단언으로 따로 검증했다. 멈춤0을 큐 거부0이나 처리량 개선으로 쓰지 않는다. 제품 내구성·처리량 코드는 수정0이다. |
+| 파일 전체 | `test_append_fencing.py` **173 PASS, 72.51초**. |
+| 최종 사본의 정적 검사 | ruff check PASS, format217파일 PASS, mypy95파일 PASS. 부모·자식 import 모두 최종 사본 src 아래임을 확인했다. |
+
+반복 사본은 `de27a81 + 3파일`이다. 이어 GS-P06 commit `5aa988eefacc5c249e0a3abbd534e6666894a672`이 들어왔고, 세 파일의 기준 내용이 de27a81과 동일함(직접 교집합0)을 확인했다. 최종 전체 검증은 **5aa988e + 위3파일만**인 별도 archive 사본에서 실행 중이다. 작업 트리의 GS-P11a 제품·시험 변경은 두 사본 모두 포함하지 않는다.
+
+초기 병렬 시도 네 개는 전체 실행 기한을 여유 있게 재설정하기 위해 작성자가 명시 중단했다. 진행 로그17/18/18/19개의 점은 정식 PASS로 집계하지 않았다. 로그 handle이 해제된 뒤 파일을 보존했고, `interrupted-attempt.json`에 중단 사유와 정식 집계0을 기록했다. 이를 제품/시험 멈춤으로 세거나 완료400건에 합산하지 않는다.
+
+증거는 `build/g17c-evidence-c4b2ad9918/`의 `repeat-1~4.xml/json/log`, `repeat-summary.json`, `file.xml`, `imports.json`, `final-imports.json`, `final-isolation.json`이다. 전체 회귀·coverage 결과와 최종 해시는 실행 종료 뒤 다음 절에 적는다.
+
+### 23.5 최종 CI 동등 전체 회귀와 제출
+
+위 실행은 **2026-11-26에 완료**했다. 최종 기준은 `5aa988eefacc5c249e0a3abbd534e6666894a672`이며, Git archive의 추적 파일과 사본을 전수 대조해 승인 세 파일만 달라졌고 누락 파일0임을 확인했다. 다른 작업자의 제품·시험 변경과 중단된 GS-P11a 변경은 포함하지 않았다. GS-P11a 17파일은 우선 배정 시작 시점의 LF 해시와 17/17 동일하다.
+
+사본 `C:/Users/gangd/AppData/Local/Temp/recoryn-g17c-final-gs08q19y`에서 다음을 직접 실행했다. PYTHONPATH는 이 사본의 src, 부모·자식 import도 같은 src이며, basetemp는 별도 고유 OS TEMP이다.
+
+```text
+python -m pytest -q -p no:cacheprovider -W error::ResourceWarning --cov=recoryn --cov-branch --cov-report=json:coverage.json --cov-fail-under=85 --basetemp=<고유 OS TEMP> --junitxml=<증거>/full.xml
+python scripts/check_coverage.py coverage.json
+```
+
+**28,536 PASS / 실패0·오류0·skip0 / 경고 요약0 / 멈춤0**, pytest **2,067.41초**, 프로세스 **2,082.94초**, combined coverage **92.60%**이다. JUnit 직접 합계는 contract56·e2e81·integration5,453·property14,457·release363·UI3,314·unit4,812이다. coverage.json의 82파일 모두 사본의 `src/recoryn`에 속하며 임시 legacy fixture나 작업 트리 소스의 유입0을 확인했다. 600초 faulthandler dump와 전체 프로세스 watchdog 만료도 없다.
+
+check_coverage 출력 전문:
+
+```text
+domain: line=99.18%/95% branch=97.89%/90% PASS
+capture: line=99.73%/95% branch=98.29%/90% PASS
+jobs: line=99.20%/95% branch=95.65%/90% PASS
+storage: line=96.21%/95% branch=91.55%/90% PASS
+security: line=98.11%/95% branch=94.43%/90% PASS
+content: line=98.98%/95% branch=99.02%/90% PASS
+all: line=93.94%/85% branch=88.60%/80% PASS
+```
+
+제품·시험 설정의 최종 LF SHA256은 다음과 같다. 문서 자체 해시는 자기 참조를 피하여 제출 창과 `delivery-hashes.json`에만 기록한다.
+
+| 파일 | SHA256(LF) |
+| --- | --- |
+| `tests/integration/test_append_fencing.py` | `6d3b03e94058e0a92e0704b10b38c1452701f3acdf5a63cbd01c1713dafdfee4` |
+| `pyproject.toml` | `43a3e900e5a4fd466067bbd051b7a9c08fbdd4e90322568c97c7f8ec7e91b2b8` |
+
+전체 실행 증거는 같은 `build/g17c-evidence-c4b2ad9918/`의 `full-start.json`, `full.log`, `full.xml`, `full-result.json`, `coverage.json`, `check-coverage.log`, `final-audit.json`, `delivery-hashes.json`이다. 문서의 기존 내용은 LF 기준 prefix로 보존했고, 최종 결과 절 추가 후 제품·시험 설정 두 파일은 검증 사본과 그대로 일치한다.
+
+G17R-06의 작성자 수정 결과를 제출하며, 독립 검토와 최종 수용은 C00/검토자에게 남긴다. 이 단위는 제품 저장 경로·PER_BLOCK 내구성·처리량을 변경하지 않았다. G17R-05의 트랙별 미상 판정 보강은 기존 C00 결정대로 G-P17b 후속이며, 이번 시험 결함 수정의 범위에 섞지 않았다. G-P17c 제출 뒤 GS-P11a 준비로 돌아가되, `app/recording.py`는 GS-P06 푸시 신호 조건을 지킨다.

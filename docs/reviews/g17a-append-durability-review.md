@@ -397,3 +397,248 @@ append 1회 비용(`probe_g17_append_cost2.py`, 단일 writer 2,000회, Library 
 
 - 범위는 **72.5~88.3초**로, 승인된 100초 안이다.
 - 부하 없는 단독 값은 이 PC에서 확보하지 못했다. 작성자 71.45초(첫 실행 102.79초)와 같은 범위다.
+
+## HANG 조사
+
+상태: **조사 완료 — 재현됨, 시험 결함, 2026-11-26.**
+- 검토자는 같은 C00 배정 하위 에이전트(Claude)다. 코드는 고치지 않았다. 저장소 쓰기는 이 절 추가뿐이다.
+- 관찰: GS-P06 검토자가 다른 회귀와 동시에 돌린 전체 회귀에서 `test_registration_busy_keeps_live_capabilities_and_withholds_pause_ack[G17-R-03]`이 20분 넘게 멈췄다. stack은 남지 않았다.
+
+**판정 요약.**
+- **재현됨.** 원본 시험 함수 호출 481회 중 **17회 멈춤**(3.5%)이다. 조건은 다섯 가지다. 추가 부하가 없는 상태와 CI 근사 조건에서도 멈췄다.
+- **제품 교착이 아니다.** 멈춤 17건의 stack이 모두 같은 모양이다. 순환은 **GIL ↔ SQLite 연결 mutex**다. 시험이 공유 연결 `library._db`에 Python trace 콜백을 설치한다. 그리고 sealer가 같은 연결을 쓰는 동안 시험 스레드가 library mutex 없이 그 연결을 직접 읽는다. 제품 잠금 순서(writer 작업 잠금 → root → registry), pause ACK, sealer FIFO 대기는 순환에 없다. 녹음 정지(S1)에 해당하지 않는다.
+- **새 OPEN은 S2 1건(G17R-06, 시험 결함)**이다. CI는 멈추면 stack 없이 120분 제한까지 소진된다.
+- 시험 수정안 두 가지를 확인했다. 어느 쪽이든 같은 조건에서 **멈춤 0**이었다.
+  - mutex 안 읽기안: 3,600회.
+  - 콜백 제거안: 1,200회.
+
+### H.1 입력·조건
+
+| 항목 | 값 |
+| --- | --- |
+| 대상 | HEAD `de27a81`. `git diff 6156b65 de27a81 -- src/recoryn/storage src/recoryn/app/recording.py tests/integration/test_append_fencing.py tests/unit/test_append_durability.py` = 없음. 사본 `build/review-trees/g17-hang`(`git archive de27a81`), PYTHONPATH = 사본 src |
+| LF SHA256 앞 16자 | test_append_fencing.py `57e116486a8c0d02`(RECHECK 2 tree와 같음), library.py `df54dcb336db11c4`, recording.py `ba8224af9b03605b` |
+| 반복 하네스 | `g17-hang-probe/test_zz_hang_watch.py` `6c7f0f68a2a073ea`: 실행하는 동안만 사본 `tests/integration/`에 복사한다. 변형 셋은 아래와 같다. 각 시험마다 `faulthandler.dump_traceback_later(30, exit=True)`로 모든 스레드 stack을 남기고 그 프로세스를 끝낸 뒤 다음 프로세스로 이어 센다. 정상 1회 소요는 0.1~0.3초다 |
+| 변형 | `orig` = 커밋된 시험 함수를 import해 그대로 호출. `fix` = 652·654줄 두 읽기만 `with library._mutex:` 안으로. `nocb` = trace 콜백 대신 `library_module._registration_wait` 대체로 진입 신호(835줄 선례), 직접 읽기는 mutex 밖 그대로 |
+| 구동 | `run_watch.sh` `aa7f80c8ff3eb849`(CPU 부하 `python -c` 반복 루프 N개, 동시 pytest 루프 `test_seal_mutex.py`·`test_append_durability_crash.py`), `run_watch_ci.sh` `9c56ba21e72e8203` + `affinity_pytest.cmd` `5d60c72a26713fcf`(`start /affinity F`로 논리 CPU 4개 고정, 자식 상속을 확인, `--cov=recoryn --cov-branch`). 첫 2회는 `run_hang.sh` `c55c49dd9afd9980` + pytest `-o faulthandler_timeout=60` |
+| 결과 | `watch-main.jsonl` `7fef6f99671f2e74`, `watch.jsonl` `997bd071f8bea945`, 역전 탐침 `inv2.jsonl` `a2f2126b448e9eca`, dump 분류 `classify_dumps.py` `cf6f8b5acb2e9734` |
+| PC | 논리 CPU 32개. 다른 세션 pytest가 수시로 돌았다. 실행 시작 시 CPU 5~99% |
+
+### H.2 정적 열거 — 시험 본문(test_append_fencing.py:633-668)의 상한 없는 대기
+
+| 줄 | 동작 | 상한 | 판단 |
+| ---: | --- | --- | --- |
+| 641 | `TrackedLock(service._gate)` acquire | 없음 | 보유 구간이 짧은 메모리 작업이다 |
+| 643 | `registration_trace`: 공유 연결 `library._db`에 Python trace 콜백 설치 | — | 대기는 아니다. **교착의 전제 조건**이다 |
+| 645 | `sqlite_writer_lock`: 별도 연결 `BEGIN EXCLUSIVE` | `timeout=1` | 유한 |
+| 648 | `entered.wait(5)` | 5초 | 유한 |
+| 650 | `pause(timeout=0.01)`: `get_session`(root mutex), `_drain`(gate), `_join_workers(0.01)` | join은 0.01초, 잠금 acquire는 상한 없음 | 잠금 보유 구간이 짧다. `WRITER_ACK_PENDING`으로 끝난다 |
+| 651 | `has_active_writer` (`_writers_lock`) | 없음 | 보유 구간이 짧다 |
+| **652, 654** | `library._db.execute(...).fetchone()`, **library mutex 없이**, sealer 재시도와 동시 | **없음** | `busy_timeout`과 등록 deadline은 SQLite 파일 잠금 대기에만 적용된다. 연결 mutex·GIL 대기에는 적용되지 않는다. **재현된 멈춤 지점이다** |
+| 658 | `pause(timeout=30)` | join 30초 | 내부 잠금 acquire는 짧다 |
+| 663 | 직접 읽기 | — | 661에서 worker 종료를 확인한 뒤라 동시 사용이 없다 |
+| 667 | `finally: service.join_writer()` → `_join_workers(None)` | **없음** | sealer가 영구 정지하면 finally도 영구 대기한다. 이번 멈춤에서는 652/654에서 먼저 멈춰 여기까지 오지 않았다 |
+| 668 | `set_trace_callback(None)` | — | sealer join 뒤라 동시 사용이 없다 |
+
+- 제품 쪽 sealer 경로는 모두 유한하다.
+  - `register_chunk`는 시도마다 root 안에서 `busy_timeout=0`이다. 재시도는 root 밖에서 10ms씩 기다리고, 원래 `busy_timeout`(5초) monotonic deadline까지만 한다.
+  - `_hand_off`는 0.1초 polling이다. `_join_workers(timeout)`은 유한하다.
+  - 상한이 없는 것은 설계상 `join_writer` 하나다.
+  - 아래 dump에서 이 대기 중 어느 것에도 스레드가 없었다.
+
+### H.3 재현 결과
+
+| 조건 | 변형 | 시작한 호출 | 멈춤 | 비율 |
+| --- | --- | ---: | ---: | ---: |
+| A: CPU 부하 16 + 동시 pytest, pytest `faulthandler_timeout=60` | orig | 28 | 2 | — |
+| C: CPU 부하 16 + 동시 pytest | orig | 212 | 5 | 2.4% |
+| 추가 부하 없음(배경 CPU 5~42%, 다른 세션 pytest 있음) | orig | 129 | 4 | 3.1% |
+| B: CPU 부하 16만 | orig | 62 | 3 | 4.8% |
+| D: CI 근사(논리 CPU 4개 고정 + coverage, 추가 부하 없음) | orig | 50 | 3 | 6.0% |
+| **orig 합계** | | **481** | **17** | **3.5%** |
+| C | fix | 2,000 | 0 | 0 |
+| D | fix | 1,600 | 0 | 0 |
+| D | nocb | 1,200 | 0 | 0 |
+
+- 멈춤은 R-03(1트랙) 11건, R-04(2트랙) 6건이다. 새 프로세스의 첫 호출(추가 부하 없음 1회차)과 둘째 호출(A 2회차)에서도 멈췄다. 그래서 반복 실행으로 상태가 쌓인 탓이 아니다.
+- 원본 비율 3.5%가 수정안에도 그대로라면 3,600회와 1,200회에서 멈춤 0이 나올 확률은 각각 약 e^-128, e^-43이다.
+- 부하 정도는 비율에 큰 차이를 내지 않았다(2.4~6.0%, 표본 작음).
+- 작성자의 미재현(단독 6회·파일 8회·전체 재실행, 호출 약 24회)은 호출당 3.5%라면 약 43% 확률로 일어난다. 모순되지 않는다. RECHECK 2의 4파일 3회와 R 반복에서도 이 시험은 멈추지 않았다.
+
+### H.4 stack 요지(17건 전부)
+
+- 살아 있는 스레드는 **정확히 둘**이다. consumer는 이미 끝났다. `Lock.acquire`·`Event.wait`·`Thread.join`·queue 대기에 있는 스레드는 0이다.
+- `recoryn-sealer`: `_seal_loop`(recording.py:707) → `Library.register_chunk`의 `with self._mutex:` 안이다. 즉 **root mutex를 쥔 채 공유 연결에서 SQLite 호출 중**이다.
+  - library.py:1032(`PRAGMA busy_timeout` 읽기) 13건.
+  - :1037(finally의 `busy_timeout` 복원) 3건.
+  - :644(`_writer_intent`의 `deleted_sessions` 조회) 1건.
+- `MainThread`: test_append_fencing.py **:652** 13건, **:654** 4건. 같은 연결의 `execute().fetchone()` 안이다.
+- 원래 관찰(20분 넘게 멈춤)과 같은 시험·같은 단계다. A 조건은 pytest 자체 `faulthandler_timeout=60` dump이며 모양이 같다.
+
+### H.5 기전과 판정
+
+- 순환:
+  1. sealer가 `execute`를 부르면 CPython은 `sqlite3_step` 동안 GIL을 놓는다. SQLite는 **연결 mutex를 쥔 채** 문장 시작에서 trace 콜백(643줄 `registration_trace`)을 부르고, 콜백은 **GIL을 요구**한다.
+  2. 같은 순간 시험 스레드는 **GIL을 쥔 채** 같은 연결의 SQLite API(결과 열 읽기 등)를 부르고, **연결 mutex**를 기다린다.
+  3. 둘 다 영원히 기다린다. 파일 잠금 대기가 아니라서 `busy_timeout`도 등록 deadline도 끝내지 못한다.
+- 어느 C 호출이 GIL을 쥔 채 mutex를 잡는지는 native stack을 확보하지 못해 CPython·SQLite 동작에서 추정한 것이다. 아래 차등 탐침이 순환 성립 조건을 직접 확인한다.
+- 차등 탐침 `probe_sqlite_inversion.py` `8c4e86e6ca008a78`(실제 `Library`, 추가 부하 없음, 15초 × 5회씩, 정지 20초면 dump 후 종료). worker 스레드가 root mutex 안에서 `PRAGMA busy_timeout`·`SELECT`를 반복하고, main은 같은 연결로 `SELECT`를 반복한다:
+
+  | 변형 | 결과 |
+  | --- | --- |
+  | `plain`: 콜백 없음, main은 mutex 없이(무직렬 동시 사용) | **5/5 무멈춤**. worker 23,555~43,040회, main 39,831~85,175회 |
+  | `trace_locked`: 콜백 있음, main도 root mutex 안 | **5/5 무멈춤**. worker 46,969~71,872회, main 8,762~21,981회 |
+  | `trace`: 콜백 있음 + main은 mutex 없이(R-03과 같은 조건) | **5/5 멈춤**, 모두 첫 5초 안. stack은 worker가 mutex 안 SQLite 호출(41·42줄), main이 직접 읽기(56줄) |
+
+  사전 20초 1회씩도 같은 결과였다. **콜백과 무직렬 사용이 함께 있어야만** 멈춘다.
+- 제품 경로:
+  - `src`에서 Python 콜백 등록(`set_trace_callback`·`set_authorizer`·`set_progress_handler`·`create_function` 등)은 `jobs/__init__.py:716`의 authorizer 하나뿐이다.
+  - 이것은 별도 jobs 연결이고, jobs `_lock`이 잡힌 `_transaction` 안에서 설치·해제된다(정적 확인).
+  - `Library._db`에는 콜백이 없다. 제품의 `Library._db` 사용은 root mutex로 직렬화된다.
+  - 따라서 이 순환은 제품에서 성립하지 않는다.
+- 판정: **시험 결함**이다. 제품 등록·pause ACK·writer 잠금 순서의 교착이 아니다. S1 해당 없음.
+
+### G17R-06 (S2, OPEN) — G17-R-03/R-04가 공유 SQLite 연결의 GIL 교착으로 무기한 멈춘다
+
+- 근거: H.3·H.4·H.5. 원본 호출당 약 3.5%(17/481, 대략 95% 구간 2.2~5.6%)다. 멈추면 끝나지 않는다.
+- 영향:
+  - 전체 회귀 1회에는 R-03·R-04가 각 1회 들어 있다. 이 PC 측정 기준 회귀 1회당 멈춤 확률은 약 7%이고, CI 근사 D만 보면 약 12%다. 표본이 작고 실제 GitHub runner에서는 측정하지 않았다.
+  - CI(`windows-latest`)에는 pytest-timeout도 `faulthandler_timeout`도 없다. 그래서 stack 없이 job `timeout-minutes: 120`까지 소진한 뒤 실패한다.
+  - 로컬 에이전트 회귀는 무기한 멈춘다(관찰 사례).
+  - 재실행하면 대개 통과하므로 우회 가능하다. 다만 통합이 지연되고, 제품 교착으로 오인할 비용이 크다. 그래서 S2로 둔다.
+- 권고(우선순위 순):
+  1. **(필수) 시험 수정.** 둘 다 적용을 권한다.
+     - b. 진입 신호를 trace 콜백 대신 `monkeypatch.setattr(library_module, "_registration_wait", …)`로 얻는다. sealer 스레드 이름으로 거른다. 그러면 공유 연결에서 Python 콜백 자체가 없어진다(검증: D 조건 1,200/1,200). "BUSY 뒤 재시도 대기에 들어감"은 원래 `BEGIN IMMEDIATE` 진입보다 강한 조건이고, 외부 EXCLUSIVE 잠금 아래에서 늘 성립한다.
+     - a. 652·654 읽기를 `with library._mutex:` 안에서 한다. 제품의 직렬화 규율과 같다(검증: C 2,000 + D 1,600 = 3,600/3,600).
+  2. `registration_trace` 도우미 규칙을 명시한다. 이 도우미는 R-01/02, R-05~R-08, R-13/14도 쓴다. 규칙: 콜백이 설치된 동안 다른 스레드가 같은 연결을 쓸 수 있으면, 시험 스레드는 `library._mutex` 없이 `_db`를 쓰지 않는다. 콜백 해제는 작업 스레드 join 뒤에 한다.
+     - 현재 이를 어기는 곳은 652·654 두 곳뿐이다(정적).
+     - R-05/06의 715·717, R-07의 745, R-08의 771-772는 actor join과 "살아 있지 않음" 단언 뒤라 안전하다. R-01/02와 R-13/14에는 작업 중 직접 읽기가 없다. 이 파일의 나머지 직접 읽기(787-841, 1018)는 콜백이 없는 시험이다.
+     - 다른 콜백 시험도 문제없다. test_track_health.py:1664, test_unfinished_recovery.py:962, test_storage.py:513은 단일 스레드다. test_blocked_reason_flow.py:929는 다른 스레드가 다른 연결을 쓴다. test_publication_case_space.py:330은 store별 `_lock`이 있고, 콜백 안 대기도 `release.wait(5)`로 유한하다.
+  3. **(안전망)** pyproject `[tool.pytest.ini_options]`에 `faulthandler_timeout`을 둔다. 값은 가장 느린 시험보다 충분히 크게(예: 600초) 한다. 그러면 다음 멈춤 때 모든 스레드 stack이 CI 로그에 남는다. 이것은 dump만 하고 끝내지는 않는다. 빨리 실패시키려면 시험 step `timeout-minutes`를 평소 소요의 2~3배로 줄이거나 시험별 강제 종료를 도입해야 한다. 강제 종료 방식은 pytest-timeout(의존성 추가 승인 필요)과 conftest `dump_traceback_later(exit=True)`(이번 조사 방식) 중에서 C00이 정한다.
+  4. (낮음) 667줄 finally의 `join_writer()` 무기한 join 앞에 시험 쪽 유한 join과 단언을 두면, 이후 다른 원인의 영구 정지도 finally에서 멈추지 않고 실패로 드러난다.
+- 한계:
+  - native stack(C 수준)은 확보하지 못했다. 설치 금지라 도구가 없었다.
+  - 실제 GitHub runner에서는 측정하지 않았다.
+  - 수정안은 하네스 안 변형으로만 확인했다. 실제 시험 파일 수정본은 작성자 몫이다.
+
+### H.6 정리
+
+- 조사용 CPU 부하·동시 pytest·구동 bash 프로세스를 명령줄 표지(`g17burn`·`g17conc`·`run_watch`·`run_hang`·`run_rest`·`affinity_pytest`)로 찾아 모두 종료했다. 남은 프로세스 0을 확인했다. 다른 세션 프로세스는 건드리지 않았다.
+- 사본 `tests/integration/`에 복사했던 하네스 파일과 TEMP의 조사용 폴더도 지웠다.
+
+## RECHECK 3 (G-P17c)
+
+상태: **RECHECKED — G17R-06 해소, 2026-11-26.**
+- 검토자는 같은 C00 배정 하위 에이전트(Claude)다. 코드는 고치지 않았다. 저장소 쓰기는 이 절 추가뿐이다.
+- probe와 결과는 HANG 조사 하네스를 재사용해 `build/review-trees/g17-hang-probe/`에 있다.
+- RECHECK 2 때 쓴 사본 `g17c`는 `g17c-fix2`로 이름만 옮겨 보존했다. `g17c`에는 대상 tree를 새로 풀었다.
+
+**판정 요약.**
+- **G17R-06은 RECHECKED**다.
+  - 시험 diff가 권고 1(b·a), 2, 4와 안전망 3을 권고대로 구현했다.
+  - R-01/R-02를 비롯한 다른 판정 본문은 바뀌지 않았다.
+- **수정본 3,600/3,600 멈춤 0**이다. 조건별로 부하 C 1,600, CI 근사 1,200, 추가 부하 없음 800이다. 같은 하네스로 돌린 기준본 `5aa988e` 원본은 78회 중 **6회 멈췄다**.
+- 새 진입 신호는 관측 없이 통과하지 않는다. 재시도 없음·hook 우회 변이에서 R-03/R-04가 `entered.wait(5)` 단언으로 실패했다.
+- `faulthandler_timeout = 600`의 오탐 위험은 낮다. 가장 긴 시험이 72.07초다. stack만 남기고 끝내지 않는 한계는 R3.5에 기록한다.
+- **새 OPEN은 0건**이다. S0~S3 모두 없다. 잔여 위험 1건은 기록만 한다(R3.5).
+
+### R3.1 입력
+
+| 항목 | 값 |
+| --- | --- |
+| 대상 | tree `7ffab2d47845858d7423c43183c46717a2aff310` = HEAD `5aa988e` + 3파일. `git diff 5aa988e 7ffab2d4 --stat` = 3파일(115+/7-). 사본 `build/review-trees/g17c`, PYTHONPATH = 사본 src. 부모 import 경로가 사본 src·tests 아래임을 확인했다 |
+| 바뀐 파일 LF SHA256 앞 16자 | test_append_fencing.py `6d3b03e94058e0a9`, pyproject.toml `43a3e900e5a4fd46`, g17-append-durability-cases.md `3055791c6cb2a759`. 제품 코드는 바뀌지 않았다: library.py `df54dcb336db11c4`, chunks.py `e499f0bdd5c7bb8c`, recording.py `2289f5e5cad05e27`(GS-P06 반영본) |
+| 대조·변이 사본 | `g17c-base` = `5aa988e`(시험 `57e116486a8c0d02`). `g17c3-mut` = 대상 tree. 변이 뒤 매번 archive 원본으로 되돌리고 hash를 확인했다 |
+| probe(LF 앞 16자) | `test_zz_hang_watch.py` `6c7f0f68a2a073ea`(HANG 조사 하네스 그대로). `run_watch.sh` `77709ae8406bb886`·`run_watch_ci.sh` `7d84f0868ac9367f`(대상 사본, 출력 파일, 감시 초, 최대 실행 수를 환경변수로 받게 보강). `run_r3.sh` `5769fcdf1f7a9153`, `mutate_r3.py` `607833d50527a09a`, `run_mut_r3.sh` `be92b039329a9b5a`, `run_stuck_r3.sh` `334fa78b2ceface9`, `g17_db_audit.py` `b4e5c3151426c2a4` |
+| 결과 | `r3.jsonl` `fabed2039f121624`, `mut-r3.jsonl` `ec89a143e799585c`, `db-audit.jsonl` `d562092d7aa32808`, `db-audit-base.jsonl` `f3db81c5a29291ab`, `stuck-r3.txt` `396ea0a0cc106281` |
+
+### R3.2 시험 diff 대조(요청 1)
+
+| 권고 | 구현(test_append_fencing.py) | 판단 |
+| --- | --- | --- |
+| 1b 진입 신호 | 648-656: `library_module._registration_wait`를 감싼다. sealer 스레드 이름일 때만 Event를 올리고, 원래 sleep을 부른다 | 권고대로다. 제품에서 이 hook은 BUSY/LOCKED 예외 처리 뒤 `remaining > 0`일 때만 불린다. 위치는 root 밖이다(library.py:1039-1050). 공유 연결에 Python 콜백을 더 설치하지 않는다 |
+| 1a 652·654 | 665-670: 두 읽기를 `with library._mutex:` 안에서 한다 | 권고대로다 |
+| 4 finally 유한 join | 681-692: gate 아래에서 수락을 멈추고 queue를 닫는다. worker·sealer를 합계 30초 안에 join한다. 살아 있으면 단언 실패로 끝내고, 그 뒤 `join_writer()`를 부른다. `set_trace_callback(None)`은 설치가 없어져 제거됐다 | 권고대로다. 한계는 R3.5 |
+| 2 도우미 규칙 | 493-497: `registration_trace` docstring. 콜백이 설치된 동안 동시 읽기는 mutex 소유, 해제는 actor 종료 ACK 뒤, BUSY 관측에는 재시도 hook 권장 | 권고대로다. 현 사용처 준수는 R3.4 감사로 확인했다 |
+| 3 안전망 | pyproject `[tool.pytest.ini_options]`에 `faulthandler_timeout = 600` 한 줄 | 권고대로다. R3.5 |
+
+- **약화 없음.**
+  - diff hunk는 `registration_trace` docstring(+5)과 R-03/R-04 본문뿐이다.
+  - R-01/R-02 본문은 diff가 0이다. 다음 판정이 그대로 남는다: 외부 잠금 중 sealer root 보유 < 0.5초, 등록 시도 관측(`attempts_in_lock`), 수락 = 저장 보존, 건강 정확/미상 분기, G17R-05 `any` 판정.
+  - R-05~R-14 본문도 diff가 0이다.
+  - R-03/R-04 단언은 모두 유지된다: `WRITER_ACK_PENDING`, worker·활성 writer 유지, chunks 0, health `OPEN`, `storage_failed` False, 해제 뒤 `PAUSED`, 청크 수 = 트랙 수, worker 종료, health `CLOSED`.
+- 새 사본에서 파일 전체를 단독 실행했다: **173 passed, 44.50초**. ruff check와 format --check도 PASS다.
+- G17R-05(S3, OPEN)는 C00 결정대로 G-P17b 후속이다. 이번 단위에서 바뀌지 않았다.
+
+### R3.3 반복(요청 2)
+
+- 하네스와 감시 방식은 HANG 조사와 같다. 시험마다 시간을 넘기면 모든 스레드 stack을 남기고 그 프로세스를 끝낸다.
+- 수정본은 감시를 60초로 했다. 시험 finally의 30초 유한 join과 구분하기 위해서다.
+- 실행 시작 시 CPU는 33~97%였다. 다른 세션 작업이 함께 돌았다.
+
+| 조건 | 대상 | 시작한 호출 | 멈춤 |
+| --- | --- | ---: | ---: |
+| C: CPU 부하 16 + 동시 pytest | 수정본 `7ffab2d4` | 1,600 | **0** |
+| D: CI 근사(논리 CPU 4개 고정 + coverage) | 수정본 | 1,200 | **0** |
+| N: 추가 부하 없음 | 수정본 | 800 | **0** |
+| **수정본 합계** | | **3,600** | **0** |
+| D | 기준본 `5aa988e` 원본 | 33 | 3 |
+| N | 기준본 원본 | 45 | 3 |
+
+- 기준본 dump 6건은 HANG 조사와 같은 모양이다.
+  - sealer는 등록 시도 안에서 공유 연결로 SQLite를 호출하던 중이다. 위치는 library.py:1032, 1033, 1037, `_check_version` :402, `_transaction` :410이다.
+  - main은 test_append_fencing.py:652 또는 :654다.
+- HANG 조사의 원본 비율(3.5%)이 수정본에도 그대로라면 3,600회에서 멈춤 0이 나올 확률은 약 e^-128이다.
+
+### R3.4 등록 시도 관측(요청 3)
+
+- 변이(`g17c3-mut`, R-03/R-04, Mδ'는 R-01/R-02 포함):
+
+  | 변이 | 내용 | 결과 |
+  | --- | --- | --- |
+  | Mα | BUSY를 재시도하지 않고 바로 raise | **2 failed**: `entered.wait(5)` False |
+  | Mβ | 재시도는 하되 hook을 우회(`time.sleep` 직접 호출) | **2 failed**: `entered.wait(5)` False |
+  | Mδ | 첫 시도 전에 hook을 한 번 부름(무해) | 2 passed |
+  | Mδ' | Mδ + root 안에서 SQLite busy 대기(G-P17a 회귀 모양) | **4 failed**: R-03/R-04는 `storage_failed`, R-01/R-02는 root 보유 2.16초·2.14초 > 0.5초 |
+  | M-ack | worker가 살아 있어도 pause ACK | **2 failed**: `WRITER_ACK_PENDING` 대신 `database is locked` |
+
+- **관측이 없으면 시험이 실패한다.** 무관측을 증명으로 쓰지 않는다.
+- 신호의 의미는 "sealer가 root 밖 재시도 대기에 도달함"이다. 제품 구조상 이것은 BUSY를 받은 시도 뒤에만 일어난다.
+  - Mδ처럼 hook이 시도 앞으로 옮겨지면 신호만 약해진다. 그래도 R-03이 거짓을 받아들이지는 않는다.
+  - 해로운 변형(Mδ')은 R-03과 R-01/R-02가 잡는다. 결함이 아니다.
+- 공유 연결 감사(`g17_db_audit.py`): pytest plugin이 `registration_trace`가 설치한 연결을 감싼다. 호출마다 호출 스레드의 `library._mutex` 소유 여부, 콜백 설치 여부, 살아 있는 worker·actor를 기록한다.
+  - 남은 사용처 8개 node(R-01/02, R-05~R-08, R-13/14)를 각 3회 돌렸다. **콜백 설치 중 무직렬 동시 사용은 0건**이다. 전체 호출 23,432회 중 mutex 없는 호출 48회는 모두 다른 worker·actor 스레드가 없을 때이거나 콜백 해제 뒤였다.
+  - 민감도 대조: 같은 plugin으로 기준본 R-03/R-04를 돌리면 652·654 두 읽기가 시험마다 2건씩 잡힌다.
+
+### R3.5 `faulthandler_timeout = 600`(요청 4)
+
+- 동작(pytest 9.2.0 `_pytest/faulthandler.py`):
+  - 시험마다 setup부터 teardown까지 `dump_traceback_later(600, file=<stderr 복제>, exit=faulthandler_exit_on_timeout)`를 건다. `faulthandler_exit_on_timeout`의 기본값은 False다.
+  - 끝나면 취소한다. 실패가 보고되면 `pytest_exception_interact`에서도 취소한다.
+  - 즉 stack 출력만 하고, 시험을 실패·통과시키거나 프로세스를 끝내지 않는다.
+- 오탐 위험은 낮다.
+  - 작성자 전체 회귀 `full.xml`(28,536건)에서 가장 긴 시험은 72.07초(`G04-F3-PERF-finalize-900`)다. 그다음은 57.67초와 48.40초다.
+  - 60초 이상은 1건, 120초 이상은 0건이다. 600초는 8.3배 여유다.
+  - `full.log`의 `Timeout (` 출력은 0건이다.
+  - 넘더라도 로그 잡음일 뿐 판정은 바뀌지 않는다.
+- 간섭도 없다.
+  - 시험·src·scripts·CI에 faulthandler, pytester, stderr fd 검사를 쓰는 곳이 없다.
+  - 스레드 검사는 `threading.enumerate` 이름 기반이다(test_seal_mutex.py:1357). faulthandler 감시 스레드는 C 스레드라 여기에 보이지 않는다.
+- **잔여 위험(기록, OPEN 아님).** 가상의 영구 정지 변이 두 개로 확인했다(R-03, `-o faulthandler_timeout=60`으로 단축):
+  - `S_root`: sealer가 root를 쥔 채 영구 정지한다.
+    - 30초 유한 join 단언이 나온 뒤 `with Library` 종료의 `close()`가 `self._mutex`(원본 library.py:3028)에서 무기한 대기한다.
+    - 60초 dump에 세 스레드가 남았다: sealer가 등록 시도 안 삽입 대기에서 정지, consumer가 `_health_authority`에서 root 대기, main이 close.
+    - 프로세스는 180초에 강제 종료할 때까지 남았다.
+  - `S_free`: sealer가 잠금 없이 영구 정지한다.
+    - 35초에 "capture worker exceeded the finite cleanup deadline"으로 **실패가 출력된다**(`1 failed`).
+    - 그러나 `recoryn-writer`·`recoryn-sealer`가 non-daemon이라(recording.py:265-273) 인터프리터 종료가 기다린다. 이미 타이머가 취소돼 dump도 없다. 180초에 강제 종료할 때까지 남았다.
+  - 둘 다 미래 제품 결함을 가정한 경우다. G-P17c가 만든 위험이 아니다. 오히려 증거(stack)와 가시 실패를 늘렸다.
+  - 다만 CI가 120분까지 기다리는 구조는 남는다. 선택지는 C00이 정한다:
+    - pytest 9.2 내장 ini `faulthandler_exit_on_timeout = true`. 의존성 추가가 없고, 시험 안 멈춤(S_root·원래 R-03형)을 600초에 끝낸다. 대가는 전체 실행과 coverage 보고를 잃는 것이다.
+    - 시험 step `timeout-minutes` 단축. 종료 대기형(S_free)에는 이것만 일반적으로 듣는다.
+
+### R3.6 정리
+
+- 조사용 CPU 부하, 동시 pytest, 구동 bash, 변이 pytest 프로세스를 모두 종료했다. 남은 프로세스 0을 확인했다. 다른 세션 프로세스는 건드리지 않았다.
+- 사본에 복사한 하네스 파일과 TEMP 조사 폴더를 지웠다.
+- 변이 사본의 library.py는 원본 `df54dcb336db11c4`, recording.py는 `2289f5e5cad05e27`로 되돌렸다.
