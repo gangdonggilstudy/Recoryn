@@ -106,6 +106,8 @@ class ContentPanel(QWidget):
         self._edit_pending = False
         self._unsaved_edit = False
         self._browsed_summary: str | None = None
+        self._summary_focus_held = False
+        self._selected_summary_id: str | None = None
         self._candidate_snapshot: SummarySelectionExpectation | None = None
         self._confirming = False
         self.announcer = a11y.Announcer()
@@ -300,6 +302,8 @@ class ContentPanel(QWidget):
         if not same_session:
             self.view_generation += 1
             self._browsed_summary = None
+            self._summary_focus_held = False
+            self._selected_summary_id = None
             self._rendered_summary = None
             self.announcer.advance("content")
         viewed = self.revision if same_session else None
@@ -349,11 +353,16 @@ class ContentPanel(QWidget):
             self._note_active(kept=True)
             return  # a confirmation is open: keep what the user is deciding on
         state = self.store.selection_state(session_id)
+        self._selected_summary_id = state["summary_id"]
         if candidates is None:
             candidates = self.store.list_revisions(session_id, "summary")
         identifiers = {item["revision_id"] for item in candidates}
+        if self._summary_focus_held and not self._focus_in_summary():
+            self._browsed_summary = None
+            self._summary_focus_held = False
         if self._browsed_summary not in identifiers:
             self._browsed_summary = None
+            self._summary_focus_held = False
         if (
             self._browsed_summary is None
             and self._shown_summary in identifiers
@@ -363,6 +372,7 @@ class ContentPanel(QWidget):
             # A keyboard/screen-reader user is reading this summary: keep it on screen
             # (and its focused link) and only announce the new active one (G12R-03).
             self._browsed_summary = self._shown_summary
+            self._summary_focus_held = True
         snapshot = self._candidate_snapshot
         if self._browsed_summary is None or snapshot is None or snapshot.session_id != session_id:
             snapshot = SummarySelectionExpectation.from_state(state)
@@ -450,19 +460,39 @@ class ContentPanel(QWidget):
     def _candidate_changed(self, index: int) -> None:
         if self._loading or index < 0 or self.session_id is None:
             return
-        self._browsed_summary = self.summary_candidates.itemData(index)
-        if self._active_moved:
-            # The user moved on to another candidate: present the current selection.
-            self._candidate_snapshot = SummarySelectionExpectation.from_state(
-                self.store.selection_state(self.session_id)
-            )
-            self._active_moved = False
+        target = self.summary_candidates.itemData(index)
         try:
-            summary = self.store.summary(self._browsed_summary)
+            state = self.store.selection_state(self.session_id)
+            snapshot = self._candidate_snapshot
+            if self._active_moved:
+                # A deliberate new browse presents the current selection again.
+                snapshot = SummarySelectionExpectation.from_state(state)
+            summary = self.store.summary(target)
         except (KeyError, StateConflict, ValidationError):
-            self._show_candidate(None)
+            previous = self.summary_candidates.blockSignals(True)
+            self.summary_candidates.setCurrentIndex(
+                self.summary_candidates.findData(self._shown_summary)
+            )
+            self.summary_candidates.blockSignals(previous)
+            self._candidate_unavailable()
             return
+        self._browsed_summary = target
+        self._summary_focus_held = False
+        self._selected_summary_id = state["summary_id"]
+        self._candidate_snapshot = snapshot
+        self._active_moved = False
         self._show_candidate(summary)
+
+    def _candidate_unavailable(self) -> None:
+        message = "세션 삭제 진행 중이거나 요약을 읽을 수 없어 선택할 수 없습니다."
+        self.candidate_info.setText(message)
+        self.announcer.announce(
+            "content",
+            self.candidate_info,
+            "SELECTION_CONFLICT",
+            message,
+            version=("selection-unavailable", self.session_id, self.view_generation),
+        )
 
     def _show_candidate(self, summary: dict[str, Any] | None) -> None:
         snapshot = self._candidate_snapshot
@@ -470,7 +500,7 @@ class ContentPanel(QWidget):
             summary is not None
             and bool(summary.get("complete"))
             and snapshot is not None
-            and summary["revision_id"] != snapshot.summary_id
+            and summary["revision_id"] != self._selected_summary_id
         )
         self.select_summary_button.setEnabled(selectable)
         if summary is None:
@@ -483,7 +513,7 @@ class ContentPanel(QWidget):
             self.candidate_info.setText(
                 "부분 결과 — 열람·근거 확인만 할 수 있고 전체 요약으로 선택할 수 없습니다."
             )
-        elif snapshot is not None and summary["revision_id"] == snapshot.summary_id:
+        elif snapshot is not None and summary["revision_id"] == self._selected_summary_id:
             self.candidate_info.setText(
                 "선택된 요약입니다."
                 + ("" if summary_is_current(summary, snapshot) else " 이전 전사·설정 기준입니다.")
@@ -494,6 +524,11 @@ class ContentPanel(QWidget):
             )
         else:
             self.candidate_info.setText("현재 전사·요청 설정의 후보입니다.")
+        if self._summary_focus_held and summary is not None:
+            if summary["revision_id"] != self._selected_summary_id:
+                self.candidate_info.setText(
+                    "지금 보던 요약 · 선택 요약 아님 · " + self.candidate_info.text()
+                )
         if self._active_moved and self._browsed_summary is not None:
             self.candidate_info.setText(
                 self.candidate_info.text()
@@ -513,6 +548,7 @@ class ContentPanel(QWidget):
         try:
             summary = self.store.summary(target)
         except (KeyError, StateConflict, ValidationError):
+            self._candidate_unavailable()
             return
         if not summary.get("complete"):
             return
@@ -563,6 +599,7 @@ class ContentPanel(QWidget):
                     version=("conflict", target, snapshot),
                 )
             self._browsed_summary = None
+            self._summary_focus_held = False
             self._refresh_candidates()
             focus.restore(self.summary_candidates)
 

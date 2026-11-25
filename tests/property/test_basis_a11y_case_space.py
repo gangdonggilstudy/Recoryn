@@ -43,6 +43,7 @@ FAMILIES = {
     "Z": ("G12-Z-{:02}", 2 * 2 * 2),
     # FIX1: the independent review's counterexamples and untested rules (G12R-01..09).
     "X": ("G12-X-{:02}", 16),
+    "Y": ("G12-Y-{:02}", 3 * 2 * 3 + 2 * 3 + 3 * 3),
 }
 _serial = count(1)
 
@@ -78,14 +79,15 @@ def declared() -> list[str]:
         *_parametrized(ui.test_z_no_claims_partial_and_legacy_never_read_as_verified),
         *_parametrized(ui.test_t_ui_boundaries),
         *_parametrized(ui.test_x_fix1_rows),
+        *_parametrized(ui.test_y_followup_rows),
     ]
     return nodes
 
 
 def test_full_amended_denominator() -> None:
     every = [case for family in FAMILIES for case in ids(family)]
-    assert len(every) == len(set(every)) == 2_522
-    assert sum(size for _, size in FAMILIES.values()) == 2_232 + 96 + 144 + 32 + 2 + 16
+    assert len(every) == len(set(every)) == 2_555
+    assert sum(size for _, size in FAMILIES.values()) == 2_232 + 96 + 144 + 32 + 2 + 16 + 33
 
 
 def test_every_id_is_claimed_exactly_once() -> None:
@@ -112,6 +114,7 @@ def test_family_tuples_match_their_ids_and_axes() -> None:
         (ui.C, ui.C_IDS),
         (ui.R, ui.R_IDS),
         (ui.Z, ui.Z_IDS),
+        (ui.Y, ui.Y_IDS),
     )
     for rows, names in pairs:
         assert len(rows) == len(set(rows)) == len(names) == len(set(names))
@@ -121,6 +124,7 @@ def test_family_tuples_match_their_ids_and_axes() -> None:
     assert {"clock_reset", "legacy_adoption", "unknown_retry"} <= set(ui.F_MODALS)
     assert {"continue", "settings_nav"} <= set(ui.K_WIDGETS)
     assert {"BLOCKED", "BACKOFF", "ABANDONED", "FAILED"} <= set(ui.N_STATES)
+    assert (len(ui.Y_F), len(ui.Y_B), len(ui.Y_D)) == (18, 6, 9)
 
 
 # --- the announcement state model ---------------------------------------------------

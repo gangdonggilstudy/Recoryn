@@ -640,3 +640,250 @@ mutation은 원문 24개를 유지하고 다음 4개를 더해 **28개**를 요�
 - 원 전사 자체가 행 hash까지 다시 계산되어 변조된 경우, 전사 보기는 그 내용을 그대로 보인다. 요약 근거는 hash 불일치로 확인 불가가 되지만, 외부 기준점이 없는 전사 보기 무결성은 G12 범위 밖이다
 - 검토 §6의 완료 삭제 journal 비용은 C00 결정대로 GS-P02로 넘긴다
 - 실제 Narrator 발화는 외부 게이트다
+
+## §G-P12b 범위(b6da7e0 기준)
+
+작성자는 w5:p9 Codex이며 w5:p7 리드가 구현을 배정했다. 독립 검증·검토와
+C00의 통합은 별도다. 이 절 앞의 LF SHA-256은
+`144fc42f496ba758f52b48203936e38e6bb917acce7a2855696e6140b8ed7215`이며 바꾸지 않는다.
+근거는 독립 검토 재확인 1의 G12R-10 및 R1.5 G1이다.
+
+### 결정과 쓰기 범위
+
+- 현재 저장된 선택 ID로 선택됨과 버튼 활성 여부를 판단한다. 초점 때문에
+  유지한 완전 요약이 현재 선택이 아니면 “지금 보던 요약 · 선택 요약 아님”으로
+  표시하고 선택을 허용한다. 쓰기에는 기존 제시 snapshot을 사용하므로 충돌을
+  알리고 재조회·재확인한다. 부분 결과는 계속 선택 불가다.
+- 초점 유지와 사용자 직접 열람을 구분한다. 초점이 두 영역·후보 목록을 떠나면
+  다음 poll에서 초점 유지만 풀고 현재 active 및 snapshot을 다시 잡는다.
+  사용자가 직접 고른 열람은 초점과 무관하게 유지한다.
+- 선택 또는 후보 전환의 읽기가 거부되면 기존 화면·열람·snapshot을 보존하고,
+  “세션 삭제 진행 중이거나 요약을 읽을 수 없어 선택할 수 없음”을 안내한다.
+  기존 `SELECTION_CONFLICT`를 assertive로 한 번 알린다. 선택 대상의 유효성이
+  변경되어 재조회가 필요하다는 같은 종류의 알림이며 새 Job/정책 사유는 아니다.
+  같은 세션·화면에서 반복된 같은 거부는 다시 알리지 않고 쓰기·재생은 0이다.
+- `_candidate_changed`는 snapshot과 요약 읽기를 함께 try 안에서 끝낸 뒤에만
+  화면 상태를 반영한다. 거부 시 콤보도 이전 열람으로 되돌려 Qt slot 밖 예외와
+  서로 다른 콤보·본문 표시를 막는다.
+- 쓰기는 `src/recoryn/ui/content.py`, `tests/ui/test_basis_a11y_ui.py`,
+  `tests/property/test_basis_a11y_case_space.py`, 이 문서의 끝 추가만 허용된다.
+
+### 새 family·손 oracle·분모
+
+유한 대표 집합의 모든 조합을 실행한다. 기존 2,522행은 유지하고 Y 33행을 더해
+**2,555행**이다. 거부 입력을 분모에서 빼지 않는다. 기대값 계산에 제품 함수를
+사용하지 않는다. 실제 키 press/release, 창 단위 focus child, 실제 SQLite를 쓰고
+외부 제공자·재생기·background operation seam만 기존 helper로 대체한다.
+
+| ID | 축·행 수 | 손 oracle |
+| --- | --- | --- |
+| G12-Y-01~18 | 초점 {전사 참조 영역, 검토 영역, 후보 목록} × 완전/부분 × 다음 동작 {초점 유지 poll, 초점 이탈 poll, 선택 키} = 18 | 유지 중 이전 본문·링크/초점 보존, 선택됨 거짓 표시 0, 완전만 버튼 활성. 이탈 뒤 새 active·새 snapshot, 사용자 쓰기 0. 유지 완전 선택은 옛 snapshot 충돌·기존 active 보존·알림 1회, 부분은 모달·쓰기 0 |
+| G12-Y-19~24 | 사용자 직접 열람 × 초점 {영역 안, 영역 밖} × 선택 변화 {없음, 다른 ID, ABA} = 6 | 키로 고른 본문은 유지하고 제시 snapshot도 불변, 열람/poll 쓰기 0. 현재 선택 표시와 버튼은 현재 DB 선택에 일치 |
+| G12-Y-25~33 | 거부 지점 {선택 전 요약 읽기, 후보 전환 snapshot 읽기, 후보 전환 요약 읽기} × 오류 {실제 삭제 의도 StateConflict, KeyError, ValidationError} = 9 | slot 밖 예외 0, 이전 본문·콤보·열람·snapshot 보존, 안전 안내·assertive 1회(반복 거부도 1회), operation·DB 쓰기·seek 0 |
+
+삭제 의도 행은 실제 session-bound 실행 Job으로 삭제를 보류한 임시 세션이다.
+KeyError/ValidationError 행은 해당 읽기 seam에만 예외를 주입한다. 각 행의
+조회 전후 SQLite 변경 누계와 선택 state·revision bytes를 비교한다. 사건 순서는
+초점/열람 → 다른 연결 선택 → poll → 이탈/선택/거부로 고정하며 무한 GUI 이력의
+전수 증명으로 확대하지 않는다.
+
+### mutation·필수 게이트
+
+새 변이 B01~B10은 각 TEMP 사본에 하나만 적용한다: B01 선택됨을 옛 snapshot으로,
+B02 버튼 활성을 옛 snapshot으로, B03 초점 유지 해제 제거, B04 사용자 열람도
+초점 이탈 때 해제, B05 초점 유지 중 snapshot 재캡처, B06 선택 전 읽기 거부 안내
+제거, B07 거부 알림 제거, B08 후보 snapshot 읽기를 try 밖으로, B09 전환 거부 시
+이전 열람/콤보 복귀 제거, B10 초점 해제 뒤 snapshot 갱신 제거. 각 변이는 위 Y행의
+사용자 결과 assertion으로 검출해야 한다. 기존 M29~M44 중 수정 경로와 닿는
+초점 유지·열람 snapshot·새 active 알림 변이도 재적용한다.
+
+검증은 `git archive b6da7e0` + 위 4파일만 반영한 OS TEMP 사본에서 한다.
+cwd/rootdir·PYTHONPATH 및 import 출처를 사본으로 고정하고 cacheprovider 비활성,
+고유 OS TEMP basetemp, offscreen, ResourceWarning 오류화를 적용한다. 기존 신규
+4시험 파일 합계 60초, 2,555 ID 누락·중복·초과 0, 지정 관련 회귀, 변이 목표
+assertion 실패, core.yml의 정적 검사·전체 coverage·묶음 예산을 보고한다.
+실제 Narrator·장비·모델·네트워크는 실행하지 않는다.
+
+## §구현 결과(G-P12b, b6da7e0 기준)
+
+### 기준·변경·시험 구성
+
+- 시작 HEAD는 `b6da7e0`이고 배정 4파일의 diff는 0이었다. 시작 LF SHA-256은
+  content.py `a486b6dcf48188f54b00d8ecd63e8bf829decaf8587f001770bca6b8a687fa05`,
+  UI 시험 `8bd2c129ef30f13d34bb794c5a15db89472c04fffd45e840cde14bfce518c173`,
+  property 시험 `7f7a7f7a0fd9816322d14fd7a7dd17689e8bd44e43cf5bbe67799ad96bd9d6d1`,
+  문서 `144fc42f496ba758f52b48203936e38e6bb917acce7a2855696e6140b8ed7215`다.
+- `content.py`만 제품 변경이다. 현재 읽은 선택 ID는 표시/버튼에 쓰고, 제시
+  snapshot은 선택 CAS용으로 보존한다. `_summary_focus_held`는 직접 후보 열람과
+  구별하며 초점 이탈 poll에서만 자동 추종으로 돌아간다. 후보 전환의 두 읽기가
+  모두 성공하기 전에는 열람 상태를 바꾸지 않는다. 거부 시 이전 콤보로 돌아가고
+  본문·snapshot은 그대로며 안전 안내와 기존 SELECTION_CONFLICT 알림을 낸다.
+- Y 33행은 기존 `_x_world`, `k_panel`, `Sink`, `Modals`, 실제 키 입력 및 창의
+  focus child를 사용한다. 부분 요약 축은 선택된 기존 body를 complete=false로
+  만든 손상/legacy fixture다. 정상 제품 경로가 부분 요약을 선택한다고 주장하지
+  않으며 이 저장 상태에서도 선택이 차단되는지를 확인한다.
+- 읽기 거부의 실제 삭제 의도 행은 실행 Job 때문에 DELETE_PENDING으로 남긴다.
+  snapshot 거부가 먼저면 요약 읽기 전에 거부된다. 별도 KeyError/ValidationError
+  행은 각 읽기를 지정해 실패시킨다. 전환이 실패한 뒤 두 번째 키를 보내도 콤보와
+  본문이 일치하고, 같은 거부 알림은 1회다. operation 호출·seek 및 SQLite 연결의
+  변경 누계, 선택 행·revision body/hash는 전후 동일하다.
+- 기존 시험 기대값은 바꾸지 않았다. property 감사의 분모에 Y를 더했고 기존
+  2,522 ID를 유지했다. 제품 함수를 기대값 계산에 사용하지 않았다.
+
+### 격리 실행과 완료된 결과
+
+환경은 Windows 11 10.0.26300, Python 3.13.1, PySide6 6.12.0, pytest 9.2.0,
+Hypothesis 6.170.15다. 모든 실행은 `git archive b6da7e0` + 배정 4파일의 새
+OS TEMP 사본이다. 공통 옵션은 `-p no:cacheprovider -W error::ResourceWarning`,
+고유 OS TEMP `--basetemp`, offscreen, bytecode 비활성, 사본 src의 PYTHONPATH다.
+cwd/rootdir도 사본이며 parent 및 별도 spawn child의 import 출처를 확인했다.
+시험·제품 코드는 이후 변경하지 않았다.
+
+| 실행 | 실제 결과 |
+| --- | --- |
+| X 16 + Y 33 선택 실행 | 49 PASS, 3.57초 |
+| 기존 신규 4시험 파일 첫 전체 실행 | 1,802 PASS, **71.42초로 60초 초과**. Y 33은 1.69초, C 17.28초·P 16.96초·D 9.62초. 초과를 보고한 뒤 아래 기준 비교를 했다 |
+| 기준 제품 코드 비교 | `b6da7e0`의 content.py + 현재 시험, Y만 제외한 기존 1,769 PASS, 52.70초. C 9.58초·P 14.17초·D 5.40초. 이번에 수정하지 않은 통합 D도 최초 측정에서 느렸으므로 실행 환경 비용이 섞였다 |
+| 변경 없이 같은 조건으로 재측정 | **1,802 PASS, 49.56초**. 행/fixture/assertion 축약·제품 변경 없음. 최초 초과 기록은 유지하며 부하 중 60초 SLA로 확대하지 않는다 |
+| case ID 감사 | **2,555행**, 누락·중복·초과 0. Y=18+6+9, X=16 및 기존 모든 family 유지 |
+| 지정 관련 회귀 | `tests/ui tests/integration/test_ai_independent.py tests/e2e tests/unit/test_content.py`: **2,939 PASS, 175.81초**. 실패·skip 0 |
+| 정적 검사 | 전체 src/tests/scripts/packaging Ruff·format, `MYPYPATH=src` mypy src/recoryn/scripts/packaging PASS. 전체 회귀와 동일한 코드·시험 사본 |
+
+첫 X/Y 실행의 새 Y 6실패는 비활성 선택 버튼을 경유한 시험 초점 설정이 원인이다.
+후보 목록에 직접 초점을 두고 하나뿐인 초기 항목에 실제 방향키를 보내도록 고쳤다.
+기존 X 행의 실패나 제품 기대값 변경은 없었다. 이후의 정상·변이·CI 실행은 모두
+이 시험 수정과 format 뒤의 같은 코드·시험 hash다.
+
+### mutation
+
+정상 X/Y 49 PASS 뒤 새 B01~B10과 기존 M29~M44 **26/26 검출**, survived/invalid 0이다.
+기존 요청 범위보다 넓게 FIX1의 16개를 모두 재적용했다. 사본마다 변이는 하나이며
+import 출처·변이 전후 source hash·실패 node·로그를 남겼다. XML의 목표 실패가
+AssertionError/pytest assertion 또는 DID NOT RAISE인지 별도 감사했다. 수집·import·
+setup 오류는 0이고 각 mutant exit는 1이다. workspace에는 변이를 적용하지 않았다.
+
+| 변이 | 실패 node 수 | 주요 목표 |
+| --- | ---: | --- |
+| B01 / B02 | 9 / 9 | Y 유지 완전 요약의 사실 표시 / 버튼 활성 |
+| B03 / B04 | 6 / 4 | Y 초점 이탈 자동 추종 / 사용자 열람 유지(후자는 X07도 검출) |
+| B05 | 18 | Y 초점 유지 snapshot 불변 |
+| B06 / B07 | 3 / 9 | Y 선택 거부 안내 / 거부 알림 1회 |
+| B08 / B09 | 4 / 6 | Y snapshot slot 거부 / 콤보 복귀(B08은 X 경로도 검출) |
+| B10 | 6 | Y 초점 이탈 뒤 새 snapshot |
+| M29~M36 | 4 / 1 / 20 / 23 / 1 / 1 / 1 / 1 | 각각 X01~04 / X02 / X05~06 / X07 / X03 / X14 / X15 / X16 |
+| M37~M44 | 4 / 1 / 1 / 1 / 1 / 4 / 1 / 1 | 각각 X07 / X12 / X13 / X11 / X10 / X09 / X08 / X04 |
+
+### 원 반례 재적용
+
+`probe_fix1.py`와 `probe_combo_intent.py`를 원본 그대로 TEMP에 복사하고,
+기준 제품 코드와 수정 제품 코드 각각에 재적용했다. PYTHONPATH는 각 사본 src다.
+첫 실행은 stdout의 cp949 인코딩 때문에 JSON 출력 단계에서만 실패했다. 스크립트를
+고치지 않고 `PYTHONIOENCODING=utf-8`로 다시 실행해 양쪽 모두 exit 0이었다.
+
+- C: 초점 링크·FIRST 본문 보존은 그대로다. FIRST의 안내는 “선택 요약 아님”이고
+  완전 요약의 버튼은 활성이다. 초점 이탈 뒤에는 기존 FIRST 대신 새 THIRD를
+  표시하며 snapshot도 새 선택을 읽는다. 선택되지 않은 요약을 선택됨으로 쓰지 않는다.
+- G1: 선택 읽기 거부에 안전 안내가 생겼고 seek 0, DELETE_PENDING→DELETED_LOCAL
+  처리는 유지된다. 직접 `load()` 호출이 삭제 의도 StateConflict로 거부되는 것은
+  기준과 동일한 기존 동작이며 이 배정에서 바꾸지 않았다.
+- combo intent: 기준의 slot_errors=[StateConflict]가 **[]**로 바뀌고, 거부된 TWO가
+  아닌 기존 ONE 본문·콤보를 유지한다. Y 거부 행은 이 경로의 알림 1회·쓰기 0도 본다.
+- G2 세션 왕복 뒤 새 snapshot, G3 확인 중 새 active 알림→충돌 및 기존 active 보존은
+  그대로다.
+
+### 증거 위치·한계
+
+TEMP 도구·보고 root는
+`C:/Users/gangd/AppData/Local/Temp/recoryn-g12b-tools-vegy7_0i/`다.
+원 리드 도구는 수정하지 않고 복사본의 BASE와 4파일 scope만 바꿔 사용했다.
+`run.py new`, `run.py related`, `mutations.py D:/project/Recoryn`, `probes.py`,
+`g12_ci.py D:/project/Recoryn`이 정확한 명령·선택·환경을 보존한다.
+`initial.json`, `environment.json`, `mutations.json`, `assertion-audit.json`,
+`probes.json`, `ci-input-map.json`, `child-import.txt`가 hash·node·로그를 연결한다.
+신규 최종 사본은 `recoryn-g12-new-6e910f75b73c41cc9d85b1b8b56b6ddb`,
+관련 사본은 `recoryn-g12-related-e6e747fcb51c407185b6c0212dbfa852`다(둘 다 OS TEMP).
+
+실제 Narrator·IME·장비·음성·GPU·모델·외부 제공자·유료 호출은 NOT_RUN이다.
+유한 Y 행과 기존 property bound 밖 GUI 이력은 증명하지 않는다. 작성자 자체
+검증이며 독립 검토나 C00의 최종 종결을 대신하지 않는다. CI 전체 coverage와
+묶음 예산의 최종 결과는 실행이 끝난 뒤 아래에 추가한다.
+
+### CI core 동등 최종 결과·입력 동결
+
+사본은 OS TEMP의 `recoryn-g12-ci-0277130c46e2413294383ddc9ee6feec`다.
+소유 범위 밖의 작업 트리 변경은 반영하지 않았다. archive의 추적 파일 전체와
+4파일 overlay **385개**를 실행 전후 LF 정규화로 비교해 차이 0이다. 정렬된
+상대 경로→LF SHA-256 map을 compact JSON으로 직렬화한 tree SHA-256은
+`c5165e15fb5ddb7fd93863ce9c7eadbab426e895cc3c7e0288cb70a73e73a7e8`이다.
+문서는 범위 절을 추가한 판이며 이후 구현 결과 추가만 다르다. 코드·시험 3파일은
+실행 전후와 최종 workspace가 모두 같다. 기존 문서 78,695바이트(LF)의 hash는
+시작 값 `144fc42f…7215`와 같고 그대로 prefix로 남아 있다.
+
+| CI 단계 | 실제 결과 |
+| --- | --- |
+| Ruff check src tests scripts packaging | PASS |
+| Ruff format --check, 같은 범위 | PASS, 200파일 |
+| MYPYPATH=src mypy src/recoryn scripts packaging | PASS, 92 source파일 |
+| 전체 pytest, branch coverage·fail-under=85 | **24,689 PASS, 1,801.20초**, failures/errors/skipped 0, 총 결합 coverage 92.54% |
+| scripts/check_coverage.py | 아래 7묶음 모두 PASS |
+
+| 묶음 | line % | branch % |
+| --- | ---: | ---: |
+| domain | 99.18 | 97.89 |
+| capture | 99.85 | 98.57 |
+| jobs | 99.19 | 95.61 |
+| storage | 95.95 | 91.41 |
+| security | 98.11 | 94.43 |
+| content | 98.98 | 99.02 |
+| all | **93.90 (14,742/15,700)** | **88.56 (4,761/5,376)** |
+
+핵심 6묶음은 line 95/branch 90, all은 85/80 기준이다. `ui/content.py`는
+line 560/591, branch 154/178이며 결합 표시는 93%다. coverage의 결합 값과
+분리된 line/branch를 혼동하지 않는다.
+
+실제 cwd는 위 사본이고 실행 명령은 다음과 같다(`python`은 저장소의 기존
+`.venv/Scripts/python.exe`). mypy/ruff cache를 사본에 제한한 옵션 외 검사·pytest
+flag는 core.yml과 같다. 설치 금지에 따라 의존성 설치 단계는 실행하지 않았다.
+
+```text
+python -m ruff check --no-cache src tests scripts packaging
+python -m ruff format --no-cache --check src tests scripts packaging
+MYPYPATH=src python -m mypy --no-incremental --cache-dir <사본>/.mypy src/recoryn scripts packaging
+python -m pytest -q -p no:cacheprovider -W error::ResourceWarning --basetemp <사본>/bt --cov=recoryn --cov-branch --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=85 --junitxml <사본>/ci-junit.xml
+python scripts/check_coverage.py coverage.json
+```
+
+추가 wheel 검사는 기존 설치 환경만 사용했다. 첫 실행은 pip 기본 cache의
+쓰기 권한으로 실패했고, TEMP 실행 도구도 그 cp949 로그를 UTF-8로 읽다가
+실패했다. 원 `ci-wheel.log`를 보존했다. 제품·시험을 바꾸지 않고 아래처럼
+cache를 TEMP로 지정하고 캐시와 build isolation을 끈 재실행은 exit 0이다.
+네트워크·의존성 설치·wheel 설치·배포는 하지 않았다. 원격 CI나 clean build
+인증이 아니며 원 core.yml의 설치/빌드 격리 단계와의 차이를 명시한다.
+
+```text
+PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_CACHE_DIR=<사본>/pip-cache PYTHONIOENCODING=utf-8
+python -m pip wheel --no-deps --no-build-isolation --no-cache-dir --wheel-dir dist .
+```
+
+wheel은 325,028바이트, SHA-256
+`b5dfee7f5114a87932a1f05140e479aedfbceb3901cd4252ccb40d995d278e80`다.
+TEMP root의 `wheel-result.json`과 사본의 `ci-wheel-temp.log`가 성공 근거다.
+
+| 증거 (LF SHA-256) | 값 |
+| --- | --- |
+| ci-junit.xml | `f004e6169a823e241ad92b7a466a67142224de2c54d3e7a068330f7bbc27769e` |
+| coverage.json | `4cab098c2f64a89b8203a8e10a23090c30d5d24e0decfa97c76e68072c285db0` |
+| 신규 최종 new.xml | `db1c1d351af2d5b15f64d485150fe014e43a5b742b542f37dbd50e9a7d5325d9` |
+| 관련 related.xml | `1e3c27507d25b6ecd53d26a613b4225963fec7b409876041dda62ba913287555` |
+| mutations.json | `b78f441936c07329f0a54f7cdecc23ff02befbcde69274e68a2700cb155cfb0c` |
+| assertion-audit.json | `ac29a8da279bde8f5e03bbbfd05126904313dc81bd34f522ea6aec23b8e95389` |
+| probes.json | `648a5624b90925f71b40a8ef4e3cc7e84ce6e1a2d5ad0b7b9bb303604265a5dc` |
+
+최종 코드·시험의 LF SHA-256:
+
+- `src/recoryn/ui/content.py`: `29c9978dc0cd0b7f966510e8f93db27b9a43f7733d2a9fd1f3d59d20b6e624d5`
+- `tests/ui/test_basis_a11y_ui.py`: `53f209aba242f53644e5d5cac479c0c9bee4fcd32d508864e4062c59a88b3dbc`
+- `tests/property/test_basis_a11y_case_space.py`: `44a2fd6d1cb7828185eeafd22f9c0911181072c8ebef6bc538bfdd5f66e513b7`
+
+수락 기준 변경 요청은 없다. G1 직접 load 거부는 기존 범위 밖 동작으로 유지했다.
+최종 상태는 작성자 **IMPLEMENTATION_READY**이며 독립 검증·검토 및 C00 종결은 대기다.

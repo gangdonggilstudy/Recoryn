@@ -293,3 +293,91 @@ G12R-10의 근거는 `probe_fix1.py` C·G1이다.
 
 - G12R-01~09는 모두 RECHECKED다. 새 OPEN은 **S3 1건(G12R-10)**이다. S0·S1·S2 OPEN은 0이다.
 - 미검증: 실제 Narrator·IME, 작성자 mutation 44개 전체 재실행(검토자 12개만 재실행), 256개 알림 기억 경계, K `destroyed` 버튼 행 강화(작성자가 미룸), 실제 DesktopAI 스레드 풀을 거치는 선택 경로.
+
+## G-P12b 검토 (G12R-10 후속)
+
+### P12b.1 대상·방법
+
+- 대상 tree `f59f022f78d56a46e1c626e042daf8efa0b40e1d` = HEAD `6156b65` + 4파일이다(`git diff 6156b65 f59f022f` +562/−13). 작성은 w5:p9 Codex, 리드·검증은 w5:p7 Claude다.
+- 4파일 LF SHA-256 앞 16자리는 배정과 같다: `ui/content.py` `29c9978dc0cd0b7f`, `tests/ui/test_basis_a11y_ui.py` `53f209aba242f536`, `tests/property/test_basis_a11y_case_space.py` `44a2fd6d1cb78281`, 계약 `ee12eee6cc807fb2`(끝 §G-P12b 범위·§구현 결과).
+- 실행 위치는 새로 푼 `build/review-trees/g12b`다(`git archive f59f022f | tar -x`). RECHECK 1의 옛 `g12b`(tree e47dcf73)는 `g12b-r1`로 이름만 바꿨다.
+- PYTHONPATH는 사본 `src`로 고정했고, 반례·변이 사본의 import 출처가 사본임을 출력으로 확인했다.
+- 전체 회귀·신규 시험 측정의 basetemp는 OS TEMP(C:) 아래다. 변이 하네스의 basetemp만 반례 폴더(D:) 아래이며, 대상 4개 시험 파일에는 8.3 의존 skip이 없다.
+- 반례·스크립트·로그는 `build/review-trees/g12b2-probe/`에 있다: `probe_p12b.py`(`probe_p12b.out`), `probe_preexisting.py`(`.out`), `mutate.py`(`mut/report.json`), `run_full.sh`(`full.log`·`checkcov.log`), `run_new4.sh`(`new4-*.log`).
+
+### P12b.2 실행 증거
+
+| 항목 | 결과 |
+| --- | --- |
+| CI 동등 전체 회귀(같은 명령, `-rs`, OS TEMP basetemp) | **28,274 passed, skip 0, failures·errors 0**, 2,212.5초(다른 검토의 전체 회귀·변이와 동시 실행), 총 coverage 92.58%. 작성 쪽 보고 수와 같다 |
+| `scripts/check_coverage.py` | 전부 PASS(line/branch %): domain 99.18/97.89, capture 99.85/98.57, jobs 99.20/95.65, storage 96.21/91.55, security 98.11/94.43, content 98.98/99.02, all 93.92/88.58 |
+| ruff check / format --check / mypy | All checks passed / 215 files already formatted / no issues in 95 source files |
+| 신규 4파일 단독(부하 아래) | **1,802 passed, 59.42초**. 측정 직전 CPU 부하 99%, python 프로세스 2개(전체 회귀 동시 실행). 60초 게이트 경계 바로 안쪽이다 |
+| 신규 4파일 단독(부하 적을 때) | **1,802 passed, 55.13초**. 측정 직전 CPU 부하 9%, 다른 python 프로세스 2개가 떠 있었다. 같은 날 변이 하네스 BASE는 46.0초다. 60초 게이트 안이지만 여유가 5~14초뿐이고 부하에 따라 경계를 넘을 수 있다(작성 쪽 63.3초·71.4초 기록과 같은 경향). 게이트 판단은 C00에 맡긴다 |
+| 신규 4파일 정상본(변이 하네스 BASE, 다른 변이와 순차) | 1,802 passed, 46.0초 |
+| 검토자 변이 9개 | **9/9 검출.** 실패는 모두 단언 실패이고 수집·import 오류는 0이다. 아래 표 |
+
+| 변이 | 결함 | 실패 node |
+| --- | --- | --- |
+| PM1 | 초점 유지 해제 제거 | 6(Y 이탈 행) |
+| PM2 | "선택된 요약" 판정을 옛 snapshot으로 되돌림 | 9(Y 유지 행) |
+| PM3 | 후보 전환 거부 때 콤보 복귀 제거 | 6(Y-28~33) |
+| PM4 | 선택 전 읽기 거부의 안내 제거 | 3(Y-25~27) |
+| PM5 | 후보 전환의 `selection_state`를 try 밖으로 | 4(Y snapshot 행) |
+| PM6 | 거부 알림을 매번 다시 냄 | 9(Y 거부 행, 1회 단언) |
+| RM1 | `claim_area` problem 가드 제거(1차 재적용) | 1(X02) |
+| FM2 | 초점 유지 제거(RECHECK 1 재적용) | 20(X05·X06·Y) |
+| FM3 | 열람 중 snapshot 재캡처(RECHECK 1 재적용) | 23(X07·Y) |
+
+### P12b.3 G12R-10 네 갈래 재확인
+
+원 반례 `probe_fix1.py` C·G1과 `probe_combo_intent.py`의 같은 모양을 `probe_p12b.py`로 다시 실행했다. 입력과 순서는 원본과 같다.
+
+| 갈래 | 판정 | 근거 |
+| --- | --- | --- |
+| (1) 초점으로 유지한 요약을 "선택된 요약입니다"로 잘못 표시 | **RECHECKED** | 유지 중 안내: "지금 보던 요약 · 선택 요약 아님 · …"이고, 완전 요약이라 "이 요약 선택"이 활성이다. 표시·버튼은 현재 DB 선택 ID(`_selected_summary_id`)로 판정한다. 선택하면 옛 snapshot으로 CAS가 실패해 충돌을 알린다(Y 유지 선택 행). PM2 검출 |
+| (2) 초점이 떠나도 유지가 풀리지 않음 | **RECHECKED** | 초점을 요약 영역 밖으로 옮기고 다음 요약 THIRD가 오면, 그 poll에서 THIRD를 표시하고 "선택된 요약입니다"가 맞게 붙는다. 알림은 유지 1회와 새 요약 표시 1회다. PM1 검출 |
+| (3) 삭제 의도 세션에서 "이 요약 선택"이 아무 안내 없이 끝남 | **RECHECKED** | 확인 창 0, "세션 삭제 진행 중이거나 요약을 읽을 수 없어 선택할 수 없습니다", assertive 1회. 선택·콤보 전환을 거듭 시도해도 알림은 1회다. 쓰기·seek 0이고, 초점 링크의 Enter는 "근거 확인 불가"다. reader 종료 뒤 DELETED_LOCAL로 완료된 다음에도 같은 안내이며 예외 0이다. PM4·PM6 검출 |
+| (4) active 변경 뒤 삭제 의도 상태에서 후보를 바꾸면 slot 밖 StateConflict | **RECHECKED** | slot 예외 0이다(원 반례에서는 `StateConflict: Session has a deletion intent`). 콤보는 이전 ONE으로 돌아가고 본문도 ONE이며 안내 문구가 나온다. PM3·PM5 검출 |
+
+### P12b.4 새 경쟁
+
+- **후보 열람 중 삭제 의도 게시·해제:** 위 (3)·(4)와 같다. 의도 게시 뒤 선택·전환은 모두 거부·안내·쓰기 0이다. reader가 끝나 삭제가 완료된 뒤에도 같은 안내이며 예외 0이다. 제품에는 의도를 취소하는 경로가 없다. 그래서 "해제"는 일시 읽기 거부(KeyError·ValidationError)로 본다. 작성자 Y-25~33이 실제 의도와 함께 이 두 오류를 덮는다.
+- **active 변경과 후보 변경의 순서 뒤집기**(`probe_p12b.py` O):
+  - poll이 먼저 돈 경우: A 열람 중 LATE가 active가 되고 poll이 "지금 보던 요약을 그대로 표시"를 알린다. 이어서 사용자가 B로 옮기면 현재 선택을 다시 제시한다. B를 Yes로 선택하면 LATE를 대체한다. 사용자가 새 active 알림을 받은 뒤 의도적으로 고른 열람이므로 설계대로다.
+  - poll 없이 바로 B로 옮긴 경우: snapshot이 옛 값으로 남는다. Yes에서 assertive 충돌이 나고 LATE가 보존된다.
+  - 두 순서 모두 알리지 않은 대체는 0이다.
+- **초점 이동과 새 요약 도착의 겹침**(FS):
+  - 초점이 떠난 뒤 같은 poll에서 새 요약이 오면 THIRD를 따른다.
+  - 초점이 poll 전에 다시 요약 영역으로 돌아오면 보던 FIRST를 유지한다.
+- **오래된 render generation 링크**(L):
+  - 유지 중에는 같은 렌더라 초점 링크 `claim:0:0@1.1`이 계속 유효하다.
+  - 유지가 풀려 다시 그린 뒤에는 옛 링크의 seek가 0이고, 새 링크 `claim:0:0@1.2`는 seek 1이다.
+- **숨김·비활성 대상**(HD): 비활성·숨김 "이 요약 선택"에 Enter·Space를 보내면 확인 창과 operation이 0이다. 다시 보이면 Enter로 1회 열린다.
+- **남은 slot 밖 예외 경로**(→ G12R-11):
+  - (a) 선택 쓰기가 성공한 뒤 완료 콜백 전에 삭제 의도가 생기면(`probe_p12b.py` DN), `done` → `_refresh_candidates()` → `selection_state`가 `StateConflict`를 던진다. 실제 앱에서 `done`은 `DesktopAI.operation`의 `finished` slot 안에서 불리므로 예외가 slot 밖으로 나가고, 뒤의 `focus.restore`도 실행되지 않는다. 쓰기 자체는 의도 전에 정상 commit된 것이다.
+  - (b) 후보 영역 밖의 기존 경로(`probe_preexisting.py`): 전사 버전 콤보(`_version_changed`)도 의도 뒤 `StateConflict`를 slot 밖으로 낸다. 직접 `load()`도 같은 예외를 던진다. 둘 다 G-P12 이전부터의 동작이고, 작성자 문서도 load를 범위 밖으로 명시했다.
+
+### P12b.5 새 발견
+
+| ID | 심각도 | 상태 | 요약 |
+| --- | --- | --- | --- |
+| G12R-11 | S3 | OPEN | 삭제 의도 `StateConflict`가 slot 밖으로 나가는 경로가 남는다. G-P12 후보 영역에서는 선택 완료 콜백의 `_refresh_candidates`(쓰기 commit과 GUI 콜백 사이의 좁은 경쟁)다. 기존 경로로는 전사 버전 콤보와 poll의 `load`가 있다 |
+
+- 판단: 잘못된 쓰기·게시·재생은 0이고 앱도 계속 돈다(PySide 기본 slot 예외 출력).
+  - DN은 쓰기 commit과 GUI 완료 콜백 사이(밀리초 단위)에 다른 조작이 삭제 의도를 기록해야 생긴다.
+  - poll 경로는 `DesktopAI.tick`이 `window.busy` 동안 load하지 않으므로, MainWindow 삭제 흐름에서는 대부분 막힌다.
+  - 그래서 S3로 둔다.
+- 권고: `done`의 `_refresh_candidates()`를 거부 처리(`_candidate_unavailable` 안내) 안에 둔다. 전사 버전 콤보와 `load`의 삭제 의도 거부는 별도 단위에서 같은 안내로 접을지 C00이 정한다.
+
+### P12b.6 접근성 문구·알림
+
+- 유지 중 안내는 "지금 보던 요약 · 선택 요약 아님"이고, 해제 뒤 현재 선택에만 "선택된 요약입니다"가 붙는다. 거짓 "선택됨" 표시는 0이다.
+- 새 요약 알림은 유지 1회와 해제 뒤 표시 1회로 polite다. 선택 불가 알림은 assertive이며 같은 세션·화면에서 반복 거부해도 1회다(PM6 검출). 충돌은 assertive 1회다.
+- 비활성·숨김 버튼은 Enter·Space를 소비만 하고 실행하지 않는다(HD, 1차 a11y 규칙 유지).
+- 사용자가 직접 고른 열람은 초점과 무관하게 유지된다(§G-P12b 결정대로, Y-19~24). Narrator 실사용은 NOT_RUN이다.
+
+### P12b.7 결론
+
+- G12R-10의 네 갈래는 모두 RECHECKED다. 새 OPEN은 **S3 1건(G12R-11)**이며, S0·S1·S2 OPEN은 0이다.
+- 미검증: 실제 Narrator·IME, 작성자 변이 B01~B10·M29~M44 전체 재실행(검토자 9개만), 실제 DesktopAI 스레드 풀에서의 DN 경쟁 재현(콜백 분리 fake로 재현), 무한 GUI 이력.

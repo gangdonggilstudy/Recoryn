@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 
 from recoryn.app.status import AIStatus
 from recoryn.content import Claim, ContentStore, Segment
+from recoryn.domain import ValidationError
 from recoryn.jobs import JobStore
 from recoryn.security import ConsentStore, CostLedger, CredentialVault
 from recoryn.storage import Library
@@ -1994,3 +1995,263 @@ def _x16(env: SimpleNamespace, tmp_path: Path) -> None:
         env.content.selection_state(session_a),
         env.content.selection_state(session_b),
     ) == before
+
+
+# G-P12b / G12R-10: independent axes and hand-written UI/storage expectations.
+Y_F = list(
+    product(
+        ("claims", "review_claims", "summary_candidates"),
+        (True, False),
+        ("stay", "leave", "select"),
+    )
+)
+Y_B = list(product(("inside", "outside"), ("none", "id", "aba")))
+Y_D = list(product(("select", "snapshot", "summary"), ("intent", "key", "validation")))
+Y = (
+    [("focus", *row) for row in Y_F]
+    + [("browse", *row) for row in Y_B]
+    + [("denied", *row) for row in Y_D]
+)
+Y_IDS = [f"G12-Y-{n:02}" for n in range(1, 34)]
+
+
+def _y_storage(env: SimpleNamespace, session: str) -> tuple[Any, ...]:
+    """Read raw persisted bytes and counters, including when public reads are denied."""
+    db = env.content._db
+    return (
+        tuple(
+            tuple(row)
+            for row in db.execute("SELECT * FROM content_selections WHERE session_id=?", (session,))
+        ),
+        tuple(
+            tuple(row)
+            for row in db.execute(
+                "SELECT revision_id,body,sha256 FROM content_revisions WHERE session_id=? "
+                "ORDER BY revision_id",
+                (session,),
+            )
+        ),
+        env.content._db.total_changes,
+        env.peer._db.total_changes,
+        env.jobs._db.total_changes,
+    )
+
+
+def _y_focus(env: SimpleNamespace, panel: ContentPanel, name: str) -> None:
+    panel.activateWindow()
+    widget = getattr(panel, name)
+    widget.setFocus()
+    env.app.processEvents()
+    if name == "summary_candidates":
+        press(widget, "Arrow")  # the sole initial item cannot change
+    else:
+        press(widget, "Tab")  # enter an actual evidence link
+    env.app.processEvents()
+    assert panel.focusWidget() is widget
+
+
+def _y_choose(env: SimpleNamespace, panel: ContentPanel, target: str) -> None:
+    combo = panel.summary_candidates
+    panel.activateWindow()
+    combo.setFocus()
+    env.app.processEvents()
+    wanted = combo.findData(target)
+    assert wanted >= 0
+    while combo.currentIndex() != wanted:
+        key = Qt.Key.Key_Down if combo.currentIndex() < wanted else Qt.Key.Key_Up
+        QTest.keyClick(combo, key)
+    assert combo.currentData() == target
+
+
+@pytest.mark.parametrize("row", Y, ids=Y_IDS)
+def test_y_followup_rows(
+    env: SimpleNamespace, row: tuple[Any, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if row[0] == "focus":
+        _y_focus_hold(env, *row[1:])
+    elif row[0] == "browse":
+        _y_explicit_browse(env, *row[1:])
+    else:
+        _y_denied(env, monkeypatch, *row[1:])
+
+
+def _y_focus_hold(env: SimpleNamespace, area: str, complete: bool, action: str) -> None:
+    session, source, first = _x_world(
+        env, [Claim("FIRST-AUDIO", ("a",)), Claim("FIRST-REVIEW", ("u",))]
+    )
+    if not complete:
+        # A legacy/damaged selected partial still must never become selectable.
+        _tamper(env.library, first, lambda body: body.update(complete=False))
+    ops = Ops()
+    panel, seeks = k_panel(env, session, ops)
+    sink = Sink()
+    panel.announcer.sink = sink
+    try:
+        snapshot = panel._candidate_snapshot
+        _y_focus(env, panel, area)
+        widget = getattr(panel, area)
+        anchor = a11y.focused_anchor(widget) if isinstance(widget, QTextBrowser) else None
+        second = env.peer.create_summary(
+            session,
+            source,
+            [Claim("SECOND", ("a",))],
+            expected_transcript=source,
+            expected_summary=first,
+        )
+        before = _y_storage(env, session)
+        panel.load(session)
+        panel.load(session)
+        assert "FIRST-AUDIO" in panel.claims.toPlainText()
+        assert panel.focusWidget() is widget
+        if isinstance(widget, QTextBrowser):
+            assert a11y.focused_anchor(widget) == anchor
+        assert "지금 보던 요약 · 선택 요약 아님" in panel.candidate_info.text()
+        assert "선택된 요약입니다" not in panel.candidate_info.text()
+        assert panel.select_summary_button.isEnabled() is complete
+        assert panel._candidate_snapshot == snapshot
+        assert _y_storage(env, session) == before and seeks == []
+        assert len([event for event in sink.events if "새 요약" in event[1]]) == 1
+        if action == "leave":
+            panel.search.setFocus()
+            env.app.processEvents()
+            press(panel.search, "Arrow")
+            assert panel.focusWidget() is panel.search
+            panel.load(session)
+            assert "SECOND" in panel.claims.toPlainText()
+            assert "FIRST-AUDIO" not in panel.claims.toPlainText()
+            assert panel.summary_candidates.currentData() == second
+            assert panel._candidate_snapshot.summary_id == second
+            assert panel._candidate_snapshot.summary_version == snapshot.summary_version + 1
+            assert panel.candidate_info.text().startswith("선택된 요약입니다")
+            assert not panel.select_summary_button.isEnabled()
+        elif action == "select":
+            env.modals.reset("Yes")
+            press(panel.select_summary_button, "Enter")
+            env.modals.check()
+            assert len(env.modals.opened) == int(complete)
+            assert ops.calls == int(complete)
+            conflicts = [event for event in sink.events if "충돌" in event[1]]
+            assert len(conflicts) == int(complete)
+            if complete:
+                assert conflicts[0][2] == "assertive"
+                # The conflict refreshed the snapshot. A fresh keyboard browse then
+                # requires a second confirmation; No must leave the active untouched.
+                _y_choose(env, panel, first)
+                env.modals.reset("No")
+                press(panel.select_summary_button, "Space")
+                env.modals.check()
+                assert len(env.modals.opened) == 1 and ops.calls == 1
+        assert _y_storage(env, session) == before
+        assert env.content.selection_state(session)["summary_id"] == second
+        assert seeks == []
+    finally:
+        dispose(panel)
+
+
+def _y_explicit_browse(env: SimpleNamespace, focus: str, change: str) -> None:
+    world = c_world(env, "one", "complete_current")
+    session = world["session"]
+    panel, seeks = k_panel(env, session)
+    try:
+        _y_choose(env, panel, world["target"])
+        snapshot = panel._candidate_snapshot
+        if focus == "inside":
+            _y_focus(env, panel, "claims")
+        else:
+            panel.search.setFocus()
+            env.app.processEvents()
+            press(panel.search, "Arrow")
+            assert panel.focusWidget() is panel.search
+        if change != "none":
+            race(env, world, "summary_id" if change == "id" else "summary_aba")
+        before = _y_storage(env, session)
+        panel.load(session)
+        panel.load(session)
+        assert "target" in panel.claims.toPlainText()
+        assert panel.summary_candidates.currentData() == world["target"]
+        assert panel._candidate_snapshot == snapshot
+        assert "선택된 요약입니다" not in panel.candidate_info.text()
+        assert panel.select_summary_button.isEnabled()
+        assert _y_storage(env, session) == before and seeks == []
+    finally:
+        dispose(panel)
+
+
+def _y_denied(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, stage: str, error: str
+) -> None:
+    import sys
+
+    session, source, base = _x_world(env, [Claim("BASE", ("a",))])
+    first = env.content.create_summary(
+        session, source, [Claim("BROWSED", ("a",))], expected_summary="z" * 32
+    )
+    ops = Ops()
+    panel, seeks = k_panel(env, session, ops)
+    sink = Sink()
+    panel.announcer.sink = sink
+    held = job = None
+    try:
+        _y_choose(env, panel, first)
+        env.peer.create_summary(
+            session,
+            source,
+            [Claim("LATE", ("a",))],
+            expected_transcript=source,
+            expected_summary=base,
+        )
+        panel.load(session)
+        previous = (
+            panel._browsed_summary,
+            panel._candidate_snapshot,
+            panel.claims.toPlainText(),
+            panel.review_claims.toPlainText(),
+        )
+        errors: list[str] = []
+        monkeypatch.setattr(sys, "excepthook", lambda *args: errors.append(str(args[1])))
+        if error == "intent":
+            job = env.jobs.create("summarization", f"y-reader-{next(_serial)}")
+            env.jobs.bind_session(job.job_id, session)
+            held = env.jobs.claim(job.job_id, "reader")
+            assert env.library.delete_session(session)["state"] == "DELETE_PENDING"
+        else:
+
+            def denied(*args: Any, **kwargs: Any) -> Any:
+                raise (KeyError if error == "key" else ValidationError)("G12_Y_CANARY")
+
+            monkeypatch.setattr(
+                env.content, "selection_state" if stage == "snapshot" else "summary", denied
+            )
+        before = _y_storage(env, session)
+        env.modals.reset("Yes")
+        if stage == "select":
+            for key in ("Enter", "Space"):
+                press(panel.select_summary_button, key)
+        else:
+            combo = panel.summary_candidates
+            index = combo.currentIndex()
+            key = Qt.Key.Key_Up if index > 0 else Qt.Key.Key_Down
+            for _ in range(2):
+                combo.setFocus()
+                QTest.keyClick(combo, key)
+                env.app.processEvents()
+                assert combo.currentData() == first
+        assert errors == []
+        assert (
+            panel._browsed_summary,
+            panel._candidate_snapshot,
+            panel.claims.toPlainText(),
+            panel.review_claims.toPlainText(),
+        ) == previous
+        assert "세션 삭제 진행 중이거나 요약을 읽을 수 없어 선택할 수 없습니다" in (
+            panel.candidate_info.text()
+        )
+        assert "G12_Y_CANARY" not in panel.candidate_info.text()
+        notices = [event for event in sink.events if "선택할 수 없습니다" in event[1]]
+        assert len(notices) == 1 and notices[0][2] == "assertive"
+        assert ops.calls == 0 and env.modals.opened == []
+        assert _y_storage(env, session) == before and seeks == []
+    finally:
+        if held is not None:
+            env.jobs.fail(job.job_id, held.attempt_id, held.fence, "Y_DONE")
+        dispose(panel)
