@@ -573,7 +573,10 @@ def test_p11_open_delete_barrier(
                 deletion_future = pool.submit(deletion)
                 assert deleting.wait(5) and not deletion_future.done()
                 proceed.set()
-                future.result(timeout=5)
+                try:
+                    future.result(timeout=5)
+                except StateConflict as error:
+                    assert str(error) == "Writer session has a deletion intent"
                 assert deletion_future.result(timeout=5)["state"] == "DELETE_PENDING"
                 with pytest.raises(StateConflict):
                     writer.seal()

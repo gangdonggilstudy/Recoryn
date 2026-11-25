@@ -13,7 +13,12 @@ from typing import Any, BinaryIO
 
 from recoryn.domain import AudioFormat, PCMBlock, ValidationError
 
-from ._coordination import check_write_allowed, root_mutex
+from ._coordination import (
+    check_write_allowed,
+    retry_sealed_read,
+    root_mutex,
+    write_generation,
+)
 from ._safe import (
     MAX_BLOCK_BYTES,
     MAX_CHUNK_BYTES,
@@ -44,7 +49,9 @@ def has_active_writer(root: Path, session_id: str) -> bool:
     """An open writer, or one sealing until its catalog registration is released."""
     with _writers_lock:
         return any(
-            w.root == root and w.session_id == session_id and (w._pcm is not None or w._sealing)
+            w.root == root
+            and w.session_id == session_id
+            and (w._pcm is not None or w._sealing or w._seal_in_progress)
             for w in _writers
         )
 
@@ -387,14 +394,18 @@ class ChunkWriter:
         self._hash = hashlib.sha256()
         self._closed = False
         self._failed = False
+        # Serialize this writer across sync/close; never wait for it under root.
+        self._operation_lock = threading.RLock()
+        self._closing = False
         # SEALING: from seal start until release() after registration, or failure.
         self._sealing = False
+        self._seal_in_progress = False
         self._held = False
         self._capability: SealedChunk | None = None
         self._sealed: ChunkDescriptor | None = None  # what the capability vouches for
 
     def _open(self) -> None:
-        check_write_allowed(self.root, self.session_id)
+        self._check_media_write()
         if self.path.exists() or self.staging_path.exists():
             raise FileExistsError("Chunk identity already exists")
         mkdir(self.staging_path.parent)
@@ -402,19 +413,33 @@ class ChunkWriter:
         try:
             self._pcm = open_file(self.staging_path / "audio.pcm", "xb")
             self._journal = open_file(self.staging_path / "blocks.jsonl", "xb")
-        except BaseException:
-            self.abort()
-            raise
-        with _writers_lock:
-            _writers.add(self)
+        finally:
+            # Even a partially opened pair stays active until out-of-root cleanup.
+            with _writers_lock:
+                if self._pcm is not None or self._journal is not None:
+                    _writers.add(self)
 
     def append(self, block: PCMBlock) -> None:
-        with root_mutex(self.root):
-            check_write_allowed(self.root, self.session_id)
+        with self._operation_lock:
             self._append(block)
 
+    def _check_media_write(self) -> None:
+        """Root held: every actual media write, including private recovery paths."""
+        check_write_allowed(self.root, self.session_id)
+        if self._closing:
+            raise ValueError("Writer is closing")
+
+    def _check_media_continuation(self, generation: tuple[object, int] | None) -> None:
+        """Root held: same append, with no new intent published since admission."""
+        if generation is None or write_generation(self.root) != generation:
+            self._check_media_write()
+        elif self._closing:
+            raise ValueError("Writer is closing")
+
     def _append(self, block: PCMBlock) -> None:
-        if self._closed or self._failed:
+        if self._closed or self._failed or self._closing:
+            with root_mutex(self.root):
+                check_write_allowed(self.root, self.session_id)
             raise ValueError("Writer is closed or failed")
         if (block.session_id, block.track_id, block.epoch_id, block.format) != (
             self.session_id,
@@ -430,9 +455,6 @@ class ChunkWriter:
             or self._count >= MAX_RECORDS
         ):
             raise ValidationError("Chunk size limit exceeded")
-        if self._pcm is None:
-            self._open()
-        assert self._pcm is not None and self._journal is not None
         record = {
             "schema_version": 1,
             "metadata": block.to_metadata(),
@@ -444,22 +466,69 @@ class ChunkWriter:
         encoded = canonical(record) + b"\n"
         if len(encoded) > MAX_JSON_BYTES:
             raise ValidationError("Journal size limit exceeded")
+        next_hash = self._hash.copy()
+        next_hash.update(block.payload)
+        started = False
         try:
-            write_all(self._pcm, block.payload)
+            with root_mutex(self.root):
+                self._check_media_write()
+                generation = write_generation(self.root)
+                started = True
+                if self._pcm is None:
+                    self._open()
+                assert self._pcm is not None and self._journal is not None
+                write_all(self._pcm, block.payload)
+            # open_file supplies unbuffered FileIO: sync adds no new logical bytes.
             sync(self._pcm)
-            write_all(self._journal, encoded)
+            with root_mutex(self.root):
+                self._check_media_continuation(generation)
+                write_all(self._journal, encoded)
             sync(self._journal)
+            with root_mutex(self.root):
+                self._check_media_continuation(generation)
+                self._hash = next_hash
+                if self._count == 0:
+                    self._first_sequence = block.sequence
+                self._frames += block.frame_count
+                self._bytes += len(block.payload)
+                self._count += 1
+                self._previous = block
         except BaseException:
-            self._failed = True
-            self.abort()
+            # An admission refusal before any I/O leaves the already confirmed
+            # prefix usable after an explicit authority repair. Once I/O starts,
+            # only recovery may adopt its possibly incomplete tail.
+            if started:
+                self._failed = True
+                self._cleanup_failure()
             raise
-        self._hash.update(block.payload)
-        if self._count == 0:
-            self._first_sequence = block.sequence
-        self._frames += block.frame_count
-        self._bytes += len(block.payload)
-        self._count += 1
-        self._previous = block
+
+    def _sync_streams(self) -> None:
+        """Operation lock held, root/registry/gate released; payload always first."""
+        assert self._pcm is not None and self._journal is not None
+        sync(self._pcm)
+        sync(self._journal)
+
+    def _sync(self) -> None:
+        """Confirm the strict writer's current cut before sealing or a checkpoint."""
+        with self._operation_lock:
+            if self._closing or self._failed:
+                raise ValueError("Writer is closing or failed")
+            if self._sealed is not None:
+                return  # the immutable published cut was already confirmed
+            if self._closed:
+                raise ValueError("Writer is closed")
+            if self._pcm is None:
+                return
+            try:
+                with root_mutex(self.root):
+                    self._check_media_write()
+                self._sync_streams()
+                with root_mutex(self.root):
+                    self._check_media_write()
+            except BaseException:
+                self._failed = True
+                self._cleanup_failure()
+                raise
 
     def seal(self) -> ChunkDescriptor:
         """Seal and publish.
@@ -467,10 +536,11 @@ class ChunkWriter:
         The writer is inactive again when this returns, unless the owner called
         hold() first: then it stays active, with its capability, until unhold().
         """
-        sealed = self.seal_chunk()
-        if not self._held:
-            sealed.release()
-        return sealed.descriptor
+        with self._operation_lock:
+            sealed = self.seal_chunk()
+            if not self._held:
+                sealed.release()
+            return sealed.descriptor
 
     def hold(self) -> None:
         """Keep this writer active across seal() until unhold() (catalog handoff)."""
@@ -481,6 +551,8 @@ class ChunkWriter:
         with _writers_lock:
             self._held = False
             sealed = self._capability
+            if sealed is None and self._closed and not self._seal_in_progress:
+                self._sealing = False
         if sealed is not None:
             sealed.release()
 
@@ -493,31 +565,38 @@ class ChunkWriter:
     def seal_chunk(self) -> SealedChunk:
         """Verify outside the root mutex, then publish in a short critical section.
 
-        Inside the mutex: the deletion check and the start/stop of SEALING, then the
-        final deletion check, mkdir and rename. The fsyncs, the descriptor and the
-        single journal verification run outside it while the writer stays active,
-        so a delete waits (DELETE_PENDING) instead of removing a chunk mid-seal.
+        Root guards the SEALING transition, descriptor bytes, mkdir and rename.
+        All fsync/verification runs outside it with the operation lock held, so
+        abort cannot close a syncing handle and deletion still sees an active writer.
         """
-        with root_mutex(self.root):
-            check_write_allowed(self.root, self.session_id)
-            self._check_sealable()
-            with _writers_lock:
-                self._sealing = True
-        try:
-            descriptor = self._prepare()
+        with self._operation_lock:
             with root_mutex(self.root):
-                # A deletion intent committed while verifying wins: nothing is published.
-                check_write_allowed(self.root, self.session_id)
-                self._publish()
-                sealed = SealedChunk(self, descriptor)
+                self._check_media_write()
+                self._check_sealable()
                 with _writers_lock:
-                    self._sealed = descriptor
-                    self._capability = sealed
-                    _issued.add(sealed)
-            return sealed
-        except BaseException:
-            self._fail_seal()
-            raise
+                    self._sealing = True
+                    self._seal_in_progress = True
+            try:
+                descriptor = self._prepare()
+                with root_mutex(self.root):
+                    # A deletion while syncing/verifying wins before publication.
+                    self._check_media_write()
+                    self._publish()
+                    sealed = SealedChunk(self, descriptor)
+                    with _writers_lock:
+                        self._sealed = descriptor
+                        self._capability = sealed
+                        _issued.add(sealed)
+                return sealed
+            except BaseException:
+                self._failed = True
+                self._cleanup_failure()
+                raise
+            finally:
+                with _writers_lock:
+                    self._seal_in_progress = False
+                    if self._capability is None and not self._held:
+                        self._sealing = False
 
     def _release(self, sealed: SealedChunk) -> None:
         with _writers_lock:
@@ -526,10 +605,12 @@ class ChunkWriter:
                 _issued.discard(sealed)
                 self._sealing = False
 
-    def _fail_seal(self) -> None:
-        with _writers_lock:
-            self._sealing = False
-        self.abort()
+    def _cleanup_failure(self) -> None:
+        """Keep the original storage/fence error primary even if cleanup also fails."""
+        try:
+            self._abort()
+        except OSError:
+            pass
 
     def _check_sealable(self) -> None:
         if self._closed or self._failed or self._previous is None:
@@ -538,7 +619,7 @@ class ChunkWriter:
             raise ValidationError("Cannot seal incomplete packet fragments")
 
     def _prepare(self) -> ChunkDescriptor:
-        """Make the staging durable and verify it once; no root mutex needed."""
+        """Sync/verify outside root; guard descriptor creation and logical bytes."""
         assert self._previous is not None
         descriptor = ChunkDescriptor(
             self.session_id,
@@ -555,15 +636,22 @@ class ChunkWriter:
             self._count,
         )
         assert self._pcm is not None and self._journal is not None
-        sync(self._pcm)
-        sync(self._journal)
-        with open_file(self.staging_path / "descriptor.json", "xb") as stream:
-            write_all(stream, canonical(descriptor.to_dict()) + b"\n")
+        self._sync()
+        encoded = canonical(descriptor.to_dict()) + b"\n"
+        with root_mutex(self.root):
+            self._check_media_write()
+            stream = open_file(self.staging_path / "descriptor.json", "xb")
+            try:
+                write_all(stream, encoded)
+            except BaseException:
+                stream.close()
+                raise
+        with stream:
             sync(stream)
-        self.abort()  # closes the files; SEALING still marks the writer active
+        self._close_files()  # SEALING still marks the writer active until registration
         # The one disk read-back of this chunk: journal, payload hashes, descriptor
         # and the final location. A rename cannot change these bytes afterwards.
-        if _verified(self.staging_path, self.path) != descriptor:
+        if retry_sealed_read(lambda: _verified(self.staging_path, self.path)) != descriptor:
             raise ValidationError("Sealed chunk differs from its writer")
         return descriptor
 
@@ -576,24 +664,29 @@ class ChunkWriter:
         self.staging_path.rename(self.path)
 
     def _seal(self) -> ChunkDescriptor:
-        """Unlocked full seal for a caller that owns the session exclusively.
-
-        Recovery uses this for its private salvage writer under a session claim.
-        """
-        self._check_sealable()
-        try:
-            descriptor = self._prepare()
-            self._publish()
-            return descriptor
-        except BaseException:
-            self.abort()
-            raise
+        """Compatibility for private callers; a claim never bypasses write fencing."""
+        return self.seal()
 
     def abort(self) -> None:
-        with root_mutex(self.root):
+        # Reject new work before waiting, without holding root or registry while waiting.
+        with _writers_lock:
+            self._closing = True
+        with self._operation_lock:
             self._abort()
 
     def _abort(self) -> None:
+        self._closing = True
+        try:
+            self._close_files()
+        finally:
+            with _writers_lock:
+                if not self._held:
+                    if self._capability is not None:
+                        _issued.discard(self._capability)
+                        self._capability = None
+                    self._sealing = False
+
+    def _close_files(self) -> None:
         self._closed = True
         error: OSError | None = None
         for stream in (self._pcm, self._journal):

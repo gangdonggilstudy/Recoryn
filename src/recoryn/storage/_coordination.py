@@ -8,6 +8,9 @@ import weakref
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
+from time import monotonic as _read_clock
+from time import sleep as _read_wait
+from typing import TypeVar
 
 from recoryn.domain import StateConflict, ValidationError
 
@@ -18,6 +21,8 @@ _roots: dict[Path, threading.RLock] = {}
 # The open Library of this process answers "does this session have a deletion
 # intent?" from its journal index (Library._writer_intent). Held weakly.
 _intent_checks: dict[Path, weakref.WeakMethod[Callable[[str], bool | None]]] = {}
+_intent_generations: dict[Path, weakref.WeakMethod[Callable[[], int | None]]] = {}
+_T = TypeVar("_T")
 
 
 def root_mutex(root: Path) -> threading.RLock:
@@ -25,9 +30,17 @@ def root_mutex(root: Path) -> threading.RLock:
         return _roots.setdefault(root, threading.RLock())
 
 
-def register_intent_check(root: Path, check: Callable[[str], bool | None]) -> None:
+def register_intent_check(
+    root: Path,
+    check: Callable[[str], bool | None],
+    generation: Callable[[], int | None] | None = None,
+) -> None:
     with _guard:
         _intent_checks[root] = weakref.WeakMethod(check)
+        if generation is not None:
+            _intent_generations[root] = weakref.WeakMethod(generation)
+        else:
+            _intent_generations.pop(root, None)
 
 
 def unregister_intent_check(root: Path, check: Callable[[str], bool | None]) -> None:
@@ -35,10 +48,51 @@ def unregister_intent_check(root: Path, check: Callable[[str], bool | None]) -> 
         reference = _intent_checks.get(root)
         if reference is not None and reference() == check:
             del _intent_checks[root]
+            _intent_generations.pop(root, None)
+
+
+def write_generation(root: Path) -> tuple[object, int] | None:
+    """Root held: identify the open Library and its in-process intent generation.
+
+    This is only a continuation fence for the same append after its full check.
+    Missing/closed/replaced owners fall back to a full durable authority check.
+    """
+    with _guard:
+        reference = _intent_generations.get(root)
+    generation = reference() if reference is not None else None
+    value = generation() if generation is not None else None
+    return (reference, value) if type(value) is int else None
+
+
+def retry_sealed_read(operation: Callable[[], _T]) -> _T:
+    """Retry only transient access/sharing errors of our just-written bundle.
+
+    Callers hold no root/registry/capture lock. Integrity errors and other I/O
+    errors propagate immediately; expiry preserves the original access exception.
+    """
+    deadline = _read_clock() + 1.0
+    while True:
+        try:
+            return operation()
+        except OSError as error:
+            if not isinstance(error, PermissionError) and getattr(error, "winerror", None) not in (
+                32,
+                33,
+            ):
+                raise
+            remaining = deadline - _read_clock()
+            if remaining <= 0:
+                raise
+        _read_wait(min(0.01, remaining))
 
 
 def check_write_allowed(root: Path, session_id: str) -> None:
-    """Caller holds root_mutex through the ensuing write/handoff.
+    """Caller holds root_mutex through each ensuing logical write/handoff.
+
+    PER_BLOCK callers fence each write: full admission, then same-process generation
+    checks across fsync (or another full check when that generation is unavailable).
+    Their unbuffered-file fsyncs and same-writer operation waits run outside root;
+    a pre-sync check cannot authorize a later write after a deletion intent.
 
     Terminal tombstones make session IDs non-reusable. With an open Library in this
     process, its index answers in O(1): the Library publishes every deletion intent
@@ -68,7 +122,9 @@ def check_write_allowed(root: Path, session_id: str) -> None:
     database = safe_path(root, "library.sqlite")
     if database.exists():
         try:
-            with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+            with closing(
+                sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=0)
+            ) as connection:
                 if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
                     raise ValidationError("Unsupported library schema")
                 exists = connection.execute(

@@ -14,6 +14,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic as _registration_clock
+from time import sleep as _registration_wait
 from types import TracebackType
 from typing import Any, BinaryIO, Protocol
 
@@ -37,7 +39,12 @@ from recoryn.domain.capture_health import (
     encoded as health_encoded,
 )
 
-from ._coordination import register_intent_check, root_mutex, unregister_intent_check
+from ._coordination import (
+    register_intent_check,
+    retry_sealed_read,
+    root_mutex,
+    unregister_intent_check,
+)
 from ._safe import (
     atomic_json,
     canonical,
@@ -290,7 +297,7 @@ class Library:
                 self._refresh_intent_index()  # once at open; no other thread waits yet
             except (ValueError, OSError):
                 self._intent_journal = None  # every intent query fails closed until valid
-        register_intent_check(self.root, self._append_check)
+        register_intent_check(self.root, self._append_check, self._append_generation)
         with self._mutex:
             self._job_authorities[self.db_path] = self
 
@@ -663,6 +670,10 @@ class Library:
             raise ValidationError("Incomplete deletion intent")
         return names
 
+    def _append_generation(self) -> int | None:
+        """Root held: cheap continuation fence, never an initial write admission."""
+        return self._history_version if self._connection is not None else None
+
     def _append_check(self, session_id: str) -> bool | None:
         """_coordination callback; None once closed, so the writer checks durably."""
         with self._mutex:
@@ -937,9 +948,11 @@ class Library:
         bytes and PCM size) and a deletion test of its own session only, so another
         session's journal cannot stop a recording. Everything else (recovery
         adoption, external callers, a released or copied capability) is fully
-        verified and uses the management deletion check, as before.
+        verified and uses the management deletion check, as before. SQLite busy
+        is retried within the connection's original timeout, never under root.
         """
-        sealed = issued_descriptor(descriptor, self.root)
+        candidate = descriptor
+        sealed = issued_descriptor(candidate, self.root)
         if sealed is not None:
             descriptor = sealed
             self._check_sealed_identity(safe_path(self.root, descriptor.relative_path), sealed)
@@ -950,7 +963,11 @@ class Library:
             if verify_bundle(path) != descriptor:
                 raise ValidationError("Catalog descriptor differs from verified bundle")
         session_id = descriptor.session_id
-        with self._mutex:
+
+        def attempt() -> None:
+            # Root held, busy_timeout=0. A retry never inherits old authority.
+            if sealed is not None and issued_descriptor(candidate, self.root) != sealed:
+                raise StateConflict("Sealed chunk released before registration")
             # Admission must never create an exclusive claim over a live
             # recorder. Even if that invariant is broken, preserve its writer.
             if not self._is_live(session_id):
@@ -1004,16 +1021,48 @@ class Library:
                     (descriptor.session_id,),
                 )
 
+        with self._mutex:
+            timeout_ms = self._db.execute("PRAGMA busy_timeout").fetchone()[0]
+        # I/O deadlines use monotonic time, independent of journal wall-clock age.
+        deadline = _registration_clock() + timeout_ms / 1000
+        while True:
+            try:
+                with self._mutex:
+                    connection = self._db
+                    previous_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+                    connection.execute("PRAGMA busy_timeout=0")
+                    try:
+                        attempt()
+                    finally:
+                        connection.execute(f"PRAGMA busy_timeout={previous_timeout}")
+                return
+            except sqlite3.OperationalError as error:
+                code = getattr(error, "sqlite_errorcode", None)
+                if type(code) is not int or code & 0xFF not in (
+                    sqlite3.SQLITE_BUSY,
+                    sqlite3.SQLITE_LOCKED,
+                ):
+                    raise
+                remaining = deadline - _registration_clock()
+                if remaining <= 0:
+                    raise
+            # No root, registry, capture gate or transaction is held while waiting.
+            _registration_wait(min(0.01, remaining))
+
     @staticmethod
     def _check_sealed_identity(path: Path, descriptor: ChunkDescriptor) -> None:
         """The bundle a sealer just published is still that bundle (no re-hash)."""
-        expected = canonical(descriptor.to_dict()) + b"\n"
-        with open_file(path / "descriptor.json", "rb") as stream:
-            if stream.read(len(expected) + 1) != expected:
-                raise ValidationError("Sealed chunk changed before registration")
-        with open_file(path / "audio.pcm", "rb") as stream:
-            if os.fstat(stream.fileno()).st_size != descriptor.byte_count:
-                raise ValidationError("Sealed chunk changed before registration")
+
+        def read_identity() -> None:
+            expected = canonical(descriptor.to_dict()) + b"\n"
+            with open_file(path / "descriptor.json", "rb") as stream:
+                if stream.read(len(expected) + 1) != expected:
+                    raise ValidationError("Sealed chunk changed before registration")
+            with open_file(path / "audio.pcm", "rb") as stream:
+                if os.fstat(stream.fileno()).st_size != descriptor.byte_count:
+                    raise ValidationError("Sealed chunk changed before registration")
+
+        retry_sealed_read(read_identity)
 
     def chunks(self, session_id: str) -> list[ChunkDescriptor]:
         with self._mutex:
@@ -2150,21 +2199,21 @@ class Library:
                 self.root, f"sessions/{session_id}/recovery-work/{uuid.uuid4().hex}"
             )
             try:
-                # This private recovery writer is exclusively protected by the
-                # session claim, including against delete's file removal. Its
-                # fsync/hash work must not acquire the capture root mutex.
+                # The claim prevents removal, but not a new deletion intent.
+                # Use the common writer guard at every actual write/publish;
+                # fsync/hash work still runs outside the capture root mutex.
                 with self._mutex:
                     self._live(session_id)
-                writer._append(initial)
+                writer.append(initial)
                 for record in prefix.blocks[1:]:
                     with self._mutex:
                         self._live(session_id)
-                    writer._append(
+                    writer.append(
                         PCMBlock.from_metadata(record["metadata"], source.read(record["length"]))
                     )
                 with self._mutex:
                     self._live(session_id)
-                return writer._seal(), prefix.complete, tail
+                return writer.seal(), prefix.complete, tail
             finally:
                 writer.abort()
 
