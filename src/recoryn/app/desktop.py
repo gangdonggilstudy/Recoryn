@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 from recoryn.app.recording import RecordingError, RecordingService
 from recoryn.app.status import CaptureProgress
+from recoryn.capture.queue import CaptureItem, packet_blocks
 from recoryn.domain import AudioFormat, PCMBlock, SessionState, StateConflict
 from recoryn.storage import Library
 
@@ -23,7 +24,7 @@ class CaptureSource(Protocol):
         session_id: str,
         track_id: str,
         epoch_id: str,
-        submit: Callable[[PCMBlock], bool],
+        submit: Callable[[CaptureItem], bool],
         on_health: Callable[[dict[str, Any]], None],
     ) -> AudioFormat: ...
 
@@ -139,7 +140,9 @@ class DesktopRecorder:
         self._open_sources()
         return self.recording.session_id
 
-    def _submit(self, block: PCMBlock, *, generation: int | None = None) -> bool:
+    def _submit(self, item: CaptureItem, *, generation: int | None = None) -> bool:
+        fragments = packet_blocks(item)
+        block = fragments[0]
         with self._lock:
             recorder, run = self.recording, self._run_generation
         if recorder is None:
@@ -156,7 +159,7 @@ class DesktopRecorder:
         with self._lock:
             if run != self._run_generation or recorder is not self.recording:
                 return False
-        accepted = recorder.submit(block)
+        accepted = recorder.submit(item)
         if not accepted and (
             recorder.storage_failed
             if hasattr(recorder, "storage_failed")
@@ -167,8 +170,8 @@ class DesktopRecorder:
             if run != self._run_generation or recorder is not self.recording:
                 return accepted
             if accepted:
-                self._accepted_frames += block.frame_count
-            self._meters[block.track_id] = block
+                self._accepted_frames += sum(part.frame_count for part in fragments)
+            self._meters[block.track_id] = fragments[-1]
         return accepted
 
     def _on_health(

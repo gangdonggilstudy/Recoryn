@@ -10,6 +10,7 @@ from typing import Any
 
 __all__ = [
     "AudioFormat",
+    "MAX_PCM_BLOCK_BYTES",
     "PCMBlock",
     "Session",
     "SessionState",
@@ -17,6 +18,8 @@ __all__ = [
     "ValidationError",
     "transition_session",
 ]
+
+MAX_PCM_BLOCK_BYTES = 16 * 1024 * 1024
 
 
 class ValidationError(ValueError):

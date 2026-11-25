@@ -54,6 +54,47 @@ def _clock_step(previous: dict[str, Any], current: dict[str, Any], rate: int) ->
     return bool(elapsed > 0 and abs(elapsed - nominal) <= max(1000, nominal // 100))
 
 
+def _packet_continuation(
+    previous: dict[str, Any], current: dict[str, Any], contiguous: bool
+) -> bool:
+    """A verified packet's storage fragments share samples, not invented clocks."""
+    state_flags = {"SILENT", "TIMESTAMP_ERROR"}
+    before, after = set(previous["flags"]), set(current["flags"])
+    position = previous["device_frame_position"]
+    next_position = current["device_frame_position"]
+    return (
+        contiguous
+        and all(
+            previous[key] == current[key]
+            for key in (
+                "session_id",
+                "track_id",
+                "epoch_id",
+                "sequence",
+                "fragment_count",
+                "format",
+                "clock_quality",
+                "arrival_mono_ns",
+            )
+        )
+        and current["fragment_index"] == previous["fragment_index"] + 1
+        and before & state_flags == after & state_flags
+        and not after - state_flags
+        and (previous["fragment_index"] == 0 or not before - state_flags)
+        and _correlated(previous) == _correlated(current)
+        and (
+            not _correlated(previous)
+            or _clock_step(previous, current, current["format"]["sample_rate"])
+        )
+        and (
+            position is None
+            and next_position is None
+            or position is not None
+            and next_position == position + previous["frame_count"]
+        )
+    )
+
+
 def _int16(payload: bytes, format: AudioFormat) -> bytes:
     if format.sample_type == "s16le":
         return payload
@@ -126,6 +167,8 @@ def prepare_clips(
         ranges: list[dict[str, Any]] = []
         first_stamp: int | None = None
         previous: dict[str, Any] | None = None
+        previous_chunk: str | None = None
+        previous_end: int | None = None
         current_format: AudioFormat | None = None
         frames = 0
         clock_uncertain = False
@@ -236,17 +279,22 @@ def prepare_clips(
                     # silently restore precise source times on its next packet.
                     clock_uncertain = clock_uncertain or jumped
                     valid_stamp = _correlated(metadata) and not clock_uncertain
+                    same_packet = previous is not None and _packet_continuation(
+                        previous,
+                        metadata,
+                        chunk.chunk_id == previous_chunk and record["offset"] == previous_end,
+                    )
                     split = previous is not None and (
                         fmt != current_format
                         or metadata["sequence"] != previous["sequence"] + 1
-                        and not (
-                            metadata["sequence"] == previous["sequence"]
-                            and metadata["fragment_index"] == previous["fragment_index"] + 1
+                        and not same_packet
+                        or bool(set(metadata["flags"]) - {"SILENT", "TIMESTAMP_ERROR"})
+                        or not same_packet
+                        and (
+                            not valid_stamp
+                            or previous["capture_mono_ns"] is None
+                            or stamp < previous["capture_mono_ns"]
                         )
-                        or "DATA_DISCONTINUITY" in metadata["flags"]
-                        or not valid_stamp
-                        or previous["capture_mono_ns"] is None
-                        or stamp < previous["capture_mono_ns"]
                         or metadata.get("device_frame_position") is not None
                         and previous.get("device_frame_position") is not None
                         and metadata["device_frame_position"]
@@ -292,7 +340,12 @@ def prepare_clips(
                         if frames == limit:
                             flush(current_format, track, epoch)
                     previous = metadata
-                    if not valid_stamp:
+                    previous_chunk = chunk.chunk_id
+                    previous_end = record["offset"] + record["length"]
+                    if (
+                        not valid_stamp
+                        and metadata["fragment_index"] + 1 == metadata["fragment_count"]
+                    ):
                         flush(current_format, track, epoch)
         flush(current_format, track, epoch)
     atomic_json(

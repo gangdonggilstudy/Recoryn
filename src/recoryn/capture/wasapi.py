@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Event, RLock, Thread, get_ident
 from time import monotonic
-from typing import Protocol
+from typing import Protocol, cast
 
 from recoryn.capture.devices import (
     _IID_CAPTURE_CLIENT,
@@ -35,7 +35,9 @@ from recoryn.capture.devices import (
     _release,
     _WinAPI,
 )
-from recoryn.domain import AudioFormat, PCMBlock, ValidationError
+from recoryn.domain import MAX_PCM_BLOCK_BYTES, AudioFormat, PCMBlock, ValidationError
+
+from .queue import CaptureItem
 
 DATA_DISCONTINUITY = 1
 SILENT = 2
@@ -66,6 +68,90 @@ class NativePacket:
                 raise ValidationError("invalid packet clock")
         if type(self.arrival_mono_ns) is not int or not 0 <= self.arrival_mono_ns < 2**63:
             raise ValidationError("invalid arrival clock")
+
+
+def split_packet(
+    packet: NativePacket,
+    identity: tuple[str, str, str],
+    sequence: int,
+    format: AudioFormat,
+    *,
+    max_block_bytes: int | None = None,
+) -> tuple[PCMBlock, ...]:
+    """Own a frame-aligned packet group, preserving its clock/flag semantics."""
+    limit = MAX_PCM_BLOCK_BYTES if max_block_bytes is None else max_block_bytes
+    if type(limit) is not int or limit < format.frame_bytes:
+        raise ValidationError("Packet fragment limit must contain a whole frame")
+    size = packet.frame_count * format.frame_bytes
+    if size > _MAX_PACKET_BYTES:
+        raise WasapiError("PACKET_TOO_LARGE")
+    silent = bool(packet.flags & SILENT)
+    if not silent and (packet.payload is None or len(packet.payload) != size):
+        raise WasapiError("INVALID_PACKET")
+    frames_per_block = limit // format.frame_bytes
+    count = (packet.frame_count + frames_per_block - 1) // frames_per_block
+    flags = tuple(
+        name
+        for bit, name in (
+            (DATA_DISCONTINUITY, "DATA_DISCONTINUITY"),
+            (SILENT, "SILENT"),
+            (TIMESTAMP_ERROR, "TIMESTAMP_ERROR"),
+        )
+        if packet.flags & bit
+    )
+    if packet.flags & ~7:
+        flags += (f"RAW_FLAGS_{packet.flags & ~7:08X}",)
+    capture_ns = (
+        packet.qpc_position_100ns * 100
+        if packet.qpc_position_100ns is not None and not packet.flags & TIMESTAMP_ERROR
+        else None
+    )
+    if capture_ns is not None and capture_ns >= 2**63:
+        capture_ns = None
+    quality = "DEVICE_CORRELATED" if capture_ns is not None else "INVALID"
+    result = []
+    for index in range(count):
+        offset = index * frames_per_block
+        frames = min(frames_per_block, packet.frame_count - offset)
+        position = (
+            packet.device_frame_position + offset
+            if packet.device_frame_position is not None
+            else None
+        )
+        stamp = (
+            capture_ns + offset * 1_000_000_000 // format.sample_rate
+            if capture_ns is not None
+            else None
+        )
+        if position is not None and position >= 2**63:
+            position = None
+        if stamp is not None and stamp >= 2**63:
+            stamp = None
+        begin = offset * format.frame_bytes
+        payload = (
+            bytes(frames * format.frame_bytes)
+            if silent
+            else cast(bytes, packet.payload)[begin : begin + frames * format.frame_bytes]
+        )
+        result.append(
+            PCMBlock(
+                *identity,
+                sequence,
+                format,
+                frames,
+                payload,
+                stamp,
+                packet.arrival_mono_ns,
+                position,
+                quality,
+                index,
+                count,
+                flags
+                if index == 0
+                else tuple(f for f in flags if f in {"SILENT", "TIMESTAMP_ERROR"}),
+            )
+        )
+    return tuple(result)
 
 
 class WasapiBackend(Protocol):
@@ -294,7 +380,7 @@ class WasapiSource:
         session_id: str,
         track_id: str,
         epoch_id: str,
-        submit: Callable[[PCMBlock], bool],
+        submit: Callable[[CaptureItem], bool],
         on_health: Callable[[dict[str, object]], None],
     ) -> AudioFormat:
         # Validate IDs without native activity, even on a failing startup.
@@ -345,7 +431,7 @@ class WasapiSource:
     def _worker(
         self,
         identity: tuple[str, str, str],
-        submit: Callable[[PCMBlock], bool],
+        submit: Callable[[CaptureItem], bool],
         health: Callable[[dict[str, object]], None],
     ) -> None:
         backend: WasapiBackend | None = None
@@ -383,38 +469,9 @@ class WasapiSource:
                 size = packet.frame_count * opened.audio_format.frame_bytes
                 if size > _MAX_PACKET_BYTES:
                     raise WasapiError("PACKET_TOO_LARGE")
-                payload = bytes(size) if packet.flags & SILENT else packet.payload
-                if payload is None or len(payload) != size:
-                    raise WasapiError("INVALID_PACKET")
-                flags = tuple(
-                    name
-                    for bit, name in (
-                        (DATA_DISCONTINUITY, "DATA_DISCONTINUITY"),
-                        (SILENT, "SILENT"),
-                        (TIMESTAMP_ERROR, "TIMESTAMP_ERROR"),
-                    )
-                    if packet.flags & bit
-                )
-                if packet.flags & ~7:
-                    flags += (f"RAW_FLAGS_{packet.flags & ~7:08X}",)
-                capture_ns = (
-                    packet.qpc_position_100ns * 100
-                    if packet.qpc_position_100ns is not None and not packet.flags & TIMESTAMP_ERROR
-                    else None
-                )
-                block = PCMBlock(
-                    *identity,
-                    sequence,
-                    opened.audio_format,
-                    packet.frame_count,
-                    payload,
-                    capture_ns,
-                    packet.arrival_mono_ns,
-                    packet.device_frame_position,
-                    "DEVICE_CORRELATED" if capture_ns is not None else "INVALID",
-                    flags=flags,
-                )
-                accepted_block = submit(block)
+                fragments = split_packet(packet, identity, sequence, opened.audio_format)
+                first = fragments[0]
+                accepted_block = submit(first if len(fragments) == 1 else fragments)
                 if type(accepted_block) is not bool:
                     raise WasapiError("INVALID_SUBMIT_RESULT")
                 if accepted_block:
@@ -426,10 +483,11 @@ class WasapiSource:
                     {
                         "event": "packet",
                         "sequence": sequence,
-                        "flags": list(flags),
+                        "flags": list(first.flags),
                         "accepted": accepted_block,
                         "frame_count": packet.frame_count,
-                        "capture_mono_ns": capture_ns,
+                        "fragment_count": len(fragments),
+                        "capture_mono_ns": first.capture_mono_ns,
                         "arrival_mono_ns": packet.arrival_mono_ns,
                         "device_frame_position": packet.device_frame_position,
                     }

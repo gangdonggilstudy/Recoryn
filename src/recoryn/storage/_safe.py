@@ -12,11 +12,11 @@ import uuid
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
-from recoryn.domain import ValidationError
+from recoryn.domain import MAX_PCM_BLOCK_BYTES, ValidationError
 
 SCHEMA_VERSION = 1
 MAX_JSON_BYTES = 64 * 1024
-MAX_BLOCK_BYTES = 16 * 1024 * 1024
+MAX_BLOCK_BYTES = MAX_PCM_BLOCK_BYTES
 MAX_CHUNK_BYTES = 1024 * 1024 * 1024
 MAX_RECORDS = 100_000
 

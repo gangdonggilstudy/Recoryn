@@ -14,6 +14,7 @@ import uuid
 from typing import Any
 
 from recoryn.capture import BoundedCaptureQueue
+from recoryn.capture.queue import CaptureItem, packet_blocks, queue_byte_budget
 from recoryn.domain import AudioFormat, PCMBlock, SessionState, StateConflict, ValidationError
 from recoryn.domain.capture_health import (
     CaptureReceipt,
@@ -63,7 +64,7 @@ class RecordingService:
         session_id: str | None = None,
         chunk_frames: int = 96_000,
         max_blocks: int = 256,
-        max_bytes: int = 16 * 1024 * 1024,
+        max_bytes: int | None = None,
         source_managed: bool = False,
     ) -> None:
         if not formats or chunk_frames <= 0:
@@ -73,7 +74,9 @@ class RecordingService:
         self.session_id = session_id or uuid.uuid4().hex
         self.chunk_frames = chunk_frames
         self.max_blocks = max_blocks
-        self.max_bytes = max_bytes
+        self.max_bytes = (
+            queue_byte_budget(self.formats.values()) if max_bytes is None else max_bytes
+        )
         self._gate = threading.Lock()
         self._accepting = False
         self._queue: BoundedCaptureQueue | None = None
@@ -530,7 +533,9 @@ class RecordingService:
                 "tracks": {k: v["dropped_frames"] for k, v in snapshot["tracks"].items()},
             }
 
-    def submit(self, block: PCMBlock) -> bool:
+    def submit(self, item: CaptureItem) -> bool:
+        fragments = packet_blocks(item)
+        block = fragments[0]
         with self._gate:
             if not self._accepting:
                 return False
@@ -544,18 +549,33 @@ class RecordingService:
             assert self._queue is not None
             if self._track_health[block.track_id]["reason"] == "DEVICE_LOST":
                 return False
-            accepted = self._queue.offer(block)
+            accepted = (
+                self._queue.offer(block)
+                if isinstance(item, PCMBlock)
+                else self._queue.offer_packet(fragments)
+            )
             try:
-                self._observe_block(block, accepted)
+                if isinstance(item, PCMBlock):
+                    self._observe_block(block, accepted)
+                else:
+                    self._observe_block(
+                        block, accepted, packet_frames=sum(part.frame_count for part in fragments)
+                    )
             except Exception:
                 self._health_deferred = self._defer_marker_pending = True
             return accepted
 
-    def _observe_block(self, block: PCMBlock, accepted: bool) -> None:
+    def _observe_block(
+        self, block: PCMBlock, accepted: bool, *, packet_frames: int | None = None
+    ) -> None:
+        frame_count = block.frame_count if packet_frames is None else packet_frames
+        position = block.device_frame_position
+        if position is not None and position + frame_count >= 2**63:
+            position = None
         health = self._track_health[block.track_id]
         if accepted:
             self._close_observation_gap(block.track_id)
-            health["accepted_frames"] += block.frame_count
+            health["accepted_frames"] += frame_count
             health["last_accepted_sequence"] = block.sequence
             health["last_observed_mono_ns"] = time.monotonic_ns()
             self._track_event(
@@ -563,35 +583,34 @@ class RecordingService:
                 "BAD_CLOCK" if "TIMESTAMP_ERROR" in block.flags else "ACCEPT_GOOD",
             )
         else:
-            health["dropped_frames"] += block.frame_count
+            health["dropped_frames"] += frame_count
             self._track_event(block.track_id, "QUEUE_REJECT")
-            position = None if "TIMESTAMP_ERROR" in block.flags else block.device_frame_position
+            position = None if "TIMESTAMP_ERROR" in block.flags else position
             self._gap(
                 block.track_id,
                 "QUEUE_DROP",
                 start=position,
-                end=position + block.frame_count if position is not None else None,
-                frames=block.frame_count,
+                end=position + frame_count if position is not None else None,
+                frames=frame_count,
                 source_clock=True,
             )
             gaps: list[dict[str, Any]] = health["gaps"]
             # Coalesce adjacent drops to keep metadata bounded under sustained overload.
             if gaps and gaps[-1]["last_sequence"] + 1 == block.sequence:
                 gaps[-1]["last_sequence"] = block.sequence
-                gaps[-1]["frame_count"] += block.frame_count
+                gaps[-1]["frame_count"] += frame_count
             elif len(gaps) < 256:
                 gaps.append(
                     {
                         "reason": "QUEUE_DROP",
                         "first_sequence": block.sequence,
                         "last_sequence": block.sequence,
-                        "frame_count": block.frame_count,
+                        "frame_count": frame_count,
                         "capture_mono_ns": block.capture_mono_ns,
                     }
                 )
             else:
                 health["gap_detail_truncated"] = True
-        position = block.device_frame_position
         previous = self._last_positions.get(block.track_id)
         if position is not None and "TIMESTAMP_ERROR" not in block.flags:
             if previous is not None and position > previous:
@@ -609,7 +628,7 @@ class RecordingService:
             ):
                 self._track_event(block.track_id, "DEVICE_DISCONTINUITY")
                 self._gap(block.track_id, "DEVICE_DISCONTINUITY")
-            self._last_positions[block.track_id] = position + block.frame_count
+            self._last_positions[block.track_id] = position + frame_count
         elif "DATA_DISCONTINUITY" in block.flags:
             self._last_positions.pop(block.track_id, None)
             self._gap(block.track_id, "DEVICE_DISCONTINUITY")
@@ -653,7 +672,8 @@ class RecordingService:
                     writers[key] = ChunkWriter(self.library.root, block)
                     frames[key] = 0
                 writers[key].append(block)
-                self._checkpoint_health()
+                if block.fragment_index + 1 == block.fragment_count:
+                    self._checkpoint_health()
                 frames[key] += block.frame_count
                 if (
                     frames[key] >= self.chunk_frames

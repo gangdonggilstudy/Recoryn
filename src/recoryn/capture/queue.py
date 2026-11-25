@@ -5,12 +5,53 @@ callers. This implementation makes no hard real-time guarantee.
 """
 
 from collections import deque
+from collections.abc import Iterable
 from math import isfinite
 from queue import Empty
 from threading import TIMEOUT_MAX, Condition, Lock
 from time import monotonic
 
-from recoryn.domain import PCMBlock, ValidationError
+from recoryn.domain import MAX_PCM_BLOCK_BYTES, AudioFormat, PCMBlock, ValidationError
+
+CaptureItem = PCMBlock | tuple[PCMBlock, ...]
+
+
+def validate_fragments(fragments: tuple[PCMBlock, ...], *, minimum: int = 1) -> None:
+    """Validate one complete immutable packet before any queue/accounting mutation."""
+    if type(fragments) is not tuple or len(fragments) < minimum:
+        raise ValidationError("Expected a complete packet tuple")
+    first = fragments[0]
+    if not isinstance(first, PCMBlock):
+        raise ValidationError("Packet fragments must be PCMBlock values")
+    identity = (first.session_id, first.track_id, first.epoch_id, first.sequence, first.format)
+    for index, block in enumerate(fragments):
+        if (
+            not isinstance(block, PCMBlock)
+            or (block.session_id, block.track_id, block.epoch_id, block.sequence, block.format)
+            != identity
+            or block.fragment_index != index
+            or block.fragment_count != len(fragments)
+            or len(block.payload) > MAX_PCM_BLOCK_BYTES
+        ):
+            raise ValidationError("Invalid packet fragment identity, order or size")
+
+
+def packet_blocks(item: CaptureItem) -> tuple[PCMBlock, ...]:
+    """Keep legacy single-block calls; tuples must contain a whole split packet."""
+    if isinstance(item, PCMBlock):
+        return (item,)
+    validate_fragments(item, minimum=2)
+    return item
+
+
+def queue_byte_budget(formats: Iterable[AudioFormat]) -> int:
+    """Two 200ms periods of the fastest track, bounded by the approved policy."""
+    values = tuple(formats)
+    if not values or any(not isinstance(value, AudioFormat) for value in values):
+        raise ValidationError("Queue budget requires audio formats")
+    fastest = max(values, key=lambda value: value.sample_rate * value.frame_bytes)
+    period = ((fastest.sample_rate + 4) // 5) * fastest.frame_bytes
+    return max(MAX_PCM_BLOCK_BYTES, min(128 * 1024 * 1024, 2 * period))
 
 
 class BoundedCaptureQueue:
@@ -44,26 +85,36 @@ class BoundedCaptureQueue:
         """Accept immediately when both bounds allow it; never evict old data."""
         if not isinstance(block, PCMBlock):
             raise ValidationError("offer requires a PCMBlock")
-        byte_count = len(block.payload)
+        return self._offer((block,))
+
+    def offer_packet(self, fragments: tuple[PCMBlock, ...]) -> bool:
+        """Linearize all fragments, or reject the entire packet without eviction."""
+        validate_fragments(fragments)
+        return self._offer(fragments)
+
+    def _offer(self, fragments: tuple[PCMBlock, ...]) -> bool:
+        count = len(fragments)
+        byte_count = sum(len(block.payload) for block in fragments)
+        frame_count = sum(block.frame_count for block in fragments)
         with self._condition:
             if self._closed:
                 return False
             if (
-                len(self._blocks) >= self._max_blocks
+                len(self._blocks) + count > self._max_blocks
                 or self._queued_bytes + byte_count > self._max_bytes
             ):
-                self._dropped_blocks += 1
-                self._dropped_frames += block.frame_count
+                self._dropped_blocks += count
+                self._dropped_frames += frame_count
                 self._dropped_bytes += byte_count
                 return False
-            self._blocks.append(block)
+            self._blocks.extend(fragments)
             self._queued_bytes += byte_count
-            self._accepted_blocks += 1
-            self._accepted_frames += block.frame_count
+            self._accepted_blocks += count
+            self._accepted_frames += frame_count
             self._accepted_bytes += byte_count
             self._high_water_blocks = max(self._high_water_blocks, len(self._blocks))
             self._high_water_bytes = max(self._high_water_bytes, self._queued_bytes)
-            self._condition.notify()
+            self._condition.notify(count)
             return True
 
     def get(self, timeout: float | None = None) -> PCMBlock:

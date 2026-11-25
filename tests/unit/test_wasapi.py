@@ -8,7 +8,7 @@ import sys
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from itertools import count
+from itertools import count, product
 from threading import Event, get_ident
 from types import SimpleNamespace
 from typing import Any
@@ -939,3 +939,87 @@ def test_native_release_failure_still_releases_other_interfaces_and_com(
     assert len(visited) == 4
     assert windows.log[-1] == "uninitialize"
     backend.close()  # Already released, no second COM uninitialization.
+
+
+@pytest.mark.parametrize(
+    "fragments,accepted,flags",
+    list(product((1, 3), (False, True), (0, SILENT, DATA_DISCONTINUITY))),
+    ids=[f"GS06-H-{i:03}" for i in range(1, 13)],
+)
+def test_packet_split_worker_reports_one_whole_event(monkeypatch, fragments, accepted, flags):
+    monkeypatch.setattr(wasapi_module, "MAX_PCM_BLOCK_BYTES", 6)
+    frames = 2 if fragments == 1 else 7
+    packet = NativePacket(
+        None if flags & SILENT else b"\x12\x34" * frames, frames, flags, 100, 20_000, 2_500_000
+    )
+    backend = FakeBackend([packet])
+    events, offers = [], []
+    processed = Event()
+
+    def submit(item):
+        offers.append(item)
+        return accepted
+
+    def health(value):
+        events.append(value)
+        if value.get("event") == "packet":
+            processed.set()
+
+    source = WasapiSource("endpoint", backend_factory=lambda: backend)
+    try:
+        source.start("s", "mic", "e", submit, health)
+        assert processed.wait(3)
+    finally:
+        source.stop()
+    assert len(offers) == 1
+    values = (offers[0],) if isinstance(offers[0], PCMBlock) else offers[0]
+    assert len(values) == fragments
+    assert isinstance(offers[0], PCMBlock) == (fragments == 1)
+    assert b"".join(v.payload for v in values) == (
+        bytes(frames * 2) if flags & SILENT else packet.payload
+    )
+    reports = [value for value in events if value["event"] == "packet"]
+    assert len(reports) == 1
+    assert reports[0]["fragment_count"] == fragments
+    assert reports[0]["frame_count"] == frames and reports[0]["sequence"] == 0
+    assert reports[0]["accepted"] is accepted
+    assert events[-1]["accepted_frames"] == (frames if accepted else 0)
+    assert events[-1]["rejected_frames"] == (0 if accepted else frames)
+    assert events[-1]["release_ack"] is True
+    assert all("SILENT" in v.flags for v in values) == bool(flags & SILENT)
+    if flags & DATA_DISCONTINUITY:
+        assert "DATA_DISCONTINUITY" in values[0].flags
+        assert all("DATA_DISCONTINUITY" not in v.flags for v in values[1:])
+
+
+@pytest.mark.parametrize("delta", (-4, 0, 4), ids=["GS06-B-003", "GS06-B-004", "GS06-B-005"])
+def test_native_packet_bound_is_checked_before_copy(monkeypatch, delta):
+    windows = FakeWindows()
+    windows.packet_frames = (64 * 1024 * 1024 + delta) // 4
+    windows.install(monkeypatch)
+    backend = NativeWasapiBackend()
+    backend.initialize()
+    copies = []
+    try:
+        fmt = backend.open("capture", loopback=False).audio_format
+        backend.start()
+
+        def owned_copy(pointer, size):
+            copies.append(size)
+            return bytes(size)
+
+        monkeypatch.setattr(ct, "string_at", owned_copy)
+        if delta > 0:
+            with pytest.raises(WasapiError, match="PACKET_TOO_LARGE"):
+                backend.read_packet()
+            assert copies == []
+        else:
+            packet = backend.read_packet()
+            assert copies == [64 * 1024 * 1024 + delta]
+            values = wasapi_module.split_packet(packet, ("s", "mic", "e"), 0, fmt)
+            assert sum(v.frame_count for v in values) == windows.packet_frames
+            assert sum(len(v.payload) for v in values) == copies[0]
+            assert max(len(v.payload) for v in values) <= 16 * 1024 * 1024
+        assert windows.log.count("release_buffer") == 1
+    finally:
+        backend.close()
