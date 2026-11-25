@@ -7,6 +7,7 @@ import importlib
 import re
 import threading
 import uuid
+import weakref
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,11 @@ def cuda_runtime_available() -> bool:
         return False
 
 
+def _close_streams(streams: list[Any]) -> None:
+    for stream in streams:
+        stream.close()
+
+
 class FasterWhisperProvider:
     def __init__(
         self,
@@ -84,8 +90,14 @@ class FasterWhisperProvider:
         timeout_seconds: float = 300,
         model_factory: Callable[..., Any] | None = None,
         device_index: int | None = None,
+        bundle: dict[str, Any] | None = None,
     ) -> None:
+        """``bundle`` is the sealed, confirmed model bundle (G-P13); without it the
+        object is created lazily but no loader is ever reached (CAPABILITY_UNSUPPORTED,
+        detail MODEL_CONFIRMATION_REQUIRED). The original folder is never loaded."""
         if not isinstance(model_path, Path) or device not in {"cpu", "cuda"}:
+            raise ProviderError("INPUT_INVALID")
+        if bundle is not None and not isinstance(bundle, dict):
             raise ProviderError("INPUT_INVALID")
         if device_index is not None and (
             type(device_index) is not int
@@ -107,7 +119,10 @@ class FasterWhisperProvider:
             timeout_seconds=timeout_seconds,
         )
         self._factory = model_factory
+        self._bundle = bundle
         self._model: Any = None
+        self._handles: list[Any] = []
+        self._digest: str | None = None
         self._lock = threading.Lock()
 
     def capabilities(self) -> ProviderCapabilities:
@@ -121,29 +136,64 @@ class FasterWhisperProvider:
             return
         run.progress("loading", 0, None, "model")
         factory = self._factory
-        if factory is None:
+        from recoryn.models._artifact_io import ArtifactError, whisper_files
+
+        if self._bundle is None:
+            raise ArtifactError("CAPABILITY_UNSUPPORTED", "MODEL_CONFIRMATION_REQUIRED")
+
+        # Every byte is compared with the sealed bundle's digest before any import.
+        files, handles, digest = whisper_files(self._bundle)
+        try:
+            if factory is None:
+                try:
+                    factory = importlib.import_module("faster_whisper").WhisperModel
+                except ImportError:
+                    raise ProviderError("DEPENDENCY_MISSING") from None
+            assert factory is not None
+            options: dict[str, Any] = {
+                "device": self.device,
+                "compute_type": self.compute_type,
+                "local_files_only": True,
+                "files": files,  # the pinned SDK's mapping: no path, Hub or folder read
+            }
+            if self.device_index is not None:
+                options["device_index"] = self.device_index
+            # The identifier is the bundle id, never a path the SDK could open.
             try:
-                factory = importlib.import_module("faster_whisper").WhisperModel
-            except ImportError:
-                raise ProviderError("DEPENDENCY_MISSING") from None
-        assert factory is not None
-        options: dict[str, Any] = {
-            "device": self.device,
-            "compute_type": self.compute_type,
-            "local_files_only": True,
-        }
-        if self.device_index is not None:
-            options["device_index"] = self.device_index
-        self._model = factory(str(self.model_path), **options)
+                self._model = factory(self._bundle["bundle_id"], **options)
+            except TypeError:
+                # An SDK without the files mapping: an explicit capability failure, never
+                # a retry with the original folder (G13 T20).
+                raise ProviderError("CAPABILITY_UNSUPPORTED") from None
+        except BaseException:
+            for stream in handles:
+                stream.close()
+            raise
+        self._handles, self._digest = handles, digest
+        # The readers close with this provider even without close() (no leaked handle).
+        self._finalizer = weakref.finalize(self, _close_streams, handles)
+
+    def close(self) -> None:
+        """Close the bundle readers this loader kept (the owner releases the guards)."""
+        handles, self._handles = self._handles, []
+        _close_streams(handles)
 
     def _check_model_files(self) -> None:
+        if self._bundle is None:
+            from recoryn.models._artifact_io import ArtifactError
+
+            raise ArtifactError("CAPABILITY_UNSUPPORTED", "MODEL_CONFIRMATION_REQUIRED")
         try:
-            checked_local_path(self.model_path)
+            folder = Path(self._bundle["directory"])
+            names = [row[0] for row in self._bundle["entries"] if row[3] == "PRESENT"]
+            checked_local_path(folder)
             for name in ("model.bin", "config.json", "tokenizer.json"):
-                checked_local_path(self.model_path / name)
-                if not (self.model_path / name).is_file():
+                if name not in names:
                     raise ProviderError("MODEL_MISSING")
-        except ProviderError:
+                checked_local_path(folder / name)
+                if not (folder / name).is_file():
+                    raise ProviderError("MODEL_MISSING")
+        except (ProviderError, KeyError, TypeError, IndexError):
             raise ProviderError("MODEL_MISSING") from None
 
     def facts(self) -> dict[str, Any]:
@@ -158,6 +208,8 @@ class FasterWhisperProvider:
             "device": device if isinstance(device, str) else None,
             "device_index": index if type(index) is int else None,
             "compute_type": compute if isinstance(compute, str) else None,
+            # The digest of the bytes this loader verified and received (G13 T22).
+            "artifact_digest": self._digest,
         }
 
     def load(self, context: ExecutionContext | None = None) -> dict[str, Any]:

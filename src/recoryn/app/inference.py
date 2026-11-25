@@ -19,7 +19,16 @@ from recoryn.providers import (
     STTResult,
 )
 
-_LOAD_CODES = frozenset({"MODEL_MISSING", "DEPENDENCY_MISSING", "CANCELLED", "TIMEOUT"})
+_LOAD_CODES = frozenset(
+    {
+        "MODEL_MISSING",
+        "DEPENDENCY_MISSING",
+        "CANCELLED",
+        "TIMEOUT",
+        "MODEL_CHECKSUM_MISMATCH",  # the sealed bundle differs from its digest (G-P13)
+        "CAPABILITY_UNSUPPORTED",  # no confirmed bundle: no loader is reached
+    }
+)
 _COMPUTE_TYPES = frozenset({"int8", "int8_float16", "int8_float32", "float16", "float32"})
 
 # Explicit failures of the opt-in GPU runtime (L01 D10); the parent re-raises them as is.
@@ -58,8 +67,11 @@ def _worker(
     gpu_runtime: str | None = None,
     device_index: int | None = None,
     compute_type: str | None = None,
+    bundle: dict[str, Any] | None = None,
 ) -> None:
     # No Qt, capture, provider discovery, download or device fallback in this process.
+    # ``model_path`` is the parent's sealed bundle folder; the loader receives only the
+    # bundle's files mapping (G-P13), never the user's original model folder.
     # CUDA enumerates by PCI bus id, the order the GPU inventory verified (G11 4.2).
     os.environ.update(
         {
@@ -90,7 +102,11 @@ def _worker(
     from recoryn.transcription import FasterWhisperProvider
 
     provider = FasterWhisperProvider(
-        Path(model_path), device=device, device_index=device_index, compute_type=compute_type
+        Path(model_path),
+        device=device,
+        device_index=device_index,
+        compute_type=compute_type,
+        bundle=bundle,
     )
     while True:
         command = requests.get()
@@ -125,7 +141,11 @@ class LocalSTTProcess:
         gpu_runtime: Path | None = None,
         device_index: int | None = None,
         compute_type: str | None = None,
+        model_evidence: Any = None,
+        bundle_parent: Path | None = None,
     ) -> None:
+        """``model_evidence`` is the run's confirmation (G-P13). Without it the object is
+        created lazily (compatibility) but no child or loader is ever started."""
         if (
             device not in ("cpu", "cuda")
             or isinstance(timeout, bool)
@@ -151,6 +171,11 @@ class LocalSTTProcess:
         self._replies: Any = None
         self._lock = threading.Lock()
         self._sequence = 0
+        self.model_evidence = model_evidence
+        self.bundle_parent = bundle_parent
+        self._bundle: Any = None  # sealed only while this owned child may read it
+        self.bundle_cleanup_pending = False
+        self._start_cancel: Any = None
 
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -161,13 +186,21 @@ class LocalSTTProcess:
         if self._process is not None and self._process.is_alive():
             return
         self.close()
+        from recoryn.models._artifact_io import ArtifactError, acquire
+
+        if self.model_evidence is None:
+            raise ArtifactError("CAPABILITY_UNSUPPORTED", "MODEL_CONFIRMATION_REQUIRED")
+
+        # Inside the lease, right before native: re-check the original source, copy the
+        # confirmed bytes, seal them and check the seal (G13 §5.2); any change: no child.
+        self._bundle = acquire(
+            self.model_evidence, parent=self.bundle_parent, cancel=self._start_cancel
+        )
         self._requests = self._context.Queue(maxsize=2)
         self._replies = self._context.Queue(maxsize=2)
         self._process = self._context.Process(
             target=_worker,
-            # The four-argument worker contract stays as is; a GPU runtime adds one and
-            # an explicit plan (device index / compute type) adds the last two.
-            args=(str(self.model_path), self.device, self._requests, self._replies)
+            args=(str(self._bundle.directory), self.device, self._requests, self._replies)
             + self._extra_args(),
             name="recoryn-local-stt",
             daemon=True,
@@ -176,9 +209,8 @@ class LocalSTTProcess:
 
     def _extra_args(self) -> tuple[Any, ...]:
         runtime = None if self.gpu_runtime is None else str(self.gpu_runtime)
-        if self.device_index is None and self.compute_type is None:
-            return () if runtime is None else (runtime,)
-        return (runtime, self.device_index, self.compute_type)
+        description = self._bundle.description() if self._bundle is not None else None
+        return (runtime, self.device_index, self.compute_type, description)
 
     def is_live(self) -> bool:
         """Lock-free: whether the owned child still exists (Library may ask under its mutex)."""
@@ -194,6 +226,10 @@ class LocalSTTProcess:
         facts = reply.get("facts") if isinstance(reply, dict) else None
         if not isinstance(facts, dict):
             raise ProviderError("INFERENCE_PROCESS_FAILED")
+        expected = getattr(getattr(self.model_evidence, "snapshot", None), "artifact_digest", None)
+        if expected is None or facts.get("artifact_digest") != expected:
+            self.close()  # the child loaded other bytes than the confirmed ones (T22)
+            raise ProviderError("MODEL_CHECKSUM_MISMATCH")
         return facts
 
     def transcribe(self, request: STTRequest, context: ExecutionContext | None = None) -> STTResult:
@@ -213,6 +249,7 @@ class LocalSTTProcess:
         try:
             if execution.cancel.is_set():
                 raise ProviderError("CANCELLED")
+            self._start_cancel = execution.cancel
             self._start()
             self._sequence += 1
             self._requests.put((self._sequence, request), timeout=1)
@@ -255,9 +292,16 @@ class LocalSTTProcess:
                     child.terminate()
                     child.join(2)
                 if child.is_alive():
-                    raise ProviderError("INFERENCE_ACK_PENDING")
+                    raise ProviderError("INFERENCE_ACK_PENDING")  # the bundle stays sealed
             child.close()
             self._process = None
+        bundle, self._bundle = self._bundle, None
+        if bundle is not None:
+            from recoryn.models._artifact_io import release
+
+            # Only after the child's exit: this Job's use ends; the sealed copy is kept for
+            # the next Job of the same confirmation (or its failed cleanup is pending).
+            self.bundle_cleanup_pending = not release(bundle)
         for channel in (self._requests, self._replies):
             if channel is not None:
                 channel.cancel_join_thread()

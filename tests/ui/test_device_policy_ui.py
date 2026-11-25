@@ -117,7 +117,29 @@ STAGES = ("prepare", "queued", "running", "blocked", "remote_unknown")
 S_ROWS = list(product(POLICIES, POLICIES, STAGES, tuple(BACKENDS)))
 S_CASES = [pytest.param(*row, id=f"G16-S-{i:03d}") for i, row in enumerate(S_ROWS, 1)]
 MODEL_FILES = {"model.bin": b"g16-model", "config.json": b"{}", "tokenizer.json": b"[]"}
-DIGEST = hashlib.sha256(b"".join(MODEL_FILES.values())).hexdigest()  # by hand, file order
+# G-P13 (C00-approved oracle change): the CT2 key digest is the canonical artifact
+# digest, written out by hand: the domain tag, then the exact canonical JSON of the
+# name-sorted (name, size, SHA-256, state) rows; the absent preprocessor is the fixed
+# default and the absent vocabulary is recorded as absent. Not the product's helper.
+_ROWS = ",".join(
+    f'["{name}",{len(MODEL_FILES[name])},"{hashlib.sha256(MODEL_FILES[name]).hexdigest()}","PRESENT"]'
+    if name in MODEL_FILES
+    else f'["{name}",0,"","{state}"]'
+    for name, state in (
+        ("config.json", "PRESENT"),
+        ("model.bin", "PRESENT"),
+        ("preprocessor_config.json", "ABSENT_DEFAULT"),
+        ("tokenizer.json", "PRESENT"),
+        ("vocabulary.json", "ABSENT"),
+        ("vocabulary.txt", "ABSENT"),  # G13R-01: the second vocabulary form, absent
+    )
+)
+CANONICAL = (
+    '{"files":['
+    + _ROWS
+    + '],"kind":"whisper","loader":"faster-whisper-1.2.1-files-v1","version":1}'
+).encode("ascii")
+DIGEST = hashlib.sha256(b"recoryn.model-artifact.v1\x00" + CANONICAL).hexdigest()
 
 
 class SEnv:
@@ -200,6 +222,14 @@ class SEnv:
         for name, data in MODEL_FILES.items():
             (model / name).write_bytes(data)
         window.local_model.setText(str(model))
+        # G-P13 explicit approval fixture: the real snapshot recorded in this window's run
+        # registry with Yes and the responsibility check (no always-passing gate).
+        registry = window.model_panel.confirmations
+        snapshot = window.model_panel.model_snapshot(model)
+        assert snapshot.artifact_digest == DIGEST  # the hand-written oracle above
+        assert registry.confirm(
+            snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+        )
         mp.setattr(transcription, "cuda_runtime_available", lambda: False)
         mp.setattr(transcription, "OpenAITranscriber", lambda gateway, config: FakeSTT())
         mp.setattr(summarization, "OllamaSummarizer", lambda gateway, config: FakeSummary())

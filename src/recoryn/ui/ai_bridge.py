@@ -7,7 +7,7 @@ import threading
 import wave
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -225,10 +225,20 @@ class OwnedSTT:
     No warm worker is kept between Jobs.
     """
 
-    def __init__(self, model_path: Path, *, source: ResourceSource, semantic_device: str) -> None:
+    def __init__(
+        self,
+        model_path: Path,
+        *,
+        source: ResourceSource,
+        semantic_device: str,
+        evidence: Any = None,
+    ) -> None:
         self.model_path = model_path
         self.resource_source = source
         self.semantic_device = semantic_device
+        # The confirmation captured at admission (G-P13); a queued Job keeps it and the
+        # worker re-checks the original source against it right before native.
+        self.evidence = evidence
         self.last: Any = None
 
     def capabilities(self) -> ProviderCapabilities:
@@ -244,7 +254,7 @@ class OwnedSTT:
         options: dict[str, Any] = {"device": plan.device, "gpu_runtime": runtime}
         options["device_index"] = plan.cuda_index if cuda else None
         options["compute_type"] = plan.compute_type
-        worker = LocalSTTProcess(self.model_path, **options)
+        worker = LocalSTTProcess(self.model_path, model_evidence=self.evidence, **options)
         self.last = worker
         return worker
 
@@ -252,8 +262,9 @@ class OwnedSTT:
 class OwnedDiarization:
     """Creates the CPU-only diarization worker inside the lease (G11 5.1)."""
 
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Any, evidence: Any = None) -> None:
         self.config = config
+        self.evidence = evidence  # the confirmation captured at admission (G-P13)
 
     def capabilities(self) -> dict[str, Any]:
         return {"provider_id": "sherpa_onnx", "diarization": True}
@@ -261,7 +272,51 @@ class OwnedDiarization:
     def open(self, plan: ResourcePlan) -> Any:
         from recoryn import diarization
 
-        return diarization.LocalDiarizationProcess(self.config)
+        return diarization.LocalDiarizationProcess(self.config, model_evidence=self.evidence)
+
+
+MODEL_CONFIRMATION_ACTION = "model_confirmation"
+
+
+def local_result_key(artifact_digest: str, device: str) -> str:
+    """The local STT result's semantic key: the loader's artifact digest and the real
+    device (G13 §개정 2). Trust, terms, root, run generation, policy, profile and priority
+    belong to the execution evidence / ResourceRequest, never to this key."""
+    return artifact_digest + ":" + device
+
+
+def model_request(request: ResourceRequest, snapshot: Any) -> ResourceRequest:
+    """Bind the artifact digest to the request in the same snapshot (G13 §개정 4).
+
+    An explicitly applied known profile stays applied, so a profile for other bytes is a
+    RESOURCE_PROFILE_MISMATCH later, never dropped to UNKNOWN; nothing is estimated here.
+    """
+    return replace(request, model_identity=snapshot.artifact_digest)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelConfirmationStatus(AIStatus):
+    """A request held before any Job: the local model has no current confirmation.
+
+    MODEL_CONFIRMATION_REQUIRED is a UI state (G13 section 6), not a Job code: nothing
+    was admitted, read by a loader or sent; the model panel shows exactly these bytes.
+    """
+
+    snapshot: Any = None
+
+
+def confirmation_status(snapshot: Any) -> ModelConfirmationStatus:
+    role = "로컬 Whisper" if getattr(snapshot, "kind", "") == "whisper" else "화자 분리"
+    return ModelConfirmationStatus(
+        "MODEL_CONFIRMATION_REQUIRED · "
+        + role
+        + " 모델 사용 확인 필요 · 작업 미접수 — 모델 관리 탭에서 파일·digest·출처·"
+        "라이선스를 확인하세요",
+        "CAPABILITY",
+        MODEL_CONFIRMATION_ACTION,
+        False,
+        snapshot,
+    )
 
 
 class DesktopAI:
@@ -468,11 +523,47 @@ class DesktopAI:
             except (StateConflict, KeyError):
                 pass
         self._blocked_target = None
+        if isinstance(status, ModelConfirmationStatus) and status.snapshot is not None:
+            show = getattr(self._model_panel(), "show_confirmation", None)
+            if callable(show):
+                show(status.snapshot)  # exactly the bytes this request hashed
         selected = self.window.selected_session()
         self._preparation_action = (
             (selected, kind, status.action_id) if selected and status.action_id else None
         )
         self.panel.show_ai_status(status)
+
+    def _model_panel(self) -> Any:
+        return getattr(self.window, "model_panel", None)
+
+    def _model_snapshot(self, path: Path, cancel: threading.Event) -> Any:
+        """Hash the Whisper loader inputs on this AI lane (cancellable, never the GUI)."""
+        panel = self._model_panel()
+        snapshot = getattr(panel, "model_snapshot", None)
+        if not callable(snapshot):
+            from recoryn.models._artifact_io import whisper_snapshot
+
+            return whisper_snapshot(path, cancel=cancel)
+        return snapshot(path, cancel=cancel)
+
+    def _diarization_snapshot(self, config: Any) -> Any:
+        from recoryn.diarization.models import verified_bundle
+        from recoryn.models._artifact_io import diarization_snapshot
+
+        files, terms = verified_bundle(config)
+        return diarization_snapshot(
+            files,
+            config.manifest_path.parent,
+            license_id=terms["license_id"],
+            license_url=terms["license_url"],
+            reference=config.manifest_sha256,
+        )
+
+    def _model_evidence(self, snapshot: Any) -> Any:
+        """This run's confirmation of exactly ``snapshot`` (None: ask, admit nothing)."""
+        registry = getattr(self._model_panel(), "confirmations", None)
+        lookup = getattr(registry, "evidence", None)
+        return lookup(snapshot) if callable(lookup) else None
 
     def _selected_policy(self) -> str:
         policy = getattr(self.window, "device_policy", None)
@@ -574,6 +665,11 @@ class DesktopAI:
         elif action == "resource":
             self.window.tabs.setCurrentWidget(self.window.model_panel)
             self.window.model_panel.installed.setFocus()
+        elif action == MODEL_CONFIRMATION_ACTION:
+            panel = self.window.model_panel
+            self.window.tabs.setCurrentWidget(panel)
+            target = getattr(panel, "confirm_ack", None) or panel.installed
+            target.setFocus()
         elif action == EXECUTION_POLICY_ACTION:
             policy = self.window.device_policy
             parent = policy.parentWidget()
@@ -712,7 +808,7 @@ class DesktopAI:
             if preparation_cancel.is_set():
                 raise StateConflict("CANCELLED")
 
-        def submit() -> str:
+        def submit() -> str | AIStatus:
             check_cancel()
             service = self._service()
             options: dict[str, Any] = {
@@ -725,13 +821,14 @@ class DesktopAI:
             if config is None or config.provider_id == "faster_whisper":
                 if not model:
                     raise StateConflict("LOCAL_MODEL_REQUIRED")
-                hasher = hashlib.sha256()
-                for name in ("model.bin", "config.json", "tokenizer.json"):
-                    with open_file(Path(model).absolute() / name, "rb") as stream:
-                        while block := stream.read(1024 * 1024):
-                            check_cancel()
-                            hasher.update(block)
-                digest = hasher.hexdigest()
+                # G-P13: the canonical digest of exactly the loader's inputs (not a
+                # concatenation), and this run's explicit confirmation of those bytes.
+                snapshot = self._model_snapshot(Path(model).absolute(), preparation_cancel)
+                evidence = self._model_evidence(snapshot)
+                if evidence is None:
+                    return confirmation_status(snapshot)  # not admitted, nothing loaded
+                digest = snapshot.artifact_digest
+                bound = model_request(resources, snapshot)
                 from recoryn.models.gpu_runtime import GpuRuntimeManager
                 from recoryn.transcription import cuda_runtime_available
 
@@ -749,13 +846,18 @@ class DesktopAI:
                     runtime_blocked=gpu_change_pending or failed,
                 )
                 where = source.cuda_source
-                request = replace(resources, model_identity=digest)
+                request = bound
                 # Plan now for the semantic key (digest:device, unchanged by G11); the lease
                 # re-observes at dispatch and keeps this device or refuses, never swaps it.
                 prepared = service.scheduler.prepare(request, source)
                 device = prepared.device
-                key = digest + ":" + device
-                factory = OwnedSTT(Path(model).absolute(), source=source, semantic_device=device)
+                key = local_result_key(digest, device)
+                factory = OwnedSTT(
+                    Path(model).absolute(),
+                    source=source,
+                    semantic_device=device,
+                    evidence=evidence,
+                )
                 self._local_factory = factory
                 self._local_generation = (
                     generation if device == "cuda" and where == "runtime" else None
@@ -972,11 +1074,15 @@ class DesktopAI:
         preparation_cancel = threading.Event()
         self._preparation_cancel = preparation_cancel
 
-        def submit() -> str:
+        def submit() -> str | AIStatus:
             if preparation_cancel.is_set():
                 raise StateConflict("CANCELLED")
+            snapshot = self._diarization_snapshot(config)  # strict: manifest/models/licenses
+            evidence = self._model_evidence(snapshot)
+            if evidence is None:
+                return confirmation_status(snapshot)  # not admitted, nothing loaded
             service = self._service()
-            worker = OwnedDiarization(config)
+            worker = OwnedDiarization(config, evidence)
             admitted = service.admit_diarization(resources, worker)  # before the Job exists
             job = service.jobs.create("diarization", uuid4().hex)
             service.jobs.bind_session(job.job_id, revision["session_id"])
@@ -1248,6 +1354,9 @@ class DesktopAI:
     def tick(self) -> None:
         self._name_policy_control()
         self.window.model_panel.request_attestation_check()
+        refresh = getattr(self.window.model_panel, "refresh_cleanup", None)
+        if callable(refresh):
+            refresh()  # a failed temporary model copy cleanup stays visible
         session_id = self.window.selected_session()
         if session_id:
             # Playback verification has its own status, and must not hide an AI
@@ -1471,5 +1580,8 @@ class DesktopAI:
             raise StateConflict("INFERENCE_ACK_PENDING")
         if self.service:
             self.service.close()
+        from recoryn.models._artifact_io import release_idle
+
+        release_idle()  # sealed copies no Job uses any more (after every worker's ACK)
         self.store.close()
         self._history.close()

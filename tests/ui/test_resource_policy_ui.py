@@ -668,10 +668,19 @@ def test_t29_unknown_requirement_never_reaches_the_legacy_helper(
     for name in ("model.bin", "config.json", "tokenizer.json"):
         (model / name).write_bytes(b"synthetic-" + name.encode())
     window.local_model.setText(str(model))
+    # G-P13 explicit approval fixture: the real snapshot recorded in this window's run
+    # registry with Yes and the responsibility check (no always-passing gate).
+    registry = window.model_panel.confirmations
+    snapshot = window.model_panel.model_snapshot(model)
+    assert registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
     created: list[dict[str, Any]] = []
 
     class Local:
         def __init__(self, path: Any, **kwargs: Any) -> None:
+            evidence = kwargs.pop("model_evidence", None)  # G-P13: always the confirmation
+            assert evidence is not None and evidence.valid()
             self.kwargs = kwargs
             created.append(kwargs)
 
@@ -749,8 +758,7 @@ def test_aux_diarize_submit_admits_and_captures(
     }
     panel.diarization_ranges.clear()
     panel.diarization_ranges.addItem("fixture", {"offset_ms": 0, "track_id": "mic"})
-    window.diarization_manifest.setText(str(tmp_path / "manifest.json"))
-    window.diarization_hash.setText("a" * 64)
+    _approved_manifest(window, tmp_path / "synthetic-model")
     window.diarization_approval.setChecked(True)
     before = len(service.jobs.list_for_session(lone.session))
     bridge.diarize()
@@ -768,3 +776,50 @@ def test_aux_diarize_submit_admits_and_captures(
     )
     bridge.tick()
     assert "접수 정책 GPU_WITH_CPU_FALLBACK_ALLOWED" in lone.text()
+
+
+def _approved_manifest(window: Any, folder: Path) -> None:
+    """G-P13 explicit approval fixture: a strictly valid synthetic manifest (not weights)
+    entered in the window and recorded in its run registry with Yes and the license
+    confirmation; the parent still re-verifies it right before sealing (no gate bypass)."""
+    import hashlib as _hashlib
+    import json as _json
+
+    from recoryn.diarization import DiarizationConfig
+
+    folder.mkdir(parents=True, exist_ok=True)
+    models = {}
+    for role in ("segmentation", "embedding"):
+        data, license_bytes = b"synthetic-not-onnx-" + role.encode(), b"Synthetic license"
+        (folder / f"{role}.onnx").write_bytes(data)
+        (folder / f"LICENSE.{role}.txt").write_bytes(license_bytes)
+        models[role] = {
+            "file": f"{role}.onnx",
+            "size": len(data),
+            "sha256": _hashlib.sha256(data).hexdigest(),
+            "license_id": "test-only",
+            "license_url": "https://publisher.invalid/license",
+            "license_file": f"LICENSE.{role}.txt",
+            "license_sha256": _hashlib.sha256(license_bytes).hexdigest(),
+        }
+    manifest = folder / "manifest.json"
+    manifest.write_text(
+        _json.dumps(
+            {
+                "schema_version": 1,
+                "runtime": "sherpa-onnx",
+                "runtime_version": "2.0.1",
+                "models": models,
+            }
+        ),
+        encoding="utf-8",
+    )
+    digest = _hashlib.sha256(manifest.read_bytes()).hexdigest()
+    window.diarization_manifest.setText(str(manifest))
+    window.diarization_hash.setText(digest)
+    snapshot = window.ai_bridge._diarization_snapshot(DiarizationConfig(manifest, digest, True))
+    registry = window.model_panel.confirmations
+    evidence = registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
+    assert evidence is not None

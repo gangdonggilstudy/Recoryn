@@ -279,6 +279,14 @@ class ModelManager:
             raise ValidationError("MODEL_CHECKSUM_MISMATCH")
 
     def verify(self, model_id: str) -> Path:
+        """The folder's own structure and file hashes (a listing check, not a run proof).
+
+        A run additionally compares ``spec_digest`` of this spec with a reference pinned
+        outside the folder (G13 §3.1); installed.json never approves itself.
+        """
+        return self.verified_spec(model_id)[0]
+
+    def verified_spec(self, model_id: str) -> tuple[Path, ModelSpec]:
         path = safe_path(self.root, identifier(model_id))
         data = read_json(safe_path(path, "installed.json"), limit=1024 * 1024)
         schema(data)
@@ -290,7 +298,7 @@ class ModelManager:
         _verify_file_set(path, spec.files)
         for item in spec.files:
             self._verify(safe_path(path, item.path), item)
-        return path
+        return path, spec
 
     def list_installed(self) -> list[dict[str, object]]:
         if not self.root.exists():
@@ -318,6 +326,19 @@ def _json_plan(value: dict[str, object]) -> dict[str, object]:
 
     result: dict[str, object] = json.loads(json.dumps(value))
     return result
+
+
+SPEC_DOMAIN = b"recoryn.model-spec.v1\x00"
+
+
+def spec_digest(spec: ModelSpec) -> str:
+    """The reviewed spec's identity, pinned by the UI before install (G13 §3.1)."""
+    import json
+
+    data = json.dumps(
+        asdict(spec), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    return hashlib.sha256(SPEC_DOMAIN + data).hexdigest()
 
 
 def parse_spec(value: object) -> ModelSpec:

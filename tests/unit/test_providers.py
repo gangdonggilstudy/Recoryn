@@ -7,6 +7,7 @@ import json
 import threading
 import time
 import wave
+from collections.abc import Iterator
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -170,6 +171,33 @@ def model_dir(tmp_path: Path) -> Path:
     for name in ("model.bin", "config.json", "tokenizer.json"):
         (path / name).write_bytes(b"fake, not model weights")
     return path
+
+
+_BUNDLES: list[Any] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_bundles() -> Iterator[None]:
+    yield
+    while _BUNDLES:
+        _BUNDLES.pop().close()
+
+
+def confirmed(path: Path) -> dict[str, Any]:
+    """G-P13 explicit approval fixture: this run's Yes and responsibility check of the
+    synthetic folder, then the sealed bundle the loader is given (never the folder)."""
+    from recoryn.models import artifacts
+    from recoryn.models._artifact_io import freeze, whisper_snapshot
+
+    snapshot = whisper_snapshot(path)
+    registry = artifacts.ConfirmationRegistry()
+    evidence = registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
+    assert evidence is not None
+    bundle = freeze(evidence, parent=path.parent)
+    _BUNDLES.append(bundle)
+    return bundle.description()
 
 
 def test_frozen_values_and_secret_context_repr() -> None:
@@ -396,6 +424,7 @@ def test_local_model_is_lazy_local_files_only_and_keeps_partial_results(
     calls: list[dict[str, Any]] = []
 
     def factory(path: str, **kwargs: Any) -> Any:
+        assert path.startswith("recoryn-bundle-")  # an id, not a path the SDK could open
         calls.append(kwargs)
 
         def generate() -> Any:
@@ -407,7 +436,8 @@ def test_local_model_is_lazy_local_files_only_and_keeps_partial_results(
             transcribe=lambda *a, **k: (generate(), SimpleNamespace(language="ko")),
         )
 
-    adapter = FasterWhisperProvider(model_dir(tmp_path), model_factory=factory)
+    folder = model_dir(tmp_path)
+    adapter = FasterWhisperProvider(folder, model_factory=factory, bundle=confirmed(folder))
     assert not calls
     result = adapter.transcribe(STTRequest(audio, language="ko"))
     assert result.error_code == "RESOURCE_EXHAUSTED" and result.segments[0].text == "first"
@@ -415,30 +445,41 @@ def test_local_model_is_lazy_local_files_only_and_keeps_partial_results(
         result.processed_ms == 50 and not result.complete and calls[0]["local_files_only"] is True
     )
     assert calls[0]["device"] == "cpu" and len(calls) == 1
+    # G-P13: the loader received the sealed bundle's files mapping, never a folder path.
+    assert set(calls[0]["files"]) == {
+        "model.bin",
+        "config.json",
+        "tokenizer.json",
+        "preprocessor_config.json",
+    }
     assert adapter.transcribe(STTRequest(audio, language="en")).error_code == "LANGUAGE_UNSUPPORTED"
 
 
 def test_local_missing_files_dependency_and_cancel_never_download(
     tmp_path: Path, audio: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # G-P13: without a confirmed bundle no loader is reached at all (native 0).
     adapter = FasterWhisperProvider(tmp_path / "not-installed")
-    assert adapter.transcribe(STTRequest(audio)).error_code == "MODEL_MISSING"
+    assert adapter.transcribe(STTRequest(audio)).error_code == "CAPABILITY_UNSUPPORTED"
     path = model_dir(tmp_path)
     (path / "tokenizer.json").unlink()
-    assert FasterWhisperProvider(path).transcribe(STTRequest(audio)).error_code == "MODEL_MISSING"
+    with pytest.raises(ProviderError, match="MODEL_MISSING"):
+        confirmed(path)  # a missing required file is never confirmed or loaded
     (path / "tokenizer.json").write_bytes(b"fake")
 
     def missing_package(name: str) -> Any:
         raise ImportError("CANARY")
 
     monkeypatch.setattr(stt_module.importlib, "import_module", missing_package)
+    bundle = confirmed(path)
     assert (
-        FasterWhisperProvider(path).transcribe(STTRequest(audio)).error_code == "DEPENDENCY_MISSING"
+        FasterWhisperProvider(path, bundle=bundle).transcribe(STTRequest(audio)).error_code
+        == "DEPENDENCY_MISSING"
     )
     cancelled = threading.Event()
     cancelled.set()
     assert (
-        FasterWhisperProvider(path)
+        FasterWhisperProvider(path, bundle=bundle)
         .transcribe(STTRequest(audio), ExecutionContext(cancel=cancelled))
         .cancelled
     )
@@ -451,8 +492,9 @@ def test_local_success_and_safe_runtime_failure(tmp_path: Path, audio: Path) -> 
             SimpleNamespace(language="en"),
         )
     )
+    folder = model_dir(tmp_path)
     adapter = FasterWhisperProvider(
-        model_dir(tmp_path), device="cuda", model_factory=lambda *a, **k: model
+        folder, device="cuda", model_factory=lambda *a, **k: model, bundle=confirmed(folder)
     )
     assert adapter.transcribe(STTRequest(audio)).complete
     model.transcribe = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("CANARY"))
@@ -779,12 +821,14 @@ def test_local_invalid_timing_directory_file_and_wait_cancel(tmp_path: Path, aud
             SimpleNamespace(),
         )
     )
-    adapter = FasterWhisperProvider(path, model_factory=lambda *a, **k: invalid)
+    bundle = confirmed(path)
+    adapter = FasterWhisperProvider(path, model_factory=lambda *a, **k: invalid, bundle=bundle)
     result = adapter.transcribe(STTRequest(audio))
     assert result.error_code == "RESULT_INVALID" and len(result.segments) == 1
     (path / "model.bin").unlink()
     (path / "model.bin").mkdir()
-    assert FasterWhisperProvider(path).transcribe(STTRequest(audio)).error_code == "MODEL_MISSING"
+    with pytest.raises(ProviderError, match="MODEL_MISSING"):
+        confirmed(path)  # a folder in the model.bin place is never confirmed
     (path / "model.bin").rmdir()
     (path / "model.bin").write_bytes(b"fake")
     context = ExecutionContext()
@@ -797,7 +841,7 @@ def test_local_invalid_timing_directory_file_and_wait_cancel(tmp_path: Path, aud
         def release(self) -> None:
             raise AssertionError("unacquired lock released")
 
-    adapter = FasterWhisperProvider(path)
+    adapter = FasterWhisperProvider(path, bundle=bundle)
     adapter._lock = Waiting()  # type: ignore[assignment]
     assert adapter.transcribe(STTRequest(audio), context).cancelled
 
@@ -885,8 +929,11 @@ def test_backend_error_classification_never_exposes_exception(
     def infer(*args: Any, **kwargs: Any) -> Any:
         raise BackendError()
 
+    folder = model_dir(tmp_path)
     adapter = FasterWhisperProvider(
-        model_dir(tmp_path), model_factory=lambda *args, **kwargs: SimpleNamespace(transcribe=infer)
+        folder,
+        model_factory=lambda *args, **kwargs: SimpleNamespace(transcribe=infer),
+        bundle=confirmed(folder),
     )
     result = adapter.transcribe(STTRequest(audio))
     assert not result.complete
@@ -910,8 +957,11 @@ def test_local_whisper_receives_decoded_16k_mono_float32_not_file_bytes(tmp_path
         received.append((audio, kwargs))
         return iter([SimpleNamespace(start=0.0, end=0.25, text="ok")]), SimpleNamespace()
 
+    folder = model_dir(tmp_path)
     adapter = FasterWhisperProvider(
-        model_dir(tmp_path), model_factory=lambda *a, **k: SimpleNamespace(transcribe=infer)
+        folder,
+        model_factory=lambda *a, **k: SimpleNamespace(transcribe=infer),
+        bundle=confirmed(folder),
     )
     result = adapter.transcribe(STTRequest(path))
     assert result.complete and result.processed_ms == 250
@@ -958,8 +1008,11 @@ def test_local_whisper_never_starts_inference_after_preprocess_stop(
         calls.append(args)
         return iter([SimpleNamespace(start=0.0, end=0.1, text="late")]), SimpleNamespace()
 
+    folder = model_dir(tmp_path)
     adapter = FasterWhisperProvider(
-        model_dir(tmp_path), model_factory=lambda *a, **k: SimpleNamespace(transcribe=infer)
+        folder,
+        model_factory=lambda *a, **k: SimpleNamespace(transcribe=infer),
+        bundle=confirmed(folder),
     )
     result = adapter.transcribe(STTRequest(path), ExecutionContext(cancel=cancel))
     assert calls == []
@@ -982,7 +1035,10 @@ def test_local_whisper_without_numpy_reports_dependency_missing(
 
     monkeypatch.setattr(stt_module.importlib, "import_module", without_numpy)
     model = SimpleNamespace(transcribe=lambda *a, **k: pytest.fail("model must not run"))
-    adapter = FasterWhisperProvider(model_dir(tmp_path), model_factory=lambda *a, **k: model)
+    folder = model_dir(tmp_path)
+    adapter = FasterWhisperProvider(
+        folder, model_factory=lambda *a, **k: model, bundle=confirmed(folder)
+    )
     result = adapter.transcribe(STTRequest(audio))
     assert result.error_code == "DEPENDENCY_MISSING" and "numpy" in calls
     assert "CANARY" not in repr(result)

@@ -74,7 +74,10 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
             gpu_runtime: Any = None,
             device_index: int | None = None,
             compute_type: str | None = None,
+            model_evidence: Any = None,
         ) -> None:
+            # G-P13: the worker is created only with this run's confirmation.
+            assert model_evidence is not None and model_evidence.valid()
             self.device = device
             self.device_index, self.compute_type = device_index, compute_type
             self.gpu_runtime = gpu_runtime if device == "cuda" else None
@@ -121,6 +124,13 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         window = MainWindow(library, recorder=recorder)
         window.timer.stop()
         window.local_model.setText(str(model))
+        # G-P13 explicit approval fixture: the real snapshot recorded in this window's
+        # run registry with Yes and the responsibility check (no always-passing gate).
+        registry = window.model_panel.confirmations
+        snapshot = window.model_panel.model_snapshot(model)
+        assert registry.confirm(
+            snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+        )
         window.device_policy.setCurrentText("GPU_WITH_CPU_FALLBACK_ALLOWED")
         windows.append(window)
         return window

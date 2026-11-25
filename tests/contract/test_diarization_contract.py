@@ -73,6 +73,41 @@ def manifest(tmp_path: Path) -> DiarizationConfig:
     return DiarizationConfig(path, hashlib.sha256(path.read_bytes()).hexdigest(), True)
 
 
+_BUNDLES: list[Any] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_bundles() -> Any:
+    yield
+    while _BUNDLES:
+        _BUNDLES.pop().close()
+
+
+def sealed(config: DiarizationConfig) -> dict[str, Any]:
+    """G-P13 explicit approval fixture: strict verification, this run's Yes and license
+    confirmation, then the sealed bundle (outside tmp_path) the child-side compute reads."""
+    from recoryn.diarization.models import verified_bundle
+    from recoryn.models import artifacts
+    from recoryn.models._artifact_io import diarization_snapshot, freeze
+
+    files, terms = verified_bundle(config)
+    snapshot = diarization_snapshot(
+        files,
+        config.manifest_path.parent,
+        license_id=terms["license_id"],
+        license_url=terms["license_url"],
+        reference=config.manifest_sha256,
+    )
+    registry = artifacts.ConfirmationRegistry()
+    evidence = registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
+    assert evidence is not None
+    bundle = freeze(evidence, data=files)
+    _BUNDLES.append(bundle)
+    return bundle.description()
+
+
 def wav(
     tmp_path: Path, *, channels: int = 1, rate: int = 16000, frames: int = 16000
 ) -> DiarizationRequest:
@@ -280,6 +315,7 @@ def test_fake_offline_api_scope_overlap_and_source_immutability(
         lambda name, version=None: {"sherpa_onnx": sdk, "onnx": parser, "numpy": np}[name],
     )
     audio_hash = hashlib.sha256(request.audio_path.read_bytes()).hexdigest()
+    bundle = sealed(config)
     if invalid:
         with pytest.raises(
             ProviderError,
@@ -289,15 +325,15 @@ def test_fake_offline_api_scope_overlap_and_source_immutability(
                 "cancel": "CANCELLED",
             }.get(invalid, "DIARIZATION_RESULT_INVALID"),
         ):
-            backend.compute(config, request, cancel, audio_hash)
+            backend.compute(config, request, cancel, audio_hash, bundle)
         assert before == {path.name: path.read_bytes() for path in tmp_path.iterdir()}
         return
-    result = backend.compute(config, request, cancel, audio_hash)
+    result = backend.compute(config, request, cancel, audio_hash, bundle)
     assert result.complete and result.warnings == ("ANONYMOUS_ESTIMATE", "OVERLAP_UNCERTAIN")
     assert [(turn.start_ms, turn.end_ms) for turn in result.turns] == [(2000, 2700), (2500, 3000)]
     assert all(turn.uncertain and turn.track_id == "mic" for turn in result.turns)
     second = backend.compute(
-        config, replace(request, offset_ms=3000), threading.Event(), audio_hash
+        config, replace(request, offset_ms=3000), threading.Event(), audio_hash, bundle
     )
     assert result.turns[0].speaker != second.turns[0].speaker
     assert before == {path.name: path.read_bytes() for path in tmp_path.iterdir()}
@@ -367,7 +403,7 @@ def test_reply_binding_rejects_wrong_hash_track_or_range(tmp_path: Path) -> None
 def test_model_change_between_snapshot_and_child_is_denied(tmp_path: Path) -> None:
     config, request = manifest(tmp_path), wav(tmp_path)
     with pytest.raises(ProviderError, match="DIARIZATION_AUDIO_CHANGED"):
-        backend.compute(config, request, threading.Event(), "0" * 64)
+        backend.compute(config, request, threading.Event(), "0" * 64, sealed(config))
 
 
 def test_truncated_wave_is_rejected(tmp_path: Path) -> None:

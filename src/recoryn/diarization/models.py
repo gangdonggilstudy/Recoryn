@@ -28,6 +28,13 @@ def read_local(path: Path, maximum: int) -> bytes:
 
 
 def verified_models(config: DiarizationConfig) -> dict[str, bytes]:
+    files, _ = verified_bundle(config)
+    return {role: files[role + ".onnx"] for role in ("segmentation", "embedding")}
+
+
+def verified_bundle(config: DiarizationConfig) -> tuple[dict[str, bytes], dict[str, str]]:
+    """Every strictly verified byte (manifest, both models, both license texts) and the
+    declared license metadata; the same checks as before, never relaxed (G13 §3.1)."""
     if not config.license_accepted:
         raise ProviderError("DIARIZATION_LICENSE_REQUIRED")
     raw = read_local(config.manifest_path, 64 * 1024)
@@ -45,8 +52,9 @@ def verified_models(config: DiarizationConfig) -> dict[str, bytes]:
             or set(value["models"]) != {"segmentation", "embedding"}
         ):
             raise ProviderError("DIARIZATION_MANIFEST_INVALID")
-        output: dict[str, bytes] = {}
-        for role, item in value["models"].items():
+        output: dict[str, bytes] = {"manifest.json": raw}
+        terms: dict[str, list[str]] = {"license_id": [], "license_url": []}
+        for role, item in sorted(value["models"].items()):
             if not isinstance(item, dict) or set(item) != {
                 "file",
                 "size",
@@ -90,8 +98,11 @@ def verified_models(config: DiarizationConfig) -> dict[str, bytes]:
                 or not license_bytes.decode("utf-8").strip()
             ):
                 raise ProviderError("DIARIZATION_LICENSE_INVALID")
-            output[role] = data
-        return output
+            output[role + ".onnx"] = data
+            output[item["license_file"]] = license_bytes
+            terms["license_id"].append(f"{role}={license_id}")
+            terms["license_url"].append(url)
+        return output, {name: " ".join(values) for name, values in terms.items()}
     except (ValidationError, KeyError, TypeError, UnicodeError, ValueError) as error:
         if isinstance(error, ProviderError):
             raise

@@ -61,6 +61,51 @@ class Provider:
         pass
 
 
+def confirm_model(window, snapshot):
+    """G-P13 explicit approval fixture: the real snapshot recorded in this window's run
+    registry with Yes and the responsibility check (no always-passing gate)."""
+    registry = window.model_panel.confirmations
+    evidence = registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
+    assert evidence is not None
+    return evidence
+
+
+def synthetic_manifest(folder):
+    """A strictly valid synthetic diarization manifest (not model weights)."""
+    import json
+
+    folder.mkdir(parents=True, exist_ok=True)
+    models = {}
+    for role in ("segmentation", "embedding"):
+        data, license_bytes = b"synthetic-not-onnx-" + role.encode(), b"Synthetic license"
+        (folder / f"{role}.onnx").write_bytes(data)
+        (folder / f"LICENSE.{role}.txt").write_bytes(license_bytes)
+        models[role] = {
+            "file": f"{role}.onnx",
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "license_id": "test-only",
+            "license_url": "https://publisher.invalid/license",
+            "license_file": f"LICENSE.{role}.txt",
+            "license_sha256": hashlib.sha256(license_bytes).hexdigest(),
+        }
+    path = folder / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "runtime": "sherpa-onnx",
+                "runtime_version": "2.0.1",
+                "models": models,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path, hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 @pytest.fixture
 def ui(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
@@ -75,6 +120,7 @@ def ui(tmp_path, monkeypatch):
         for name in ("model.bin", "config.json", "tokenizer.json"):
             (model / name).write_bytes(b"synthetic-" + name.encode())
         window.local_model.setText(str(model))
+        confirm_model(window, window.model_panel.model_snapshot(model))
         session = recorder.start((TrackSelection("mic", "fake", False, AudioFormat(8000, 1)),))
         recorder.recording.chunk_frames = 8000
         window.refresh_sessions()
@@ -361,8 +407,9 @@ def test_optional_diarization_publishes_new_scoped_revision_and_preserves_parent
     entered, release, closed = threading.Event(), threading.Event(), threading.Event()
 
     class FakeDiarization:
-        def __init__(self, config):
+        def __init__(self, config, model_evidence=None):
             self.config = config
+            assert model_evidence is not None and model_evidence.valid()
 
         def diarize(self, request, context):
             with wave.open(str(request.audio_path), "rb") as audio:
@@ -386,8 +433,13 @@ def test_optional_diarization_publishes_new_scoped_revision_and_preserves_parent
             closed.set()
 
     monkeypatch.setattr(diarization, "LocalDiarizationProcess", FakeDiarization)
-    window.diarization_manifest.setText(str(window.library.root / "fake-manifest.json"))
-    window.diarization_hash.setText("b" * 64)
+    manifest, digest = synthetic_manifest(window.library.root / "fake-diarization")
+    window.diarization_manifest.setText(str(manifest))
+    window.diarization_hash.setText(digest)
+    confirm_model(
+        window,
+        bridge._diarization_snapshot(diarization.DiarizationConfig(manifest, digest, True)),
+    )
     bridge.diarize()
     assert not entered.is_set() and not bridge.busy  # no implicit license or CPU approval
     window.diarization_approval.setChecked(True)
@@ -440,5 +492,5 @@ def test_optional_diarization_publishes_new_scoped_revision_and_preserves_parent
         scope = candidate["coverage"]["checkpoint"]["diarization"]
         assert scope["complete"] and scope["anonymous_estimate"]
         assert scope["range"] == parent["coverage"]["source_ranges"][0]
-        assert scope["manifest_sha256"] == "b" * 64
+        assert scope["manifest_sha256"] == digest  # the configured manifest (G-P13 fixture)
         assert active["revision_id"] == (edited if race == "edit" else candidate["revision_id"])

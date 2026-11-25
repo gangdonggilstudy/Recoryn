@@ -17,6 +17,7 @@ from contextlib import closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -725,7 +726,8 @@ def test_diarization_selection_preserves_parent_and_cas_with_fake_runtime(
     entered, release, closed = (threading.Event() for _ in range(3))
 
     class Runtime:
-        def __init__(self, config):
+        def __init__(self, config, model_evidence=None):
+            assert model_evidence is not None and model_evidence.valid()  # G-P13
             self.config = config
 
         def diarize(self, request, context):
@@ -775,8 +777,7 @@ def test_diarization_selection_preserves_parent_and_cas_with_fake_runtime(
         window.timer.stop()
         bridge = window.ai_bridge
         bridge.panel.load(session)
-        window.diarization_manifest.setText(str(tmp_path / "unloaded-manifest.json"))
-        window.diarization_hash.setText("b" * 64)
+        _approved_manifest(window, tmp_path / "synthetic-model")
         window.diarization_approval.setChecked(True)
         edited = None
 
@@ -1052,3 +1053,50 @@ def _fixture_request(
 
 def _fixture_feature(data_type: str) -> str:
     return "stt" if data_type == "audio" else "summary"
+
+
+def _approved_manifest(window: Any, folder: Path) -> None:
+    """G-P13 explicit approval fixture: a strictly valid synthetic manifest (not weights)
+    entered in the window and recorded in its run registry with Yes and the license
+    confirmation; the parent still re-verifies it right before sealing (no gate bypass)."""
+    import hashlib as _hashlib
+    import json as _json
+
+    from recoryn.diarization import DiarizationConfig
+
+    folder.mkdir(parents=True, exist_ok=True)
+    models = {}
+    for role in ("segmentation", "embedding"):
+        data, license_bytes = b"synthetic-not-onnx-" + role.encode(), b"Synthetic license"
+        (folder / f"{role}.onnx").write_bytes(data)
+        (folder / f"LICENSE.{role}.txt").write_bytes(license_bytes)
+        models[role] = {
+            "file": f"{role}.onnx",
+            "size": len(data),
+            "sha256": _hashlib.sha256(data).hexdigest(),
+            "license_id": "test-only",
+            "license_url": "https://publisher.invalid/license",
+            "license_file": f"LICENSE.{role}.txt",
+            "license_sha256": _hashlib.sha256(license_bytes).hexdigest(),
+        }
+    manifest = folder / "manifest.json"
+    manifest.write_text(
+        _json.dumps(
+            {
+                "schema_version": 1,
+                "runtime": "sherpa-onnx",
+                "runtime_version": "2.0.1",
+                "models": models,
+            }
+        ),
+        encoding="utf-8",
+    )
+    digest = _hashlib.sha256(manifest.read_bytes()).hexdigest()
+    window.diarization_manifest.setText(str(manifest))
+    window.diarization_hash.setText(digest)
+    snapshot = window.ai_bridge._diarization_snapshot(DiarizationConfig(manifest, digest, True))
+    registry = window.model_panel.confirmations
+    evidence = registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
+    assert evidence is not None

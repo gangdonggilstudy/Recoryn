@@ -32,6 +32,15 @@ from recoryn.providers import ExecutionContext, ProviderError
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _idle_copies_released() -> Any:
+    """G-P13: sealed copies kept for reuse never outlive one row."""
+    yield
+    from recoryn.models._artifact_io import release_idle
+
+    release_idle()
+
+
 def _observer() -> Any:
     from ctypes import wintypes
 
@@ -129,14 +138,75 @@ def _synthetic(tmp_path: Path, timeout: float = 10) -> tuple[DiarizationConfig, 
     with wave.open(str(audio), "wb") as stream:
         stream.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
         stream.writeframes(b"\0\0" * 160)
-    config = DiarizationConfig(
-        tmp_path / "no-real-model.json", "a" * 64, True, timeout_seconds=timeout
+    # G-P13: a strictly valid synthetic manifest (not model weights); the parent now
+    # re-verifies it right before sealing the bundle the child reads.
+    models = {}
+    folder = tmp_path / "synthetic-model"
+    folder.mkdir()
+    for role in ("segmentation", "embedding"):
+        data, license_bytes = b"synthetic-not-onnx-" + role.encode(), b"Synthetic license"
+        (folder / f"{role}.onnx").write_bytes(data)
+        (folder / f"LICENSE.{role}.txt").write_bytes(license_bytes)
+        models[role] = {
+            "file": f"{role}.onnx",
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "license_id": "test-only",
+            "license_url": "https://publisher.invalid/license",
+            "license_file": f"LICENSE.{role}.txt",
+            "license_sha256": hashlib.sha256(license_bytes).hexdigest(),
+        }
+    manifest = folder / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "runtime": "sherpa-onnx",
+                "runtime_version": "2.0.1",
+                "models": models,
+            }
+        ),
+        encoding="utf-8",
     )
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    config = DiarizationConfig(manifest, digest, True, timeout_seconds=timeout)
     return config, DiarizationRequest(audio)
 
 
+def _approved(config: DiarizationConfig) -> LocalDiarizationProcess:
+    """G-P13 explicit approval fixture: strict verification of the synthetic manifest,
+    this run's Yes and license confirmation, and the evidence the parent re-checks."""
+    from recoryn.diarization.models import verified_bundle
+    from recoryn.models import artifacts
+    from recoryn.models._artifact_io import diarization_snapshot
+
+    files, terms = verified_bundle(config)
+    snapshot = diarization_snapshot(
+        files,
+        config.manifest_path.parent,
+        license_id=terms["license_id"],
+        license_url=terms["license_url"],
+        reference=config.manifest_sha256,
+    )
+    registry = artifacts.ConfirmationRegistry()
+    evidence = registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
+    assert evidence is not None
+    # The sealed copy lives in the test's TEMP and is retired after each row.
+    return LocalDiarizationProcess(
+        config, model_evidence=evidence, bundle_parent=config.manifest_path.parent.parent
+    )
+
+
 def _hung_child(
-    config: Any, request: Any, audio_hash: str, gate: Any, cancel: Any, reply: Any
+    config: Any,
+    request: Any,
+    audio_hash: str,
+    gate: Any,
+    cancel: Any,
+    reply: Any,
+    bundle: Any = None,
 ) -> None:
     def denied(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("network forbidden")
@@ -150,7 +220,13 @@ def _hung_child(
 
 
 def _slow_start_hung_child(
-    config: Any, request: Any, audio_hash: str, gate: Any, cancel: Any, reply: Any
+    config: Any,
+    request: Any,
+    audio_hash: str,
+    gate: Any,
+    cancel: Any,
+    reply: Any,
+    bundle: Any = None,
 ) -> None:
     # Start-up slower than the whole provider timeout, then hang like _hung_child.
     if gate.wait(5):
@@ -182,7 +258,13 @@ class _MarkerClock:
 
 
 def _success_child(
-    config: Any, request: Any, audio_hash: str, gate: Any, cancel: Any, reply: Any
+    config: Any,
+    request: Any,
+    audio_hash: str,
+    gate: Any,
+    cancel: Any,
+    reply: Any,
+    bundle: Any = None,
 ) -> None:
     try:
         assert gate.wait(5)
@@ -215,7 +297,7 @@ def test_dependency_state_does_not_spawn(
         "capabilities",
         lambda self: {"platform_supported": True, "dependencies": {"fake": state}},
     )
-    provider = LocalDiarizationProcess(config)
+    provider = _approved(config)
     result = provider.diarize(request)
     assert not result.complete and result.error_code == code
     assert provider._process is None
@@ -238,7 +320,7 @@ def test_precancel_closed_and_platform_fail_without_model_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config, request = _synthetic(tmp_path)
-    provider = LocalDiarizationProcess(config)
+    provider = _approved(config)
     event = threading.Event()
     event.set()
     assert provider.diarize(request, ExecutionContext(cancel=event)).cancelled
@@ -262,7 +344,7 @@ def test_owned_hung_child_ack_before_return(
     monkeypatch.setattr(process, "time", types.SimpleNamespace(monotonic=clock.monotonic))
     monkeypatch.setattr(LocalDiarizationProcess, "capabilities", _available)
     monkeypatch.setattr(process, "_worker", _hung_child)
-    provider = LocalDiarizationProcess(config)
+    provider = _approved(config)
     event = threading.Event()
     results: list[DiarizationResult] = []
     errors: list[BaseException] = []
@@ -316,7 +398,7 @@ def test_slow_child_start_does_not_use_the_provider_deadline(
     monkeypatch.setattr(process, "time", types.SimpleNamespace(monotonic=clock.monotonic))
     monkeypatch.setattr(LocalDiarizationProcess, "capabilities", _available)
     monkeypatch.setattr(process, "_worker", _slow_start_hung_child)
-    provider = LocalDiarizationProcess(config)
+    provider = _approved(config)
     try:
         started = time.monotonic()
         result = provider.diarize(request)
@@ -334,7 +416,7 @@ def test_owned_success_reaps_child_and_preserves_audio(
     config, request = _synthetic(tmp_path)
     monkeypatch.setattr(LocalDiarizationProcess, "capabilities", _available)
     monkeypatch.setattr(process, "_worker", _success_child)
-    provider = LocalDiarizationProcess(config)
+    provider = _approved(config)
     before = hashlib.sha256(request.audio_path.read_bytes()).hexdigest()
     result = provider.diarize(request)
     assert result.complete and result.turns == () and provider._process is None
@@ -355,7 +437,7 @@ def test_guard_failure_never_opens_model_gate(
         raise ProviderError("DIARIZATION_GUARD_FAILED")
 
     monkeypatch.setattr(_job.ChildJob, "attach", failed)
-    provider = LocalDiarizationProcess(config)
+    provider = _approved(config)
     assert provider.diarize(request).error_code == "DIARIZATION_GUARD_FAILED"
     assert provider._process is None and not request.audio_path.with_suffix(".started").exists()
 
@@ -380,7 +462,7 @@ def test_ack_failure_retains_owned_child(tmp_path: Path) -> None:
             self.closed = True
 
     child = Stubborn()
-    provider = LocalDiarizationProcess(config)
+    provider = _approved(config)
     provider._process = child
     with pytest.raises(ProviderError, match="DIARIZATION_ACK_PENDING"):
         provider.close()

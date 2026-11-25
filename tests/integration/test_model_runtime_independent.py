@@ -157,10 +157,32 @@ def test_local_process_requires_finite_numeric_deadline(tmp_path: Path, timeout:
         LocalSTTProcess(tmp_path / "not-a-model", timeout=timeout)
 
 
-def _hanging_owned_worker(model_path: str, device: str, requests: Any, replies: Any) -> None:
+def _confirmed(folder: Path) -> Any:
+    """G-P13 explicit approval fixture: a synthetic folder (not weights) and this run's
+    Yes and responsibility check; the worker re-checks and seals it before spawning."""
+    from recoryn.models import artifacts
+    from recoryn.models._artifact_io import whisper_snapshot
+
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in ("model.bin", "config.json", "tokenizer.json"):
+        (folder / name).write_bytes(b"synthetic-" + name.encode())
+    snapshot = whisper_snapshot(folder)
+    registry = artifacts.ConfirmationRegistry()
+    evidence = registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
+    assert evidence is not None
+    return evidence
+
+
+def _hanging_owned_worker(
+    model_path: str, device: str, requests: Any, replies: Any, *bundle: Any
+) -> None:
     """No model import or I/O except this test's synthetic readiness receipt."""
     requests.get()
-    ready = Path(model_path + ".ready")
+    # G-P13: ``model_path`` is the parent's sealed bundle folder; the receipt goes next
+    # to it, in the test's own bundle parent.
+    ready = Path(model_path).parent / "owned-child.ready"
     staging = ready.with_name(ready.name + ".tmp")
     staging.write_text(str(os.getpid()), encoding="ascii")
     staging.replace(ready)
@@ -170,7 +192,10 @@ def _hanging_owned_worker(model_path: str, device: str, requests: Any, replies: 
 
 def _owned_supervisor(status: str) -> None:
     """Host an actual idle production worker; never submit an inference request."""
-    provider = LocalSTTProcess(Path(status).parent / "no-model-loaded")
+    folder = Path(status).parent / "no-model-loaded"
+    bundles = Path(status).parent / "bundles"
+    bundles.mkdir(exist_ok=True)
+    provider = LocalSTTProcess(folder, model_evidence=_confirmed(folder), bundle_parent=bundles)
     provider._start()
     receipt = Path(status)
     staging = receipt.with_name(receipt.name + ".tmp")
@@ -224,14 +249,18 @@ def test_hung_owned_inference_child_exits_before_error_ack(
 ) -> None:
     monkeypatch.setattr(inference, "_worker", _hanging_owned_worker)
     model = tmp_path / "fake-model"
-    provider = LocalSTTProcess(model, timeout=3)
+    bundles = tmp_path / "bundles"
+    bundles.mkdir()
+    provider = LocalSTTProcess(
+        model, timeout=3, model_evidence=_confirmed(model), bundle_parent=bundles
+    )
     context = ExecutionContext()
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
             result = executor.submit(
                 provider.transcribe, STTRequest(tmp_path / "synthetic.wav"), context
             )
-            ready = Path(str(model) + ".ready")
+            ready = bundles / "owned-child.ready"
             _await_file(ready)
             pid = int(ready.read_text(encoding="ascii"))
             assert provider._process.pid == pid

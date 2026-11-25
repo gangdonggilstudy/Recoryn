@@ -39,6 +39,15 @@ from recoryn.providers import ExecutionContext, ProviderError
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture(autouse=True)
+def _idle_copies_released() -> Any:
+    """G-P13: sealed copies kept for reuse never outlive one row."""
+    yield
+    from recoryn.models._artifact_io import release_idle
+
+    release_idle()
+
+
 def synthetic_audio(tmp_path: Path) -> DiarizationRequest:
     path = tmp_path / "derived.wav"
     with wave.open(str(path), "wb") as stream:
@@ -75,6 +84,32 @@ def synthetic_manifest(tmp_path: Path) -> DiarizationConfig:
         )
     )
     return DiarizationConfig(path, hashlib.sha256(path.read_bytes()).hexdigest(), True)
+
+
+def approved(config: DiarizationConfig) -> LocalDiarizationProcess:
+    """G-P13 explicit approval fixture: strict verification of the synthetic manifest,
+    this run's Yes and license confirmation, and the evidence the parent re-checks."""
+    from recoryn.diarization.models import verified_bundle
+    from recoryn.models import artifacts
+    from recoryn.models._artifact_io import diarization_snapshot
+
+    files, terms = verified_bundle(config)
+    snapshot = diarization_snapshot(
+        files,
+        config.manifest_path.parent,
+        license_id=terms["license_id"],
+        license_url=terms["license_url"],
+        reference=config.manifest_sha256,
+    )
+    registry = artifacts.ConfirmationRegistry()
+    evidence = registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
+    assert evidence is not None
+    # The sealed copy lives in the test's TEMP and is retired after each row.
+    return LocalDiarizationProcess(
+        config, model_evidence=evidence, bundle_parent=config.manifest_path.parent.parent
+    )
 
 
 @pytest.mark.parametrize(
@@ -264,7 +299,13 @@ def test_external_tensor_fake_oracle_is_mandatory_without_optional_packages(
 
 
 def _spawn_probe(
-    config: Any, request: Any, audio_hash: str, gate: Any, cancel: Any, reply: Any
+    config: Any,
+    request: Any,
+    audio_hash: str,
+    gate: Any,
+    cancel: Any,
+    reply: Any,
+    bundle: Any = None,
 ) -> None:
     import time
 
@@ -293,8 +334,9 @@ def test_product_multiprocessing_owns_actual_base_interpreter_not_venv_launcher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     request = synthetic_audio(tmp_path)
-    config = DiarizationConfig(tmp_path / "absent.json", "b" * 64, True, timeout_seconds=15)
-    provider = LocalDiarizationProcess(config)
+    (tmp_path / "model").mkdir()
+    config = replace(synthetic_manifest(tmp_path / "model"), timeout_seconds=15)
+    provider = approved(config)
     monkeypatch.setattr(
         LocalDiarizationProcess,
         "capabilities",
@@ -400,8 +442,9 @@ def test_result_during_child_cleanup_respects_cancellation_and_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
 ) -> None:
     request = synthetic_audio(tmp_path)
-    config = DiarizationConfig(tmp_path / "absent.json", "b" * 64, True, timeout_seconds=1)
-    provider = LocalDiarizationProcess(config)
+    (tmp_path / "model").mkdir()
+    config = replace(synthetic_manifest(tmp_path / "model"), timeout_seconds=1)
+    provider = approved(config)
     execution = ExecutionContext()
     clock = [0.0]
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])

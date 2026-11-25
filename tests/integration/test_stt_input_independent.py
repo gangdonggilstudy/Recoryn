@@ -8,6 +8,7 @@ import math
 import struct
 import threading
 from collections import Counter
+from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
@@ -138,6 +139,33 @@ def test_transition_band_has_no_invented_amplitude_guarantee(rate: int, tone: in
     np.testing.assert_allclose(result, expected, rtol=8e-8, atol=8e-8)
 
 
+_BUNDLES: list[Any] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_bundles() -> Iterator[None]:
+    yield
+    while _BUNDLES:
+        _BUNDLES.pop().close()
+
+
+def confirmed(path: Path) -> dict[str, Any]:
+    """G-P13 explicit approval fixture: this run's Yes and responsibility check of the
+    synthetic folder, then the sealed bundle the loader is given (never the folder)."""
+    from recoryn.models import artifacts
+    from recoryn.models._artifact_io import freeze, whisper_snapshot
+
+    snapshot = whisper_snapshot(path)
+    registry = artifacts.ConfirmationRegistry()
+    evidence = registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
+    assert evidence is not None
+    bundle = freeze(evidence, parent=path.parent)
+    _BUNDLES.append(bundle)
+    return bundle.description()
+
+
 def model_dir(root: Path) -> Path:
     path = root / "fake-model"
     path.mkdir()
@@ -165,8 +193,11 @@ def test_fake_whisper_time_axis_duration_and_original(
             [SimpleNamespace(start=0, end=count / rate, text="synthetic")]
         ), SimpleNamespace()
 
+    folder = model_dir(tmp_path)
     provider = FasterWhisperProvider(
-        model_dir(tmp_path), model_factory=lambda *a, **k: SimpleNamespace(transcribe=infer)
+        folder,
+        model_factory=lambda *a, **k: SimpleNamespace(transcribe=infer),
+        bundle=confirmed(folder),
     )
     result = provider.transcribe(STTRequest(path, offset_ms=137))
     assert result.complete and result.processed_ms == math.ceil(Fraction(count * 1000, rate))
@@ -213,8 +244,11 @@ def test_fake_provider_failure_is_safe_and_source_stays_unchanged(
     monkeypatch.setattr(importlib, "import_module", import_module)
     if failure == "decoder":
         monkeypatch.setattr(adapters, "prepare_whisper_audio", bad_decoder)
+    folder = model_dir(tmp_path)
     provider = FasterWhisperProvider(
-        model_dir(tmp_path), model_factory=lambda *a, **k: SimpleNamespace(transcribe=infer)
+        folder,
+        model_factory=lambda *a, **k: SimpleNamespace(transcribe=infer),
+        bundle=confirmed(folder),
     )
     result = provider.transcribe(STTRequest(path), ExecutionContext(cancel=threading.Event()))
     assert (

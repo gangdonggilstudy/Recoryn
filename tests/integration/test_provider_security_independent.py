@@ -350,6 +350,33 @@ def test_resume_rejects_unsupported_claim_masquerading_as_transcript() -> None:
     assert len(gateway.calls) == 1
 
 
+_BUNDLES: list[Any] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_bundles() -> Iterator[None]:
+    yield
+    while _BUNDLES:
+        _BUNDLES.pop().close()
+
+
+def confirmed(path: Path) -> dict[str, Any]:
+    """G-P13 explicit approval fixture: this run's Yes and responsibility check of the
+    synthetic folder, then the sealed bundle the loader is given (never the folder)."""
+    from recoryn.models import artifacts
+    from recoryn.models._artifact_io import freeze, whisper_snapshot
+
+    snapshot = whisper_snapshot(path)
+    registry = artifacts.ConfirmationRegistry()
+    evidence = registry.confirm(
+        snapshot, shown=registry.key(snapshot), accepted=True, acknowledged=True
+    )
+    assert evidence is not None
+    bundle = freeze(evidence, parent=path.parent)
+    _BUNDLES.append(bundle)
+    return bundle.description()
+
+
 def test_local_backend_exception_with_broken_str_still_returns_safe_result(
     tmp_path: Path,
     audio: Path,
@@ -373,7 +400,7 @@ def test_local_backend_exception_with_broken_str_still_returns_safe_result(
         calls.append(kwargs)
         return Model()
 
-    adapter = FasterWhisperProvider(model, model_factory=factory)
+    adapter = FasterWhisperProvider(model, model_factory=factory, bundle=confirmed(model))
     assert not calls
     result = adapter.transcribe(STTRequest(audio))
     assert result.error_code == "PROVIDER_FAILED" and not result.complete
@@ -402,7 +429,10 @@ def test_broken_backend_formatter_preserves_partial_and_releases_model_lock(
             return segments(), SimpleNamespace(language="ko")
 
     provider = FasterWhisperProvider(
-        model, timeout_seconds=1, model_factory=lambda *a, **kw: Model()
+        model,
+        timeout_seconds=1,
+        model_factory=lambda *a, **kw: Model(),
+        bundle=confirmed(model),
     )
     for _ in range(2):
         result = provider.transcribe(STTRequest(audio))
@@ -425,9 +455,24 @@ def test_missing_tokenizer_is_denied_before_optional_model_import(
         imports.append(name)
         pytest.fail("incomplete local artifacts must fail before optional SDK/model import")
 
+    from recoryn.models._artifact_io import whisper_snapshot
+    from recoryn.providers import ProviderError
+
+    # G-P13: an incomplete folder is never confirmed, and nothing reaches an import.
+    with pytest.raises(ProviderError, match="MODEL_MISSING"):
+        whisper_snapshot(model)
+    (model / "tokenizer.json").write_bytes(b"fake-only")
+    complete = confirmed(model)
+    (model / "tokenizer.json").unlink()
     monkeypatch.setattr(importlib, "import_module", no_model_import)
     instance = FasterWhisperProvider(model)
     result = instance.transcribe(STTRequest(audio))
+    assert result.error_code == "CAPABILITY_UNSUPPORTED" and not result.complete
+    # A bundle description without the tokenizer stops before any optional import.
+    forged = dict(
+        complete, entries=[row for row in complete["entries"] if row[0] != "tokenizer.json"]
+    )
+    result = FasterWhisperProvider(model, bundle=forged).transcribe(STTRequest(audio))
     assert result.error_code == "MODEL_MISSING" and not result.complete
     assert not imports
 

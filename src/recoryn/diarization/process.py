@@ -39,6 +39,7 @@ def _worker(
     gate: Any,
     cancel: Any,
     reply: Any,
+    bundle: Any = None,
 ) -> None:
     # The owner must attach its OS lifetime guard before this gate opens.
     try:
@@ -48,7 +49,7 @@ def _worker(
             {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1"}
         )
         try:
-            result = compute(config, request, cancel, audio_hash)
+            result = compute(config, request, cancel, audio_hash, bundle)
         except ProviderError as error:
             result = DiarizationResult((), False, error.code == "CANCELLED", error.code)
         except Exception:
@@ -100,10 +101,22 @@ def _decode(
 class LocalDiarizationProcess:
     """One bounded invocation at a time; close is final and waits for owned-child ACK."""
 
-    def __init__(self, config: DiarizationConfig) -> None:
+    def __init__(
+        self,
+        config: DiarizationConfig,
+        *,
+        model_evidence: Any = None,
+        bundle_parent: Any = None,
+    ) -> None:
+        """``model_evidence`` is the run's confirmation of these strictly verified bytes
+        (G-P13); without it the object is created but no child or loader is started."""
         if not isinstance(config, DiarizationConfig):
             raise ProviderError("DIARIZATION_INPUT_INVALID")
         self.config = config
+        self.model_evidence = model_evidence
+        self.bundle_parent = bundle_parent
+        self._bundle: Any = None  # sealed only while this owned child may read it
+        self.bundle_cleanup_pending = False
         self._lock = threading.Lock()
         self._closed = threading.Event()
         self._process: Any = None
@@ -178,6 +191,8 @@ class LocalDiarizationProcess:
                 raise ProviderError("DEPENDENCY_VERSION_UNSUPPORTED")
             _, duration, audio_hash = audio_snapshot(request, self.config.max_audio_ms)
             self._check(execution, deadline)
+            self._bundle = self._seal(execution)
+            self._check(execution, deadline)
             spawn = multiprocessing.get_context("spawn")
             gate, cancel = spawn.Event(), spawn.Event()
             self._cancel = cancel
@@ -186,7 +201,15 @@ class LocalDiarizationProcess:
             try:
                 self._process = spawn.Process(
                     target=_worker,
-                    args=(self.config, request, audio_hash, gate, cancel, sender),
+                    args=(
+                        self.config,
+                        request,
+                        audio_hash,
+                        gate,
+                        cancel,
+                        sender,
+                        self._bundle.description(),
+                    ),
                     name="recoryn-diarization",
                     daemon=True,
                 )
@@ -225,6 +248,33 @@ class LocalDiarizationProcess:
                 finally:
                     self._lock.release()
 
+    def _seal(self, execution: ExecutionContext) -> Any:
+        """Right before native: re-verify the original strictly, compare it with the
+        confirmed snapshot and seal exactly those bytes (G13 §5.2-6)."""
+        from recoryn.models._artifact_io import ArtifactError, acquire, diarization_snapshot
+
+        from .models import verified_bundle
+
+        evidence = self.model_evidence
+        if evidence is None or not evidence.valid():
+            raise ArtifactError("CAPABILITY_UNSUPPORTED", "MODEL_CONFIRMATION_REQUIRED")
+        files, terms = verified_bundle(self.config)  # the same strict checks as before
+        current = diarization_snapshot(
+            files,
+            self.config.manifest_path.parent,
+            license_id=terms["license_id"],
+            license_url=terms["license_url"],
+            reference=self.config.manifest_sha256,
+        )
+        expected = evidence.snapshot
+        if (current.root_identity, current.artifact_digest, current.terms_digest) != (
+            expected.root_identity,
+            expected.artifact_digest,
+            expected.terms_digest,
+        ):
+            raise ProviderError("DIARIZATION_MODEL_CHECKSUM")  # a new confirmation is needed
+        return acquire(evidence, data=files, parent=self.bundle_parent, cancel=execution.cancel)
+
     def _check(self, execution: ExecutionContext, deadline: float) -> None:
         if self._closed.is_set() or execution.cancel.is_set():
             raise ProviderError("CANCELLED")
@@ -251,6 +301,12 @@ class LocalDiarizationProcess:
             raise ProviderError("DIARIZATION_ACK_PENDING") from None
         self._process = None
         self._cancel = None
+        bundle, self._bundle = self._bundle, None
+        if bundle is not None:
+            from recoryn.models._artifact_io import release
+
+            # Only after the child's exit ACK (the guards stay until then).
+            self.bundle_cleanup_pending = not release(bundle)
         if self._guard is not None:
             self._guard.close()
             self._guard = None
