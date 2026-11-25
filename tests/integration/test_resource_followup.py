@@ -233,18 +233,25 @@ def test_s_stop_keeps_settled_outcomes_and_cancels_only_unsettled_work(
     row: tuple[str, str],
 ) -> None:
     timing, outcome = row
-    want = s_oracle(row)
+    assert _stop_case(timing, outcome)[:2] == s_oracle(row)
+
+
+def _stop_case(timing: str, outcome: str) -> tuple[str, str | None, bool]:
+    """Run one stop() race; returns (state, blocked_reason, cancel_requested)."""
+    if timing == "listed_then_finished":
+        return _stop_after_listing(outcome)
     with JobStore(Path(":memory:")) as store:
         gate, entered, release = threading.Event(), threading.Event(), threading.Event()
         written = threading.Event()
         real = {name: getattr(store, name) for name in ("complete", "fail", "cancel", "get")}
-        state = {"outcome_done": False}
+        state = {"outcome_done": False, "held_once": False}
 
         def write(name: str) -> Callable[..., Any]:
             def wrapped(*args: Any, **kwargs: Any) -> Any:
                 value = real[name](*args, **kwargs)
                 state["outcome_done"] = True
-                if timing == "during":
+                if timing == "during" and not state["held_once"]:
+                    state["held_once"] = True
                     written.set()
                     assert release.wait(10)  # the write is committed, still in progress
                 return value
@@ -253,8 +260,8 @@ def test_s_stop_keeps_settled_outcomes_and_cancels_only_unsettled_work(
 
         def get(job_id: str) -> Any:
             value = real["get"](job_id)
-            if timing == "after" and state["outcome_done"]:
-                state["outcome_done"] = False
+            if timing == "after" and state["outcome_done"] and not state["held_once"]:
+                state["held_once"] = True
                 written.set()
                 assert release.wait(10)  # settled; the worker still lists the work active
             return value
@@ -272,11 +279,12 @@ def test_s_stop_keeps_settled_outcomes_and_cancels_only_unsettled_work(
         runner = BoundedRunner(store)
         runner.start()
         job = store.create("transcription", "s")
+        body = outcome_task(outcome)  # one body: BACKOFF fails once, then succeeds
 
         def task(attempt: Any, cancel_event: threading.Event) -> str:
             entered.set()
             assert gate.wait(10)
-            return outcome_task(outcome)(attempt, cancel_event)
+            return body(attempt, cancel_event)
 
         assert runner.submit(job.job_id, task)
         assert entered.wait(10)
@@ -292,7 +300,48 @@ def test_s_stop_keeps_settled_outcomes_and_cancels_only_unsettled_work(
         stopper.join(15)
         assert not stopper.is_alive()
         after = real["get"](job.job_id)
-    assert (after.state.value, after.blocked_reason) == want
+    return after.state.value, after.blocked_reason, after.cancel_requested
+
+
+def _stop_after_listing(outcome: str) -> tuple[str, str | None, bool]:
+    """stop() fixes its active list, then (while it cancels a queued Job) the active Job
+    settles and leaves the active list (reviewer's probe_stop_window shape)."""
+    with JobStore(Path(":memory:")) as store:
+        active = store.create("transcription", "active")
+        queued = store.create("transcription", "queued")
+        gate = threading.Event()
+        runner = BoundedRunner(store)
+        real_cancel = store.cancel
+
+        def cancel(job_id: str) -> Any:
+            if job_id == queued.job_id:
+                gate.set()  # the active task ends now
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if active.job_id not in runner.snapshot()["active"]:
+                        break  # settled and gone from the active list
+                    if store.get(active.job_id).state.value == "BACKOFF":
+                        break  # a retry wait: still active, still unsettled
+                    time.sleep(0.005)
+            return real_cancel(job_id)
+
+        store.cancel = cancel  # type: ignore[method-assign]
+        runner.start()
+        body = outcome_task(outcome)
+
+        def task(attempt: Any, cancel_event: threading.Event) -> str:
+            assert gate.wait(10)
+            return body(attempt, cancel_event)
+
+        assert runner.submit(active.job_id, task)
+        deadline = time.monotonic() + 10
+        while active.job_id not in runner.snapshot()["active"] and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert runner.submit(queued.job_id, lambda attempt, cancel_event: "never")
+        runner.stop(10)
+        after = store.get(active.job_id)
+        assert store.get(queued.job_id).state.value == "CANCELLED"
+    return after.state.value, after.blocked_reason, after.cancel_requested
 
 
 # --- R: hold cause x worker exit x release path x outcome -------------------------------
@@ -392,8 +441,11 @@ def test_r_a_held_slot_is_released_only_after_the_worker_really_exits(
             assert scheduler.held() == (job,)
             assert service.jobs.local_reader_active(job) is True
             assert job in service.runner.snapshot()["active"]  # N12: held counts as active
+            closes = worker.calls.count("close")
             time.sleep(0.2)  # several reaper turns: a live worker is never released
             assert scheduler.held() == (job,) and worker.alive
+            # ... and never closed again by the periodic check (G11CR-03, Q05).
+            assert worker.calls.count("close") == closes
             if later == "exits":
                 worker.exit()
             second = None
@@ -426,3 +478,94 @@ def test_r_a_held_slot_is_released_only_after_the_worker_really_exits(
             except Exception:
                 pass
             service.close()
+
+
+# =====================================================================================
+# G-P11d (G-P11c review G11CR-02, G11CR-03): S2 and C rows. Hand-written expectations.
+# =====================================================================================
+S2_OUTCOMES = (*S_OUTCOMES, "BACKOFF")
+S2 = [("listed_then_finished", outcome) for outcome in S2_OUTCOMES] + [
+    (timing, "BACKOFF") for timing in ("before", "during", "after")
+]
+S2_IDS = [f"G11D-S-{n:02}" for n in range(1, 10)]
+
+
+def s2_oracle(row: tuple[str, str]) -> tuple[str, str | None]:
+    """A Job that settled and left the active list keeps its outcome (Q01); a retry wait
+    (BACKOFF) is unsettled work, so stop cancels it once its write is done (Q06) - only
+    a stop after the retry's own success sees SUCCEEDED."""
+    timing, outcome = row
+    if outcome == "BACKOFF":
+        return ("SUCCEEDED", None) if timing == "after" else ("CANCELLED", None)
+    return S_SETTLED[outcome]
+
+
+@pytest.mark.parametrize("row", S2, ids=S2_IDS)
+def test_s2_stop_list_and_backoff(row: tuple[str, str]) -> None:
+    timing, outcome = row
+    state, reason, cancel_requested = _stop_case(timing, outcome)
+    assert (state, reason) == s2_oracle(row)
+    if (state, reason) == ("CANCELLED", None):
+        assert cancel_requested is True  # stop's own durable cancellation
+
+
+C_STATES = ("no_held", "held_live", "held_exits_after_close")
+C = list(product(C_STATES, ("scheduler_close", "service_close")))
+C_IDS = [f"G11D-C-{n:02}" for n in range(1, 7)]
+
+
+@pytest.mark.parametrize("row", C, ids=C_IDS)
+def test_c_closing_stops_the_reaper_and_writes_nothing_after(
+    tmp_path: Path, row: tuple[str, str]
+) -> None:
+    """G11CR-02: after close the reaper is joined, a held slot stays held, and no exit
+    receipt reaches the (closing) JobStore even when the worker exits later."""
+    held_state, via = row
+    scheduler = ResourceScheduler(reap_interval=0.05)
+    factory = HeldFactory("close_raises", "published") if held_state != "no_held" else Factory()
+    with Library(tmp_path / "library") as library, ContentStore(library) as content:
+        session = recording(library)
+        service = AIService(library, content, resources=scheduler)
+        closed_service = False
+        try:
+            job = service.transcribe(session, factory, config_key="c", resource_request=STT_CPU)
+            assert finished(service, job).state.value == "SUCCEEDED"
+            # The result is published before the lease's exit ACK fails and the reaper
+            # starts, so a held slot's reaper is awaited (bounded) rather than raced.
+            _until(
+                lambda: scheduler._reaper is not None and scheduler._reaper.is_alive(),
+                2.0 if held_state != "no_held" else 0.2,
+            )
+            reaper = scheduler._reaper
+            assert (reaper is not None and reaper.is_alive()) is (held_state != "no_held")
+            receipts: list[Any] = []
+            real_finished = service.jobs.reader_finished
+            service.jobs.reader_finished = lambda attempt: (  # type: ignore[method-assign]
+                receipts.append(attempt),
+                real_finished(attempt),
+            )[1]
+            if via == "scheduler_close":
+                scheduler.close()
+            else:
+                service.close()
+                closed_service = True
+            assert reaper is None or not reaper.is_alive()  # joined, not left behind
+            assert scheduler._reaper is None
+            if held_state == "held_exits_after_close":
+                factory.opened[0].exit()
+            time.sleep(0.25)  # several former reaper periods
+            try:
+                scheduler.reap_held()  # an explicit retry after close (e.g. runtime removal)
+            except Exception:
+                pass  # a live worker still refuses; that is not a receipt either
+            assert receipts == []  # nothing is written after close
+            assert scheduler.held() == ((job,) if held_state != "no_held" else ())
+            if via == "scheduler_close" and held_state != "no_held":
+                # The DB reader stays for the next start's recovery; nothing released it.
+                assert service.jobs.local_reader_active(job) is True
+        finally:
+            for item in getattr(factory, "opened", []):
+                if hasattr(item, "exit"):
+                    item.exit()
+            if not closed_service:
+                service.close()

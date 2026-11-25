@@ -221,3 +221,106 @@ def test_aux_contract_order_changes_exactly_the_reviewed_256_rows() -> None:
             changed.append((case, state))
     assert len(changed) == 256
     assert {state for _, state in changed} <= {"both_known", "cpu_unknown"}
+
+
+# =====================================================================================
+# G-P11d (G-P11c review G11CR-01, G11CR-03): O and TTL2 rows and the G11D census.
+# =====================================================================================
+O_REASONS = ("UUID", "BUS_ID", "CUDA_VISIBLE_DEVICES", "MIG", "CUDA_COUNT", "CUDA_COUNT_UNKNOWN")
+O_PINS = ("pinned_absent", "auto_empty", "auto_present")
+ORDER = list(product(O_REASONS, O_PINS))
+O_IDS = [f"G11D-O-{n:02}" for n in range(1, 19)]
+
+
+def o_oracle(row: tuple[str, str]) -> str:
+    """G11 section 4.3 as corrected by G-P11d: a UUID/bus-id defect has no device identity,
+    so absence is unknowable and the identity fails first; with remapping, MIG or a CUDA
+    count problem the nvidia-smi host list is complete, so an absent or empty list is
+    GPU_UNAVAILABLE and present devices fail on the identity."""
+    reason, pin = row
+    if reason in ("UUID", "BUS_ID"):
+        return "RESOURCE_GPU_IDENTITY_UNVERIFIED"
+    return (
+        "RESOURCE_GPU_IDENTITY_UNVERIFIED" if pin == "auto_present" else "RESOURCE_GPU_UNAVAILABLE"
+    )
+
+
+@pytest.mark.parametrize("row", ORDER, ids=O_IDS)
+def test_o_identity_or_absence_first_by_the_reason(row: tuple[str, str]) -> None:
+    reason, pin = row
+    now = 10 * TTL
+    device = GpuDevice("GPU-A", 0, 0, "fixture", 1 << 30, 1 << 31)
+    devices = () if pin == "auto_empty" else (device,)
+    snapshot = ResourceSnapshot(
+        now,
+        GpuObservation(OBSERVED, now - 1, devices, False, "nvidia-smi", reason),
+        MemoryObservation("NOT_OBSERVED"),
+        NATIVE,
+    )
+    request = ResourceRequest(
+        "stt", "LOCAL_CT2", "GPU_ONLY", preferred_gpu="GPU-Z" if pin == "pinned_absent" else None
+    )
+    scheduler = ResourceScheduler(clock=lambda: now, headroom_bytes=0)
+    with pytest.raises(StateConflict) as refused:
+        scheduler.plan(request, snapshot)
+    assert str(refused.value) == o_oracle(row)
+
+
+TTL2 = list(product((TTL - 1, TTL, TTL + 1), ("unknown_gpu", "known_gpu")))
+TTL2_IDS = [f"G11D-TTL-{n}" for n in range(1, 7)]
+KNOWN_GPU = ResourceRequest(
+    "stt",
+    "LOCAL_CT2",
+    "GPU_ONLY",
+    model_identity="model-fixture",
+    runtime_identity="runtime-fixture",
+)
+
+
+@pytest.mark.parametrize("row", TTL2, ids=TTL2_IDS)
+def test_ttl2_stale_ram_only_matters_for_a_known_gpu_requirement(row: tuple[int, str]) -> None:
+    """Q03: a fresh GPU with stale RAM. An UNKNOWN GPU requirement applies no RAM at all
+    (section 4.3), so it is never stale; a known requirement's RAM is (TTL by hand)."""
+    ram_age, device = row
+    now = 10 * TTL
+    gpu = GpuDevice("GPU-A", 0, 0, "fixture", 1 << 30, 1 << 31)
+    snapshot = ResourceSnapshot(
+        now,
+        GpuObservation(OBSERVED, now - 1, (gpu,), True, "fixture"),
+        MemoryObservation(OBSERVED, now - ram_age, 1 << 30, 1 << 31, "fixture"),
+        NATIVE,
+    )
+    if device == "unknown_gpu":
+        scheduler = ResourceScheduler(clock=lambda: now, headroom_bytes=0)
+        plan = scheduler.plan(ResourceRequest("stt", "LOCAL_CT2", "GPU_ONLY"), snapshot)
+        assert plan.device == "cuda" and plan.estimate_status == "RESOURCE_ESTIMATE_UNKNOWN"
+        return
+    known = (profile("gpu-known", kind="stt", backend="LOCAL_CT2", gpu_host=100, gpu=80),)
+    scheduler = ResourceScheduler(
+        profiles=known, clock=lambda: now, headroom_bytes=0, ram_headroom_bytes=0
+    )
+    if ram_age < TTL:
+        plan = scheduler.plan(KNOWN_GPU, snapshot)
+        assert plan.device == "cuda" and plan.planned_ram == 100 and plan.planned_vram == 80
+    else:
+        with pytest.raises(StateConflict, match="^RESOURCE_SNAPSHOT_STALE$"):
+            scheduler.plan(KNOWN_GPU, snapshot)
+
+
+G11D_FAMILIES = {
+    "O": (O_IDS, 18),
+    "TTL": (TTL2_IDS, 6),
+    "S": (integration.S2_IDS, 9),
+    "C": (integration.C_IDS, 6),
+}
+
+
+def test_census_g11d_39_rows_once_each() -> None:
+    every = [case for names, _ in G11D_FAMILIES.values() for case in names]
+    assert len(every) == len(set(every)) == 39
+    for names, size in G11D_FAMILIES.values():
+        assert len(names) == len(set(names)) == size
+    assert not set(every) & {case for names, _ in FAMILIES.values() for case in names}
+    assert (
+        len(ORDER) == 18 and len(TTL2) == 6 and len(integration.S2) == 9 and len(integration.C) == 6
+    )

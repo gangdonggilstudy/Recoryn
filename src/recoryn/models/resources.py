@@ -426,6 +426,8 @@ def _fresh(observed_ns: int | None, now_ns: int, ttl_ns: int) -> bool:
 
 
 # G11 section 4.3: a snapshot is fresh for two seconds by default.
+# Unverified-identity reasons whose nvidia-smi host list is still complete.
+HOST_LIST_COMPLETE = frozenset({"CUDA_VISIBLE_DEVICES", "MIG", "CUDA_COUNT", "CUDA_COUNT_UNKNOWN"})
 DEFAULT_TTL_NS = 2_000_000_000
 
 
@@ -549,15 +551,20 @@ def _gpu_plan(
         raise _Refused(GPU_PROBE_UNKNOWN)
     if gpu.state != OBSERVED:
         raise _Refused(GPU_PROBE_UNAVAILABLE)
-    # A device can only be called absent once identities are verified: with a missing
-    # or duplicated UUID a pinned device's absence is not knowable (G-P11c reading).
-    if not gpu.identity_verified:
+    # G11 section 4.3 as corrected by G-P11d (G11CR-01): with a UUID or bus-id defect
+    # there is no device identity at all, so a device's absence is unknowable and the
+    # identity comes first. With remapping, MIG or a CUDA-count mismatch the host list
+    # (nvidia-smi) is still complete: an absent or empty device list is GPU_UNAVAILABLE
+    # first, and the identity is judged for the devices that are present.
+    if not gpu.identity_verified and gpu.reason not in HOST_LIST_COMPLETE:
         raise _Refused(IDENTITY_UNVERIFIED)
     devices = list(gpu.devices)
     if request.preferred_gpu is not None:
         devices = [item for item in devices if item.uuid == request.preferred_gpu]
     if not devices:
         raise _Refused(GPU_UNAVAILABLE)
+    if not gpu.identity_verified:
+        raise _Refused(IDENTITY_UNVERIFIED)
     if host is not None:
         _ram_fit(snapshot, host, now_ns, ttl_ns, ram_headroom)
     needed = gpu_headroom + (0 if vram is None else vram)
@@ -863,6 +870,7 @@ class ResourceScheduler:
         self._recent: deque[Lease] = deque(maxlen=64)
         self.reap_interval = float(reap_interval)
         self._reaper: threading.Thread | None = None
+        self._closed = False
 
     # legacy helpers (existing small contract; not used by the product paths)
     def choose(
@@ -952,10 +960,27 @@ class ResourceScheduler:
             holder = self._holder
             return () if holder is None else (holder.job_id,)
 
+    # A stopped BoundedRunner closes the held-lease provider it reads (G11CR-02).
+    closes_with_runner = True
+
+    def close(self, timeout: float = 2.0) -> None:
+        """Stop the reaper and join it (G11CR-02).
+
+        A held slot stays held and no exit receipt (``on_ack``, the Job local reader) is
+        written any more: the owning store is about to close, and the next start's
+        recovery settles that reader. Idempotent.
+        """
+        with self._condition:
+            self._closed = True
+            reaper = self._reaper
+            self._condition.notify_all()
+        if reaper is not None and reaper is not threading.current_thread():
+            reaper.join(timeout)
+
     def _watch_held(self) -> None:
         """Start the reaper for a slot whose worker exit ACK failed (G11BR-03)."""
         with self._condition:
-            if self._reaper is not None:
+            if self._reaper is not None or self._closed:
                 return
             self._reaper = threading.Thread(
                 target=self._reap_loop, name="recoryn-lease-reaper", daemon=True
@@ -967,11 +992,16 @@ class ResourceScheduler:
         while True:
             with self._condition:
                 holder = self._holder
-                if holder is None or holder.state != "REAP_PENDING" or holder.ack_code is None:
+                if (
+                    self._closed
+                    or holder is None
+                    or holder.state != "REAP_PENDING"
+                    or holder.ack_code is None
+                ):
                     self._reaper = None  # decided under the lock that _watch_held reads
                     return
                 self._condition.wait(self.reap_interval)
-                if self._holder is not holder:
+                if self._closed or self._holder is not holder:
                     continue
             if not holder.child_live():
                 self._try_ack(holder)
@@ -985,8 +1015,8 @@ class ResourceScheduler:
 
     def _released(self, holder: Lease) -> None:
         with self._condition:
-            if self._holder is not holder:
-                return
+            if self._holder is not holder or self._closed:
+                return  # after close: no release and no receipt into a closing store
             self._holder = None
             self._recent.append(holder)
             self._condition.notify_all()

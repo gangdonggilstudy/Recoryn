@@ -249,3 +249,156 @@ observed empty list, CUDA_VISIBLE_DEVICES set, AUTO: verified=False … -> RESOU
 | `probe_stop_backoff.py` | `2866bf027d5e7569dd4bc4e15f499c6c6cedda43706974e1c0fb482373f57675` |
 | `mutate.py` | `af78ddf25944723911bb25ad4db83900a5182caebef6a307caf8786d714bc790` |
 | `mutants/summary.txt` | `b1c766454c502692495bbfdb3222730aff23b343aeb563fff2809aa71a2e6912` |
+
+## RECHECK 1 (G-P11d)
+
+2026-11-25, 같은 검토자. 대상은 tree **`df03d5b8f0d511a605e9721c65528e2e7a7c12bb`**(`git cat-file -t` = tree)이며, HEAD **47530a2**(G-P16 포함)에 5파일을 더한 것이다.
+
+- 바뀐 파일은 `jobs/runner.py`·`models/resources.py`·후속 시험 2개·계약 문서다. `git diff 47530a2 df03d5b8 --stat`은 384 insertions / 17 deletions다.
+- 사본의 LF SHA-256 앞 8자리는 배정과 같다: runner `0d89dbaa`, resources `4b0f812a`, 문서 `183e6c85`.
+- 계약 문서의 앞 내용(`1f02ae13…`)은 그대로이고, 끝에 "§G-P11d" 절만 붙었다.
+- 판정 위치는 `git archive df03d5b8 | tar -x -C build/review-trees/g11d`이고, 반례·로그는 `build/review-trees/g11d-probe/`다.
+- 작업 트리(G-P13·G-P17a·G-P12b 혼재)는 쓰지 않았다. 모든 실행에 `PYTHONPATH=<사본>\src`를 고정했고, 반례는 import 위치를 assert한다.
+- 실제 GPU·nvidia-smi·모델·네트워크, Git 쓰기, 설치, 하위 에이전트는 쓰지 않았다.
+
+**판정: G11CR-01·02·03 모두 RECHECKED. 새 OPEN 1건(G11CR-04, S3).** S0·S1이 없으므로 이 기준만으로는 push를 막지 않는다.
+
+### R1-1. 실행 결과
+
+| # | 명령 | 결과 |
+| --- | --- | --- |
+| R1 | `pytest -q -p no:cacheprovider -W error::ResourceWarning --basetemp=%TEMP%\g11d-review-full-bt --cov=recoryn --cov-branch --cov-report=json:coverage.json --cov-fail-under=85 -rfEs` (`g11d-probe/run_full.sh`, CI core와 같은 flag) | **25346 passed, failure·error·skip 0, 1723.20초(28:43), exit 0.** 총 coverage 92.64% |
+| R1b | `python scripts/check_coverage.py coverage.json` | domain 99.18/97.89, capture 99.85/98.57, jobs 99.20/95.65, storage 95.95/91.41, security 98.11/94.43, content 98.98/99.02, **all 93.98/88.71**(line/branch %), 7묶음 모두 PASS |
+| R2 | `ruff check src tests scripts packaging` / `ruff format --check …` / `MYPYPATH=src mypy src/recoryn scripts packaging` | All checks passed / 205 files already formatted / **93 source files no issues** |
+| R3 | 변경 모듈 coverage | `jobs/runner.py` line 272/277·branch 85/94, `models/resources.py` 546/590·167/202(작성자 보고와 같음) |
+| R4 | 후속 2파일 8회 반복(`repeat_followup.sh`, 전체 회귀·변이와 동시 실행) | **8/8 회 129 passed**, 회당 31.6~32.8초 |
+| R5 | 검토자 변이 8개 + 정상본(`mutate.py`) | 정상본 1213 PASS. **7 KILLED / 1 SURVIVED**(E03, 동치에 가까움) |
+| R6 | 반례 7개 | R1-2~R1-4 |
+
+- node 수가 작성자 보고(22,927)보다 많은 것은 이 tree의 HEAD가 47530a2(G-P12·G-P16 시험 포함)이기 때문이다.
+
+### R1-2. G11CR-01~03
+
+| ID | 판정 | 직접 근거 |
+| --- | --- | --- |
+| G11CR-01 | **RECHECKED** | 아래 표 참조 |
+| G11CR-02 | **RECHECKED** | 아래 표 참조 |
+| G11CR-03 | **RECHECKED** | 아래 표 참조 |
+
+**G11CR-01** — `probe_identity_order.py`를 g11d로 다시 돌렸다.
+
+| 경우 | 결과 |
+| --- | --- |
+| `CUDA_VISIBLE_DEVICES` + 지정 GPU 없음 | **GPU_UNAVAILABLE**(이전 IDENTITY_UNVERIFIED) |
+| `CUDA_VISIBLE_DEVICES` + 빈 목록 | **GPU_UNAVAILABLE**(이전 IDENTITY_UNVERIFIED) |
+| 중복 UUID | IDENTITY_UNVERIFIED(유지) |
+| 검증된 목록 + 지정 GPU 없음 | GPU_UNAVAILABLE |
+| 검증된 빈 목록 | GPU_UNAVAILABLE |
+
+- 구현(`models/resources.py`의 `HOST_LIST_COMPLETE`, `_gpu_plan`), 계약 §G-P11d "§4.3 정정", 앞 두 절의 어긋남 정리, G11D-O 18행이 같은 규칙을 가리킨다.
+- 검토자 E01(`CUDA_COUNT_UNKNOWN`을 host 목록 완전에서 뺌)이 O-16 등에서 검출됐다.
+
+**G11CR-02** — `probe_reaper_lifetime.py`를 g11d로 다시 돌렸다.
+
+- `AIService.close()` 뒤 reaper는 **0개**다(이전 2개).
+- 닫은 뒤 worker가 끝나도 slot은 보유로 남고 receipt는 0이다. thread 예외도 0이다.
+- 검토자 E02(close가 reaper를 join하지 않음)와 E04(닫힌 뒤에도 해제·receipt)가 검출됐다.
+
+**G11CR-03** — 지난 검토의 생존 변이 Q01·Q03·Q05·Q06을 같은 패턴으로 다시 적용했다.
+
+| 변이 | 결과 |
+| --- | --- |
+| Q01 | **KILLED**(G11D-S-02 등) |
+| Q03 | **KILLED**(G11D-TTL-3·5. 목표 node가 계획 대신 `RESOURCE_SNAPSHOT_STALE`을 받음) |
+| Q05 | **KILLED** 12(G11C-R의 close 0 단언) |
+| Q06 | **KILLED**(G11D-S-08, BACKOFF 기록 중) |
+
+- `probe_stop_window.py`·`probe_stop_backoff.py`는 제품 tree에서 여전히 BLOCKED 유지와 CANCELLED를 낸다.
+
+### R1-3. 새 경쟁과 수명
+
+- **close 중 ACK 도착:** `probe_close_races.py` A. reaper가 worker `close()`를 실행하는 0.5초 동안 `AIService.close()`가 불렸다.
+  - 출력: `close took 0.50s, reaper alive False, held True, receipts 0, worker alive False`
+  - close는 진행 중인 ACK가 끝나기를 기다린 뒤(`reaper.join(2.0)`) reaper를 멈췄다.
+  - `_released`는 닫힌 상태를 보고 해제·receipt를 하지 않는다(`models/resources.py`의 `_released`).
+  - `close()`의 join이 2초를 넘겨도(제품 `LocalSTTProcess.close`는 최대 약 2.2초) 그 뒤의 `_released`는 쓰지 않는다. 닫힌 JobStore에 쓰는 일은 0이다.
+- **close·stop 순서:**
+  - `runner.stop()`의 `finally`가 thread join 뒤 `closes_with_runner` 제공자를 닫는다. `stop()`이 `RUNNER_STOP_TIMEOUT`을 내도 닫힌다.
+  - `AIService.close()`는 그다음에 `jobs.close()`를 부른다.
+  - 검토자 E03(join 전에 제공자를 닫음)은 살아남았다. 그 순서에서도 늦게 끝난 lease는 reap 성공 시 `lease()`의 else 분기가 slot을 비우고, 실패 시 `_watch_held`가 닫힘을 보고 reaper를 띄우지 않는다. 결과가 같은 동치에 가까운 변이로 보며, 결함으로 세지 않는다.
+- **보유 slot 미해제의 다음 시작 영향:**
+  - slot은 메모리에만 있어 다음 시작의 새 scheduler에는 없다.
+  - DB의 Job local reader는 다음 시작의 `recover_abandoned(coordinator_exclusive=True)`가 정리한다. G-P11c에서 닫힌 JobStore에 receipt가 실패했을 때와 결과가 같다.
+  - 옛 child가 앱 종료 뒤에도 살아남는 경우(daemon 종료 실패)에 복구가 reader를 지우는 것은 계약이 인정한 기존 한계다("재시작 고아 child 종료 증명 자동화 안 함"). 이번에 새로 생긴 위험은 아니다.
+- **C 행 2초 대기:**
+  - `probe_reaper_delay.py`로 40회 쟀다(전체 회귀·변이와 동시 실행). Job이 SUCCEEDED로 읽힌 시점부터 reaper가 시작될 때까지 **최대 0.0ms(측정 해상도 이하)**다.
+  - 2초는 조건 대기의 상한일 뿐이며 판정을 바꾸지 않는다. 대기 뒤 `reaper alive is (held_state != "no_held")`를 다시 단언하고, `no_held` 행은 0.2초 대기 뒤 reaper 부재를 단언한다.
+  - 후속 2파일 129 node를 부하 아래에서 **8회 반복해 8/8 통과**했다(`repeat.log`).
+  - 간헐성을 가리지 않는다고 판단한다. 원래 실패는 게시(SUCCEEDED)가 lease 종료보다 앞서는 제품 순서(작성자 판단 (3))를 시험이 앞지른 것이다.
+
+### R1-4. 새 발견
+
+| ID | 심각도 | 상태 | 요약 |
+| --- | --- | --- | --- |
+| G11CR-04 | S3 | OPEN | 닫힌 scheduler를 쓰는 runner를 다시 start하면 reaper만이 아니라 다음 grant의 ACK 재시도로도 보유 slot이 풀리지 않는다. 그 프로세스의 모든 owned 작업이 `RESOURCE_LEASE_HELD`가 된다. 문서의 한계 기술이 이를 과소 기술한다 |
+
+**G11CR-04 (S3) 재start 뒤 보유 slot 영구 보유**
+
+- **재현:** `build/review-trees/g11d-probe/probe_close_races.py` B.
+  - 입력: ACK가 실패한 Job이 slot을 보유한 상태에서 `service.runner.stop(5)` → `service.runner.start()`(같은 scheduler)를 부른다. 그다음 worker가 끝나고, 새 owned Job을 낸다.
+  - 출력:
+
+    ```text
+    B: after restart and worker exit: held True reaper None
+    B: next owned job: BLOCKED RESOURCE_LEASE_HELD held True factory opened 0
+    ```
+
+- **근거:**
+  - `stop()`의 `_close_held_provider`가 scheduler를 닫는다.
+  - 닫힌 뒤 `_watch_held`는 reaper를 띄우지 않는다.
+  - `_released`는 닫힌 상태에서 해제하지 않는다.
+  - 그래서 `_grant`의 `_try_ack`가 reap에 성공해도 holder가 그대로이고, 새 lease를 `RESOURCE_LEASE_HELD`로 거부한다.
+  - 문서 §G-P11d "미검증·한계"는 "reaper가 다시 뜨지 않음"이라고만 쓴다.
+- **판단:** 제품에는 이 구성이 없다. `BoundedRunner.start()`는 `AIService.__init__`에서만 불리고(`app/ai.py:131`), `stop()`은 `AIService.close()`에서만 불린다(`app/ai.py:764`). 그 뒤 JobStore를 닫는다. 따라서 사용자 도달 경로는 0이다.
+- **권고:** 다음 중 하나를 고른다.
+  - `start()`가 닫힌 provider를 다시 열게 한다.
+  - 닫힌 scheduler의 `lease()`를 명시 코드로 거부한다.
+  - 한계 문장을 "닫힌 scheduler에서는 보유 slot이 그 프로세스 안에서 풀리지 않는다"로 정정한다.
+
+### R1-5. 검토자 변이(이번 tree)
+
+`build/review-trees/g11d-probe/mutate.py`를 썼다. 변이마다 새 사본에 하나만 적용했고, import 위치를 확인했다(9/9). 대상은 G-P11c 검토와 같은 9파일이다. 검출은 모두 목표 node의 assertion 실패이거나 기대한 계획 대신 받은 예외였다. 수집·import 오류는 0이다.
+
+| ID | 변이 | 결과 |
+| --- | --- | --- |
+| R00 | 정상본 | 1213 PASS, 60.05초 |
+| Q01 | stop의 같은 항목 재확인 제거 | **KILLED** 2 |
+| Q03 | known RAM stale 검사를 UNKNOWN GPU에도 | **KILLED** 2 |
+| Q05 | reaper가 생존 확인 없이 `_try_ack` | **KILLED** 12 |
+| Q06 | stop이 `settling`을 기다리지 않음 | **KILLED** 1 |
+| E01 | `CUDA_COUNT_UNKNOWN`을 host 목록 완전에서 뺌 | **KILLED** 2(G11D-O-16…) |
+| E02 | `close()`가 reaper를 join하지 않음 | **KILLED** 2(G11D-C-03…) |
+| E03 | stop이 join 전에 제공자를 닫음 | SURVIVED(동치에 가까움, R1-3) |
+| E04 | 닫힌 scheduler도 해제·receipt | **KILLED** 2(G11D-C-05…) |
+
+### R1-6. 증거 파일(`build/review-trees/g11d-probe/`, LF SHA-256)
+
+변이 사본(`mutants-work/`)은 실행 뒤 삭제했다.
+
+| 파일 | SHA-256 |
+| --- | --- |
+| `run_full.sh` | `02fd8eaec7ffb2616aeefd5cf96b55a88c1a0470d0dd14a4156fde92b699efaa` |
+| `full-import.txt` | `e64393ad1146d19f7b710c640de37646caf96ec2fe48176e98585ca2a834d40e` |
+| `full.log` | `b149dab42080b83e3d330ca98314b508da72b08e4710d8804ea3450f13623a42` |
+| `coverage-check.txt` | `7032aede0c9fcb36772c25d302644df719df00b5002a4e63700e45fa1899f1a4` |
+| `../g11d/coverage.json` | `236474523666beeaec6ec59347af9d8927190f8d0afb8bdab90e99d6dd794661` |
+| `probe_close_races.py` | `99cc6b091499c2e9a64b0caed53ccf3e2a4c5613ce88fbfc19b137e02e1e92af` |
+| `probe_identity_order.py` | `018f37f1ed37252f9d81efe10f478e676cc5b46a4f86b7e53e5d52cd457810d3` |
+| `probe_reaper_lifetime.py` | `281cda65d22ad4cd38c7b7846cd709db8a06e2c99921bcb9f25b9fc4dc09486e` |
+| `probe_stop_window.py` | `db2e4d9d96b8622b9f687498150ad64bbc33f6852c738ee057143d1a45beabb1` |
+| `probe_stop_backoff.py` | `2866bf027d5e7569dd4bc4e15f499c6c6cedda43706974e1c0fb482373f57675` |
+| `probe_reaper_delay.py` | `3d95720540acdb8e14b199d2b2627aa0a481d667c11aaeae67ece49e170c5dd5` |
+| `repeat_followup.sh` | `c9481a851d24de5e08742997405b8a6518f1eefa6bede3f310442bddddba5fb6` |
+| `repeat.log` | `d0c95bba99356050ff637564522c42e382737bd845a5d387fb05fa276279b4ae` |
+| `mutate.py` | `c2f820c2f8dcbef8dbcf7f88e26d711753b16a6b673ca0b5124cf7f887dd4be6` |
+| `mutants/summary.txt` | `a7905dbd3ed964be25e14d9fce1da8fe3eaddb781001acdb7413d9c7e18d202f` |

@@ -864,3 +864,82 @@ G-P11a 결과의 "coverage가 닿지 않은 새 경로" 목록은 실제와 달�
 - reaper 주기와 실제 child 종료 지연의 상호작용은 fake `is_live`로만 확인했다.
 - G11BR-05(live STT 재기동 지연)는 실장비 출시 게이트로 남는다.
 - L의 "0.1초 안 응답"은 이 장치에서 측정한 값이며, 부하 하의 지연 SLA는 아니다.
+
+## §G-P11d(G-P11c 검토 G11CR-01~03)
+
+작성자 w5:p7 Claude. 배정은 C00의 G-P11d 신호다(검토 `docs/reviews/g11c-resource-followup-review.md`, LF SHA-256 `3713beaf…35e6dc`, S3 3건). 이 절 앞의 내용(LF SHA-256 `1f02ae13…0985`)은 바꾸지 않는다.
+
+### §4.3 정정(G11CR-01)
+
+§4.3의 복수 실패 순서 중 "GPU 관측 UNKNOWN/UNAVAILABLE·장치 부재 → GPU identity 대응"을 다음으로 정정한다.
+
+> GPU 관측 UNKNOWN/UNAVAILABLE → (identity 미검증 사유가 UUID·bus id 결함이면) GPU identity → 장치 부재(지정 UUID 없음·빈 목록) → (그 밖의 미검증 사유: `CUDA_VISIBLE_DEVICES` remapping·MIG·CUDA 수 불일치/미상) GPU identity.
+
+- **UUID·bus id 결함:** 장치 identity 자체가 없다. 그래서 장치가 "없다"는 판단이 성립하지 않으며, `RESOURCE_GPU_IDENTITY_UNVERIFIED`가 먼저다. 이 경우 `join_identity`는 장치 목록을 비워 보낸다.
+- **remapping·MIG·CUDA 수 문제:** nvidia-smi host 목록은 완전하다. 그래서 지정 UUID가 없거나 목록이 비었으면 `RESOURCE_GPU_UNAVAILABLE`(장치 부재)이 정확하다. 장치가 있으면 identity로 거부한다.
+
+### 앞 두 절의 어긋남 정리
+
+- §G-P11c 범위 절 결정표는 G11BR-01을 "계약 문장 순서로 맞춘다 … 계약 정정은 요청하지 않는다"고 썼다.
+- §구현 결과(G-P11c) 해석 1은 identity를 먼저 두고 "계약 정정 여부는 C00 결정"이라고 썼다.
+- 두 기술은 이 절의 정정으로 대체한다. 시각 유효성 → known RAM 관측 → GPU 관측 → (위 정정) → host RAM 부족 → VRAM 부족이 유일한 규칙이다. 구현(`models/resources.py`의 `_gpu_plan`·`HOST_LIST_COMPLETE`), P·G oracle, 새 O 행이 같은 규칙을 가리킨다.
+
+### 수명(G11CR-02)
+
+- `ResourceScheduler.close()`는 reaper를 멈추고 join한다(멱등). 보유 slot은 해제하지 않는다. 닫힌 뒤에는 `_released`가 해제·`on_ack`(Job local reader 종료)를 하지 않는다. 그 reader는 다음 시작의 복구가 정리한다.
+- `BoundedRunner.stop()`은 thread join 뒤(`finally`), `held`를 제공하는 객체가 `closes_with_runner`로 동의한 경우에만 그 `close()`를 부른다. `AIService`는 `runner.held = scheduler.held`로 연결하고 `close()`에서 `runner.stop()` 뒤 `jobs.close()`를 부르므로, JobStore가 닫히기 전에 reaper가 멈춘다. `app/ai.py`는 바꾸지 않는다.
+- 대안은 `AIService.close()`에 `self.scheduler.close()` 한 줄을 두는 것이다(`app/ai.py`, G-P12 검토 중이라 쓰지 않았다).
+
+### 시험 공백(G11CR-03)
+
+| 검토 변이 | 고정한 행 |
+| --- | --- |
+| Q01 stop의 같은 항목 재확인 | G11D-S "목록 고정 뒤 종료" 6행(검토자 `probe_stop_window` 모양) |
+| Q06 settling 대기 | G11D-S BACKOFF × {기록 전, 기록 중, 기록 뒤} 3행 |
+| Q03 UNKNOWN GPU의 RAM stale 비적용 | G11D-TTL 6행(신선한 GPU + RAM 나이 3 × {UNKNOWN, known} GPU 요구량) |
+| Q05 reaper의 생존 사전 확인 | G11C-R 24행 모두에 "주기 확인 동안 close 호출 0" 단언 추가(ID 불변) |
+
+### 분모·mutation
+
+| family | 축 | 행 |
+| --- | --- | ---: |
+| G11D-O | identity 미검증 사유{UUID, BUS_ID, CUDA_VISIBLE_DEVICES, MIG, CUDA_COUNT, CUDA_COUNT_UNKNOWN} × 장치{지정 UUID 없음, 빈 목록, 장치 있음} | 18 |
+| G11D-TTL | RAM 나이{TTL−1, TTL, TTL+1} × GPU 요구량{UNKNOWN, known} | 6 |
+| G11D-S | "목록 고정 뒤 종료" × 결과 6(G11C-S 5 + BACKOFF) + BACKOFF × 시점 3 | 9 |
+| G11D-C | 보유 상태{없음, 생존, 닫은 뒤 종료} × 닫기{`scheduler.close()`, `AIService.close()`} | 6 |
+| **합계** | | **39** |
+
+mutation 9: D01 identity 늘 먼저, D02 장치 부재 늘 먼저, D03 close가 reaper를 멈추지 않음, D04 닫힌 뒤 해제·영수증, D05 stop이 제공자를 닫지 않음, 그리고 검토자 Q01·Q03·Q05·Q06.
+
+### 결과
+
+- **기준:** 준비 중에는 G-P11c 검토 tree `f8bae24e`의 scratch 사본에서 작업했다. 푸시된 `dffb730`은 이 tree에 문서 2개(배정표·검토 문서)만 더한 것이라 코드·시험이 같다.
+- **작업 트리 적용:** 같은 patch 스크립트를 작업 트리에 적용했고, 4파일이 검증한 tree와 바이트 단위로 같다(LF).
+- **신규·관련 시험:** G-P11c·G-P11d 후속 2파일이 **129 passed, 약 29초**다(G11C 87 + G11D 39 + 감사 2 + 순서 차이 보조 1). 같은 파일을 4회 반복해도 모두 통과했다. 자원·runner·AI 독립 묶음은 1,059 passed다.
+- **ID 감사:** G11D 39행이 누락·중복 0이고, G11C 87행과의 교집합도 0이다.
+- **CI core 동등**(준비 tree, 단계·flag 그대로)
+  - ruff check, format --check(195 files), mypy(91 source) 통과
+  - 전체 pytest **22,927 passed**(failures·errors·skipped 0), 1,598.7초, JUnit LF SHA-256 `5d843713…`
+  - 총 coverage 92.37%
+  - 묶음별 예산 전부 PASS(line/branch %): domain 99.18/97.89, capture 99.85/98.57, jobs 99.20/95.65, storage 95.95/91.41, security 98.11/94.43, content 99.59/98.75, all 93.75/88.33
+  - `jobs/runner.py` line 272/277·branch 85/94, `models/resources.py` 546/590·167/202
+- **mutation 9/9 검출, invalid 0**(사본마다 하나, import 출처 확인)
+
+| ID | 결함 | 실패 | 목표 |
+| --- | --- | ---: | --- |
+| D01 | identity 늘 먼저 | 8 | O(remapping·MIG·count의 장치 부재) |
+| D02 | 장치 부재 늘 먼저 | 28 | O(UUID·BUS_ID), G(손상 UUID) |
+| D03 | close가 reaper를 멈추지 않음 | 4 | C(보유) |
+| D04 | 닫힌 뒤 해제·영수증 | 2 | C(닫은 뒤 종료) |
+| D05 | stop이 held 제공자를 닫지 않음 | 2 | C(AIService.close) |
+| Q01 | stop의 같은 항목 재확인 제거 | 3 | S2 목록 고정 뒤 종료 |
+| Q03 | known RAM stale을 UNKNOWN GPU에도 | 2 | TTL2 UNKNOWN GPU |
+| Q05 | reaper가 생존 확인 없이 ACK 시도 | 12 | G11C-R 주기 행의 close 0 |
+| Q06 | stop이 settling을 기다리지 않음 | 1 | S2 기록 중 BACKOFF |
+
+- **시험 쪽 정정 1건:** C 행이 처음에 간헐 실패했다. 전사 결과가 게시되어 Job이 SUCCEEDED가 된 직후, lease의 ACK 실패와 reaper 시작이 일어나는 짧은 창을 시험이 앞질렀기 때문이다. 보유 상태에서는 reaper 시작을 기다린 뒤(최대 2초) 확인하도록 고쳤다. 제품 결함은 아니다.
+
+### 미검증·한계
+
+- 실제 GPU·nvidia-smi·worker 지연 종료는 실행하지 않았다(fake).
+- `closes_with_runner`로 runner가 scheduler를 닫으므로, 같은 scheduler를 쓰는 runner를 stop 뒤 다시 start하는 구성에서는 reaper가 다시 뜨지 않는다. 현재 그 구성은 없다(AIService는 stop 뒤 JobStore를 닫는다).

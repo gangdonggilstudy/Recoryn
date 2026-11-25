@@ -224,10 +224,22 @@ class BoundedRunner:
                     self.jobs.cancel(item.job_id)  # durable fence revocation first
             finally:
                 item.cancel.set()
-        for thread in self._threads:
-            thread.join(max(0.0, deadline - time.monotonic()))
+        try:
+            for thread in self._threads:
+                thread.join(max(0.0, deadline - time.monotonic()))
+        finally:
+            self._close_held_provider()
         if self.running:
             raise TimeoutError("RUNNER_STOP_TIMEOUT")
+
+    def _close_held_provider(self) -> None:
+        """G11CR-02: the provider ``held`` reads (AIService wires its ResourceScheduler)
+        stops its reaper with the runner, before the owner closes the JobStore. Only a
+        provider that opts in with ``closes_with_runner`` is closed."""
+        provider = getattr(self.held, "__self__", None)
+        close = getattr(provider, "close", None)
+        if getattr(provider, "closes_with_runner", False) is True and callable(close):
+            close()
 
     def _worker(self) -> None:
         while True:
