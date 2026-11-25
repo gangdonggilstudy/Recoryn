@@ -12,6 +12,7 @@ import uuid
 import weakref
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Any, BinaryIO, Protocol
@@ -132,6 +133,18 @@ _HISTORY_UNAVAILABLE = "DELETION_HISTORY_UNAVAILABLE"
 _STAMP_SETTLE_NS = 2_500_000_000
 
 
+@dataclass(frozen=True)
+class _JournalObservation:
+    version: int
+    epoch: int
+    stamp: tuple[int, int, int] | None
+    started_ns: int
+    journal: dict[str, int] | None
+    names: frozenset[str]
+    settled: bool
+    content_failure: bool = False
+
+
 class LiveOwner(Protocol):
     """An in-process owner, such as a recording service, that may still write a session."""
 
@@ -186,6 +199,9 @@ class Library:
         # Bumped under root_mutex before this Library writes a deletion journal,
         # so a journal read outside the mutex can be validated cheaply.
         self._history_version = 0
+        self._observation_epoch = 0
+        self._published_observation = 0
+        self._intent_failure: _JournalObservation | None = None
         # Validated journal (session -> generation) and the journal directory stamp
         # it was read at. Updated in the same root_mutex section that publishes an
         # intent; any other change to the directory forces a full re-validation.
@@ -296,84 +312,54 @@ class Library:
             yield "HISTORY_UNAVAILABLE"
             return
         for _ in range(3):
+            observation = owner._journal_prefetch()
             with owner._mutex:
-                version, cached = owner._history_version, owner._intent_journal
-                cached_stamp = owner._intent_stamp
-            journal = None
-            stamp = None
-            observed_version = version
-            try:
-                before = owner._journal_stamp()
-                observed_version, journal = owner._journal_prefetch()
-                stamp = owner._journal_stamp()
-                if before != stamp:
-                    continue
-            except (ValueError, OSError):
-                pass  # acknowledged failures still need a terminal Job record
-            # Potentially large comparisons/construction remain outside root_mutex.
-            reuse = (
-                journal is not None
-                and cached is not None
-                and journal == cached
-                and stamp == cached_stamp
-            )
-            names = (
-                frozenset(f"{sid}.json" for sid in journal) if journal is not None else frozenset()
-            )
-            settled = stamp is not None and time.time_ns() - stamp[2] > _STAMP_SETTLE_NS
-            with owner._mutex:
-                if owner._history_version != version or observed_version != version:
-                    continue  # re-prepare off the mutex; never re-read here
                 state = "HISTORY_UNAVAILABLE"
                 try:
-                    if (
-                        owner._connection is not None
-                        and not owner._missing_deletion_history
-                        and journal is not None
-                        and stamp == owner._journal_stamp()
-                    ):
+                    if owner._connection is None or owner._missing_deletion_history:
+                        state = "HISTORY_UNAVAILABLE"
+                    else:
                         owner._check_version()
-                        # Reuse/refresh the one G-P15 index. It is a memo, not a
-                        # durable write; all O(N) work was done in the preflight.
-                        if not reuse or owner._intent_journal is not cached:
-                            owner._intent_journal = journal
-                            owner._intent_stamp = stamp
-                            owner._intent_names = names
-                        owner._intent_settled = settled
-                        if owner._intent_journal is None:
-                            raise ValidationError(_HISTORY_UNAVAILABLE)
-                        published = owner._intent_journal.get(session_id)
-                        row = owner._db.execute(
-                            "SELECT generation,status FROM deleted_sessions WHERE session_id=?",
-                            (session_id,),
-                        ).fetchone()
-                        session = owner._db.execute(
-                            "SELECT generation FROM sessions WHERE session_id=?", (session_id,)
-                        ).fetchone()
-                        if row is not None:
-                            integer(row[0], minimum=1)
-                            if row[1] not in _DELETION_STATUSES:
-                                raise ValidationError(_HISTORY_UNAVAILABLE)
-                        if session is not None:
-                            integer(session[0])
-                        generation = max(row[0] if row else 0, published or 0)
-                        if session is not None and generation and session[0] > generation:
-                            raise ValidationError(_HISTORY_UNAVAILABLE)
-                        if row is not None and row[1] == "DELETED_LOCAL":
-                            state = "TOMBSTONE"
-                        elif row is not None and published is not None:
-                            state = "BOTH"
-                        elif row is not None:
-                            state = "DB_ONLY"
-                        elif published is not None:
-                            state = "JOURNAL_ONLY"
-                        else:
-                            state = "VALID" if session is not None else "MISSING"
+                        if not owner._accept_observation(
+                            observation
+                        ) and not owner._newer_observation_current(observation):
+                            continue
+                        if owner._intent_journal is not None:
+                            state = owner._job_authority_state(session_id)
                 except (ValueError, OSError, sqlite3.Error):
                     state = "HISTORY_UNAVAILABLE"
                 yield state
                 return
         yield "HISTORY_UNAVAILABLE"  # concurrent intent changes never become absence
+
+    def _job_authority_state(self, session_id: str) -> str:
+        """Root mutex held through the caller's existing short Job transaction."""
+        assert self._intent_journal is not None
+        published = self._intent_journal.get(session_id)
+        row = self._db.execute(
+            "SELECT generation,status FROM deleted_sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        session = self._db.execute(
+            "SELECT generation FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        if row is not None:
+            integer(row[0], minimum=1)
+            if row[1] not in _DELETION_STATUSES:
+                raise ValidationError(_HISTORY_UNAVAILABLE)
+        if session is not None:
+            integer(session[0])
+        generation = max(row[0] if row else 0, published or 0)
+        if session is not None and generation and session[0] > generation:
+            raise ValidationError(_HISTORY_UNAVAILABLE)
+        if row is not None and row[1] == "DELETED_LOCAL":
+            return "TOMBSTONE"
+        if row is not None and published is not None:
+            return "BOTH"
+        if row is not None:
+            return "DB_ONLY"
+        if published is not None:
+            return "JOURNAL_ONLY"
+        return "VALID" if session is not None else "MISSING"
 
     def _acquire_lock(self) -> None:
         path = safe_path(self.root, ".writer.lock")
@@ -444,14 +430,110 @@ class Library:
             entries[sid] = generation
         return entries
 
-    def _journal_prefetch(self) -> tuple[int, dict[str, int] | None]:
-        """Read the journal outside root_mutex; _deletion_history re-reads if it changed."""
+    def _journal_prefetch(self, *, fresh: bool = False) -> _JournalObservation:
+        """Successful reads stay fresh; only content failures may be memoized."""
         with self._mutex:
-            version = self._history_version
+            started = time.time_ns()
+            try:
+                failed = self._intent_failure if not fresh else None
+                if failed is not None and failed.settled and self._failure_current():
+                    return failed
+            except (ValueError, OSError):
+                failed = None
+        if failed is not None and not failed.settled and failed.stamp is not None:
+            try:
+                # Job preflight is outside root: do not borrow _live's names-only
+                # mutex exception. Recheck the candidate identity after listing.
+                listed, _ = self._list_journal(failed.stamp)
+                with self._mutex:
+                    if failed is self._intent_failure and self._failure_current(names=listed):
+                        return failed
+            except (ValueError, OSError):
+                pass
+        with self._mutex:
+            self._observation_epoch += 1
+            epoch, version = self._observation_epoch, self._history_version
+        stamp = None
+        journal = None
+        names: frozenset[str] = frozenset()
+        content_failure = False
         try:
-            return version, self._read_journal()
+            stamp = self._journal_stamp()
+            started = time.time_ns()  # before any entry enumeration or body I/O
+            names, _ = self._list_journal(stamp)
+            try:
+                journal = self._read_journal()
+            except ValueError:
+                content_failure = True
+            listed, _ = self._list_journal(stamp)
+            if listed != names or (
+                journal is not None and listed != frozenset(f"{sid}.json" for sid in journal)
+            ):
+                journal, names, content_failure = None, frozenset(), False
         except (ValueError, OSError):
-            return version, None  # the locked re-read reports the failure
+            # An unavailable listing/read proves nothing about persistent content.
+            journal, names, content_failure = None, frozenset(), False
+        return _JournalObservation(
+            version,
+            epoch,
+            stamp,
+            started,
+            journal,
+            names,
+            stamp is not None and started - stamp[2] > _STAMP_SETTLE_NS,
+            content_failure,
+        )
+
+    def _failure_current(self, *, names: frozenset[str] | None = None) -> bool:
+        """Root held: reuse content failures, never a transient filesystem refusal."""
+        failed = self._intent_failure
+        if not (
+            failed is not None
+            and failed.content_failure
+            and failed.version == self._history_version
+            and failed.epoch == self._published_observation
+            and failed.stamp is not None
+            and failed.stamp == self._journal_stamp()
+            and time.time_ns() >= failed.started_ns >= failed.stamp[2]
+        ):
+            return False
+        if failed.settled:
+            return True
+        # Before settling, names must still match, including changes in one tick.
+        if names is None:
+            names, _ = self._list_journal(failed.stamp)
+        return names == failed.names
+
+    def _newer_observation_current(self, observed: _JournalObservation) -> bool:
+        """Root held: another completed read of this same snapshot won publication."""
+        return bool(
+            self._connection is not None
+            and not self._missing_deletion_history
+            and observed.version == self._history_version
+            and observed.epoch < self._published_observation <= self._observation_epoch
+            and observed.stamp is not None
+            and observed.stamp == self._intent_stamp == self._journal_stamp()
+        )
+
+    def _accept_observation(self, observed: _JournalObservation) -> bool:
+        """Publish only the latest-started observation of the same authority snapshot."""
+        if (
+            self._connection is None
+            or self._missing_deletion_history
+            or observed.version != self._history_version
+            or observed.epoch < self._published_observation
+            or observed.epoch > self._observation_epoch
+            or observed.stamp is None
+            or observed.stamp != self._journal_stamp()
+        ):
+            return False
+        self._published_observation = observed.epoch
+        self._intent_failure = observed if observed.content_failure else None
+        self._intent_journal = observed.journal
+        self._intent_stamp = observed.stamp
+        self._intent_names = observed.names
+        self._intent_settled = observed.settled and observed.journal is not None
+        return True
 
     def _journal_stamp(self) -> tuple[int, int, int]:
         status = os.stat(safe_path(self.root, "deletion-journal"))
@@ -468,6 +550,9 @@ class Library:
         return names, settled
 
     def _set_index(self, journal: dict[str, int], stamp: tuple[int, int, int]) -> None:
+        self._observation_epoch += 1
+        self._published_observation = self._observation_epoch
+        self._intent_failure = None
         self._intent_journal, self._intent_stamp = journal, stamp
         self._intent_names = frozenset(f"{sid}.json" for sid in journal)
         self._intent_settled = False
@@ -497,12 +582,10 @@ class Library:
         self._intent_journal = None
         if self._missing_deletion_history:
             raise ValidationError(_HISTORY_UNAVAILABLE)
-        before = self._journal_stamp()
-        journal = self._read_journal()
-        if self._journal_stamp() != before:
-            raise ValidationError(_HISTORY_UNAVAILABLE)  # changed while reading
-        self._set_index(journal, before)
-        return journal
+        observed = self._journal_prefetch(fresh=True)
+        if not self._accept_observation(observed) or observed.journal is None:
+            raise ValidationError(_HISTORY_UNAVAILABLE)
+        return observed.journal
 
     def _indexed_journal(self) -> dict[str, int]:
         """Root mutex held: the validated journal, re-read only when its entries changed.
@@ -512,6 +595,8 @@ class Library:
         """
         try:
             if self._missing_deletion_history:
+                raise ValidationError(_HISTORY_UNAVAILABLE)
+            if self._failure_current():
                 raise ValidationError(_HISTORY_UNAVAILABLE)
             if self._index_current() and self._intent_journal is not None:
                 return self._intent_journal
@@ -586,7 +671,7 @@ class Library:
             return self._writer_intent(session_id)
 
     def _deletion_history(
-        self, prefetched: tuple[int, dict[str, int] | None] | None = None
+        self, prefetched: _JournalObservation | None = None
     ) -> tuple[dict[str, tuple[int, str]], dict[str, int]]:
         """Root mutex held: validated DB rows and journal. Corruption is never absence.
 
@@ -598,9 +683,19 @@ class Library:
             if self._missing_deletion_history:
                 raise ValidationError(_HISTORY_UNAVAILABLE)
             if prefetched is not None:
-                journal = prefetched[1] if prefetched[0] == self._history_version else None
-                if journal is None:
-                    journal = self._read_journal()  # re-read so the failure is reported
+                if self._accept_observation(prefetched):
+                    journal = prefetched.journal
+                    if journal is None:
+                        raise ValidationError(_HISTORY_UNAVAILABLE)
+                elif self._newer_observation_current(prefetched):
+                    # This call already read in full off-root; a newer validated
+                    # observation won publication. Never re-read O(N) under root
+                    # merely because another worker completed the same snapshot.
+                    journal = self._intent_journal
+                    if journal is None:
+                        raise ValidationError(_HISTORY_UNAVAILABLE)
+                else:
+                    journal = self._refresh_intent_index()
             else:
                 journal = self._indexed_journal()
             rows: dict[str, tuple[int, str]] = {}
@@ -616,9 +711,7 @@ class Library:
             raise ValidationError(_HISTORY_UNAVAILABLE) from None
         return rows, journal
 
-    def _deletion_intents(
-        self, prefetched: tuple[int, dict[str, int] | None] | None = None
-    ) -> set[str]:
+    def _deletion_intents(self, prefetched: _JournalObservation | None = None) -> set[str]:
         rows, journal = self._deletion_history(prefetched)
         return set(rows) | set(journal)
 
@@ -689,7 +782,7 @@ class Library:
 
     def list_sessions(self) -> list[Session]:
         # Full journal validation on every call, read outside the root mutex.
-        prefetched = self._journal_prefetch()
+        prefetched = self._journal_prefetch(fresh=True)
         with self._mutex:
             deleted = self._deletion_intents(prefetched)
             return [
@@ -721,7 +814,7 @@ class Library:
         session_id: str,
         operation: str,
         expected_version: int | None,
-        prefetched: tuple[int, dict[str, int] | None] | None = None,
+        prefetched: _JournalObservation | None = None,
     ) -> bool:
         """Root mutex held: decide every refusal before publishing any claim."""
         if expected_version is not None:
@@ -784,7 +877,7 @@ class Library:
         # operations on the same thread retain the original claim.
         with lock:
             # Admission validates the whole journal, read outside the root mutex.
-            prefetched = self._journal_prefetch() if admission is not None else None
+            prefetched = self._journal_prefetch(fresh=True) if admission is not None else None
             with self._mutex:
                 nested = session_id in self._claims
                 admitted = admission is None or self._admit_session(
@@ -2093,7 +2186,7 @@ class Library:
 
     def recover_session(self, session_id: str) -> dict[str, Any]:
         with self._session_operation(session_id, admission="recover"):
-            prefetched = self._journal_prefetch()
+            prefetched = self._journal_prefetch(fresh=True)
             with self._mutex:
                 identifier(session_id)
                 intents = self._deletion_intents(prefetched)
@@ -2297,7 +2390,7 @@ class Library:
             raise StateConflict(entry["inspection_error"])
 
     def _inventory(self) -> tuple[list[dict[str, Any]], int]:
-        prefetched = self._journal_prefetch()
+        prefetched = self._journal_prefetch(fresh=True)
         with self._mutex:
             deleted = self._deletion_intents(prefetched)
             rows = self._db.execute(
@@ -2367,7 +2460,7 @@ class Library:
         with self._session_operation(
             session_id, admission="finalize", expected_version=expected_version
         ):
-            prefetched = self._journal_prefetch()
+            prefetched = self._journal_prefetch(fresh=True)
             with self._mutex:
                 identifier(session_id)
                 if expected_version is not None:
@@ -2464,7 +2557,7 @@ class Library:
     def deletion_generation(self, session_id: str) -> int | None:
         """Read only: the current deletion-intent generation (pending or completed)."""
         identifier(session_id)
-        prefetched = self._journal_prefetch()
+        prefetched = self._journal_prefetch(fresh=True)
         with self._mutex:
             rows, journal = self._deletion_history(prefetched)
             if session_id not in rows and session_id not in journal:
@@ -2480,7 +2573,7 @@ class Library:
         corruption raises ValidationError and a newer catalog generation raises
         StateConflict DELETE_HISTORY_CONFLICT; neither becomes an empty list.
         """
-        prefetched = self._journal_prefetch()
+        prefetched = self._journal_prefetch(fresh=True)
         observed: list[dict[str, Any]] = []
         with self._mutex:
             self._check_version()
@@ -2610,6 +2703,9 @@ class Library:
             current = False
         snapshot = dict(self._intent_journal) if current and self._intent_journal else {}
         self._intent_journal = None
+        self._intent_failure = None
+        self._observation_epoch += 1
+        self._published_observation = self._observation_epoch
         atomic_json(
             safe_path(self.root, f"deletion-journal/{session_id}.json"),
             {
@@ -2712,7 +2808,7 @@ class Library:
         another session's capture writer is never blocked by it.
         """
         identifier(session_id)
-        prefetched = self._journal_prefetch()
+        prefetched = self._journal_prefetch(fresh=True)
         with self._mutex:
             self._check_version()
             rows, journal = self._deletion_history(prefetched)
@@ -2881,6 +2977,10 @@ class Library:
         # Writers fall back to the durable check once this Library is gone.
         unregister_intent_check(self.root, self._append_check)
         with self._mutex:
+            self._intent_failure = None
+            self._intent_journal = None
+            self._observation_epoch += 1
+            self._published_observation = self._observation_epoch
             if self._job_authorities.get(self.db_path) is self:
                 del self._job_authorities[self.db_path]
             try:
