@@ -36,6 +36,18 @@ from PySide6.QtWidgets import (
 )
 
 from recoryn.app.desktop import DesktopRecorder, TrackSelection
+from recoryn.app.device_policy import (
+    CONFLICT,
+    FUTURE_VERSION,
+    INVALID,
+    LABELS,
+    SAVE_FAILED,
+    UNAVAILABLE,
+    DevicePolicyStore,
+    PolicyController,
+    PolicyView,
+)
+from recoryn.app.device_policy import label as policy_label
 from recoryn.app.power import PowerCoordinator
 from recoryn.app.recovery import (
     directory_only_lines,
@@ -45,6 +57,7 @@ from recoryn.app.recovery import (
 )
 from recoryn.domain import SessionState, StateConflict
 from recoryn.storage import Library
+from recoryn.ui import a11y
 from recoryn.ui.tasks import Task
 
 # Refusals shown as their own message; the session and its media stay unchanged.
@@ -73,9 +86,56 @@ _DELETION_REASONS = {
 }
 
 
+class PolicyComboBox(QComboBox):
+    """AUTO is shown for GPU_WITH_CPU_FALLBACK_ALLOWED; the value API stays the enum.
+
+    ``currentText()``/``setCurrentText()`` keep working with the three policy enums so
+    existing callers read and set the same values; the displayed text is the alias.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        for policy, text in LABELS.items():
+            self.addItem(text, policy)
+
+    def currentText(self) -> str:  # noqa: N802 - Qt API
+        data = self.currentData()
+        return data if isinstance(data, str) else super().currentText()
+
+    def setCurrentText(self, text: str) -> None:  # noqa: N802 - Qt API
+        index = self.findData(text)
+        if index < 0:
+            index = self.findText(text)
+        if index >= 0:
+            self.setCurrentIndex(index)
+
+
+def default_policy_store() -> DevicePolicyStore | None:
+    """The store of a window built without one: none, so nothing is read or saved.
+
+    Only the application entry point (``run`` via ``user_window``) wires the real
+    per-user store; a window constructed elsewhere never touches the user's settings.
+    """
+    return None
+
+
+def user_window(library: Library) -> MainWindow:
+    """The application's window: the real per-user, per-PC policy store (G-P16)."""
+    return MainWindow(library, policy_store=DevicePolicyStore.for_user())
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, library: Library, *, recorder: DesktopRecorder | None = None) -> None:
+    def __init__(
+        self,
+        library: Library,
+        *,
+        recorder: DesktopRecorder | None = None,
+        policy_store: DevicePolicyStore | None = None,
+    ) -> None:
+        """Without ``policy_store``, ``default_policy_store()`` decides (memory only)."""
         super().__init__()
+        if policy_store is None:
+            policy_store = default_policy_store()
         self.library = library
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)  # control operations are serialized
@@ -107,6 +167,13 @@ class MainWindow(QMainWindow):
         self._inventory_requested: int | None = None
         self._inventory_loading = False
         self._review_details: tuple[str, int, str] | None = None
+        # G-P16: its own serial worker; never the GUI or the recording control pool.
+        self._policy_pool = QThreadPool(self)
+        self._policy_pool.setMaxThreadCount(1)
+        self._policy_tasks: set[Task] = set()
+        self._policy_applying = False
+        self._policy_announce = a11y.qt_announce
+        self.policy = PolicyController(policy_store, self._policy_submit, self._show_policy)
         self.setWindowTitle("Recoryn — 로컬 AI 음성 기록")
         self.resize(1180, 780)
         self._build()
@@ -134,6 +201,7 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(250)
+        self.policy.start()  # restores asynchronously; recording never waits for it
         from recoryn.ui.power import WindowsPowerFilter
 
         self._power_filter = WindowsPowerFilter(
@@ -276,9 +344,28 @@ class MainWindow(QMainWindow):
         choose = QPushButton("모델 폴더 선택")
         choose.clicked.connect(self._choose_model)
         form.addRow(choose)
-        self.device_policy = QComboBox()
-        self.device_policy.addItems(["CPU_ONLY", "GPU_ONLY", "GPU_WITH_CPU_FALLBACK_ALLOWED"])
+        self.device_policy = PolicyComboBox()
+        self.device_policy.currentIndexChanged.connect(self._policy_changed)
+        self.device_policy.activated.connect(self._policy_activated)
         form.addRow("AI 실행 정책", self.device_policy)
+        self.policy_status = QLabel("")
+        self.policy_status.setWordWrap(True)
+        a11y.name(
+            self.policy_status,
+            "AI 실행 정책 저장 상태",
+            "현재 실행 정책과 다음 시작에 유지되는지를 따로 알립니다",
+        )
+        form.addRow(self.policy_status)
+        self.policy_reset_button = QPushButton("설정 재설정")
+        a11y.name(
+            self.policy_reset_button,
+            "AI 실행 정책 설정 재설정",
+            "손상된 설정 파일을 현재 정책으로 교체합니다. 확인 창의 기본값은 아니요입니다",
+        )
+        self.policy_reset_button.setEnabled(False)
+        self.policy_reset_button.clicked.connect(self.reset_policy)
+        self._policy_reset_keys = a11y.activate_button(self.policy_reset_button)
+        form.addRow(self.policy_reset_button)
         self.live_stt = QCheckBox("녹음 중 임시 전사 (모델 설정 후 적용)")
         self.live_stt.setChecked(False)
         form.addRow(self.live_stt)
@@ -1135,6 +1222,72 @@ class MainWindow(QMainWindow):
             self._show_pending_deletions(announce=True)
         self.refresh_sessions()
 
+    # --- G-P16 execution policy preference -------------------------------------------
+
+    def _policy_submit(self, work: Callable[[], Any], done: Callable[[Any], None]) -> None:
+        """Run one settings read/write on the settings worker; deliver on the GUI thread."""
+        task = Task(work)
+        self._policy_tasks.add(task)
+
+        def finished(result: Any) -> None:
+            self._policy_tasks.discard(task)
+            done(result)
+
+        def failed(code: str) -> None:
+            self._policy_tasks.discard(task)
+            done(None)  # the controller treats a missing answer as a failure
+
+        task.signals.finished.connect(finished, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(failed, Qt.ConnectionType.QueuedConnection)
+        self._policy_pool.start(task)
+
+    def _show_policy(self, view: PolicyView, announce: bool) -> None:
+        if self._closing_requested or not a11y.alive(self.device_policy):
+            return
+        index = self.device_policy.findData(view.current)
+        if index >= 0 and index != self.device_policy.currentIndex():
+            self._policy_applying = True  # a restored value is not a user selection
+            try:
+                self.device_policy.setCurrentIndex(index)
+            finally:
+                self._policy_applying = False
+        if self.policy_status.text() != view.text:
+            self.policy_status.setText(view.text)
+        self.policy_reset_button.setEnabled(view.reset_allowed)
+        if announce:
+            urgent = view.state in (INVALID, FUTURE_VERSION, UNAVAILABLE, SAVE_FAILED, CONFLICT)
+            self._policy_announce(
+                self.policy_status, view.text, a11y.ASSERTIVE if urgent else a11y.POLITE
+            )
+
+    def _policy_changed(self, index: int) -> None:
+        """Any index change (program or user) applies to new requests now, unsaved."""
+        if self._policy_applying or not hasattr(self, "policy"):
+            return
+        policy = self.device_policy.itemData(index)
+        if isinstance(policy, str):
+            self.policy.select(policy, user=False)
+
+    def _policy_activated(self, index: int) -> None:
+        """Only an activation by the user is saved (restore, poll and tabs never are)."""
+        policy = self.device_policy.itemData(index)
+        if isinstance(policy, str):
+            self.policy.select(policy, user=True)
+
+    def reset_policy(self) -> None:
+        """Replace a damaged setting only after an explicit Yes (default and Esc: No)."""
+        if not self.policy_reset_button.isEnabled():
+            return
+        accepted, _ = a11y.confirm(
+            self,
+            "AI 실행 정책 설정 재설정",
+            "손상된 설정 파일을 현재 정책 "
+            + policy_label(self.policy.current)
+            + "(으)로 교체합니다. 손상된 파일의 내용은 보존되지 않습니다. 교체할까요?",
+            fallback=self.device_policy,
+        )
+        self.policy.reset(confirmed=accepted)
+
     def _choose_model(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "이미 설치한 로컬 모델 폴더")
         if directory:
@@ -1238,6 +1391,7 @@ class MainWindow(QMainWindow):
             return
 
         self._closing_requested = True
+        self.policy.close()  # a late load/save answer is ignored from now on
         self._inventory_generation += 1
         self._inventory_requested = None
         self._pending_generation += 1
@@ -1258,6 +1412,7 @@ class MainWindow(QMainWindow):
         def shutdown() -> None:
             self.recorder.close()
             self._inventory_pool.waitForDone()  # worker ACK before Library can close
+            self._policy_pool.waitForDone()  # a started settings write completes first
             self.model_panel.shutdown()
             self.ai_bridge.close()
             self.consents.close()
@@ -1272,6 +1427,6 @@ def run(root: str | None = None) -> int:
         Path(root) if root else Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Recoryn"
     )
     with Library(data) as library:
-        window = MainWindow(library)
+        window = user_window(library)
         window.show()
         return application.exec()

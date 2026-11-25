@@ -162,9 +162,10 @@ def local_source(
 
 POLICY_NAME = "AI 실행 정책"
 POLICY_DESCRIPTION = (
+    "새 요청에 적용, 진행 중인 작업은 기존 정책 유지. "
     "CPU_ONLY는 GPU를 쓰지 않고, GPU_ONLY는 GPU가 없을 때 CPU로 바꾸지 않습니다. "
-    "GPU_WITH_CPU_FALLBACK_ALLOWED만 CPU 대체를 허용합니다. 정책은 자동으로 바뀌지 "
-    "않으며 새 요청부터 적용됩니다."
+    "AUTO(GPU_WITH_CPU_FALLBACK_ALLOWED)는 GPU 우선이며 CPU 사용을 허용합니다. "
+    "정책은 자동으로 바뀌지 않으며, 직접 고른 정책은 이 PC 사용자 설정에 저장됩니다."
 )
 _ANNOUNCEMENT_TEXT = {
     "QUEUED": "AI 작업 대기",
