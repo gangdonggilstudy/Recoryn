@@ -54,6 +54,7 @@ from recoryn.ui.content import ContentPanel
 from recoryn.ui.privacy import PrivacyPanel
 from tests.ui.test_cost_cap_ui import fixture_panel_catalog
 from tests.ui.test_privacy_ui import DummyVault
+from tests.ui.test_secret_lifetime_ui import close_privacy, privacy_action, settle_privacy
 
 pytestmark = pytest.mark.ui
 _serial = count(1)
@@ -185,7 +186,12 @@ class Sink:
 
 
 def press(widget: Any, key: str) -> None:
+    owner = widget if isinstance(widget, PrivacyPanel) else widget.parentWidget()
+    while owner is not None and not isinstance(owner, PrivacyPanel):
+        owner = owner.parentWidget()
     QTest.keyClick(widget, KEYS[key])
+    if owner is not None and shiboken6.isValid(owner):
+        settle_privacy(owner)
 
 
 def anchors(browser: QTextBrowser) -> list[tuple[str, int, int, str]]:
@@ -302,7 +308,7 @@ def env(app: QApplication, tmp_path_factory: pytest.TempPathFactory) -> Iterator
             yield env
         finally:
             env.root.close()
-            env.privacy.close()
+            close_privacy(env.privacy)
             app.processEvents()
 
 
@@ -317,8 +323,9 @@ def configure_privacy(env: SimpleNamespace) -> None:
     control.total.setValue(1)
     control.per_request.setValue(0.1)
     privacy._g06_prices()
-    privacy._action("stt", "budget")
+    privacy_action(privacy, "stt", "budget")
     privacy._show_scope("stt")
+    settle_privacy(privacy)
 
 
 def reset_privacy(env: SimpleNamespace) -> None:
@@ -334,6 +341,7 @@ def reset_privacy(env: SimpleNamespace) -> None:
     for button in (control.allow, control.revoke):
         button.show()
     privacy._show_scope("stt")
+    settle_privacy(privacy)
 
 
 K_SEGMENTS = (
@@ -377,7 +385,10 @@ def k_panel(
 
 def dispose(panel: QWidget) -> None:
     if shiboken6.isValid(panel):
-        panel.close()
+        if isinstance(panel, PrivacyPanel):
+            close_privacy(panel)
+        else:
+            panel.close()
         shiboken6.delete(panel)
 
 
@@ -720,7 +731,7 @@ def test_f_modals_default_to_no_and_return_focus_only_when_safe(
 
     env.modals.reset(exit_key, during)
     if modal == "library_consent":
-        env.privacy._action("stt", "grant")
+        privacy_action(env.privacy, "stt", "grant")
     elif modal == "general_risk":
         control.cost_mode.setCurrentIndex(control.cost_mode.findData("general"))
     elif modal == "summary_select":
@@ -728,9 +739,9 @@ def test_f_modals_default_to_no_and_return_focus_only_when_safe(
     elif modal == "unknown_retry":
         env.bridge.retry_summary("meeting")
     elif modal == "clock_reset":
-        env.privacy._action("stt", "reset_clock")
+        privacy_action(env.privacy, "stt", "reset_clock")
     else:
-        env.privacy._action("stt", "adopt")
+        privacy_action(env.privacy, "stt", "adopt")
     env.modals.check()
     assert len(env.modals.opened) == 1 and env.modals.defaults == [(True, True)]
     if moved:
@@ -741,7 +752,7 @@ def test_f_modals_default_to_no_and_return_focus_only_when_safe(
         if modal in ("summary_select", "unknown_retry"):
             panel.load(panel.session_id or "k")
         else:
-            env.privacy._action("stt", "refresh")
+            privacy_action(env.privacy, "stt", "refresh")
     else:
         ops.flush()
     done = {

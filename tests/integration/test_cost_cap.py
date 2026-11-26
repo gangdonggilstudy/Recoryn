@@ -26,11 +26,14 @@ from recoryn.security import (
     CostCatalog,
     CostLedger,
     CostRequest,
+    CredentialVault,
     Gateway,
     SecurityError,
 )
 from recoryn.security.cost import quote
+from recoryn.security.credentials import AuthBinding, CredentialService, CredentialTarget
 from recoryn.storage import Library
+from tests.ui.test_secret_lifetime_ui import close_privacy, prepare_privacy, privacy_action
 from tests.unit.test_cost_cap import (
     Clock,
     audio_bytes,
@@ -291,6 +294,28 @@ class Wire:
         self.closed = True
 
 
+class _CostCredentialBackend:
+    def read(self, target: str) -> bytes:
+        return b"GS05-FAKE-COST-KEY"
+
+    def write(self, target: str, secret: bytes) -> None:
+        raise AssertionError("cost fixture never stores credentials")
+
+    def delete(self, target: str) -> None:
+        raise AssertionError("cost fixture never deletes credentials")
+
+
+def _cost_auth_binding(consent: ConsentStore, request: CostRequest) -> AuthBinding | None:
+    if request.provider_id not in {"openai", "anthropic", "gemini"}:
+        return None
+    credentials = CredentialService(
+        CredentialVault(backend=_CostCredentialBackend(), namespace="GS05-COST"), consents=consent
+    )
+    return credentials.capture_binding(
+        CredentialTarget(request.provider_id, request.endpoint), request.operation
+    )
+
+
 def gateway(consent: ConsentStore, ledger: CostLedger, wire: Wire, request: CostRequest) -> Gateway:
     scope = ConsentScope.session("s")
     consent.bind_session("s")
@@ -308,7 +333,12 @@ def gateway(consent: ConsentStore, ledger: CostLedger, wire: Wire, request: Cost
         request.provider_id, request.endpoint, (request.data_type,), scope=scope, request=context
     )
     return Gateway(
-        consent, ledger=ledger, transport=wire, expected_grants=bindings, chunk_bytes=3
+        consent,
+        ledger=ledger,
+        transport=wire,
+        expected_grants=bindings,
+        chunk_bytes=3,
+        auth_binding=_cost_auth_binding(consent, request),
     ).for_session("s", capability=request.operation, scope=scope, policy_version=version)
 
 
@@ -624,13 +654,13 @@ def test_revocation_and_cost_handoff_orders(
         )
         try:
             control = configure(panel, "summary", 60)
-            panel._action("summary", "budget")
+            privacy_action(panel, "summary", "budget")
             control.key.setText("FAKE-ORDER-KEY")
-            panel._action("summary", "save")
-            panel._action("summary", "grant")
+            privacy_action(panel, "summary", "save")
+            privacy_action(panel, "summary", "grant")
             control.data_type.setCurrentIndex(control.data_type.findData("context"))
-            panel._action("summary", "grant")
-            plan = panel.prepare_execution("summary", "s", cancel)
+            privacy_action(panel, "summary", "grant")
+            plan = prepare_privacy(panel, "summary", "s", cancel)
             assert plan.gateway is not None and plan.context.reservation_factory is not None
             request = CostRequest("openai", URL, "model", "v1", "summary", "transcript", b"abcdef")
 
@@ -678,7 +708,7 @@ def test_revocation_and_cost_handoff_orders(
             assert snapshot["unknown_exposure"] == (60 if expected_write else 0)
             app.processEvents()
         finally:
-            panel.close()
+            close_privacy(panel)
 
 
 @pytest.mark.parametrize("kind", LOCAL, ids=[f"G06-LOCAL-{i:03}" for i in range(3)])
@@ -702,7 +732,7 @@ def test_local_execution_is_independent_of_empty_price_catalog(tmp_path: Path, k
         )
         try:
             if kind == "faster_whisper":
-                execution = panel.prepare_execution("stt", "s", threading.Event())
+                execution = prepare_privacy(panel, "stt", "s", threading.Event())
                 assert execution.gateway is None and execution.context.reservation_factory is None
             else:
                 target = "http://127.0.0.1:11434/api/chat"
@@ -713,20 +743,20 @@ def test_local_execution_is_independent_of_empty_price_catalog(tmp_path: Path, k
                 control.model.setText("local")
                 if kind == "unverified_remote":
                     with pytest.raises(SecurityError, match="LOCAL_EXECUTION_UNVERIFIED"):
-                        panel.prepare_execution("summary", "s", threading.Event())
+                        prepare_privacy(panel, "summary", "s", threading.Event())
                 else:
                     proof = LocalModelAttestation(
                         target, "local", "b" * 64, True, time.monotonic() + 60
                     )
                     panel.set_local_attestation(proof)
-                    panel._action("summary", "grant")
+                    privacy_action(panel, "summary", "grant")
                     control.data_type.setCurrentIndex(control.data_type.findData("context"))
-                    panel._action("summary", "grant")
-                    execution = panel.prepare_execution("summary", "s", threading.Event())
+                    privacy_action(panel, "summary", "grant")
+                    execution = prepare_privacy(panel, "summary", "s", threading.Event())
                     assert execution.context.reservation_factory is None
             app.processEvents()
         finally:
-            panel.close()
+            close_privacy(panel)
 
 
 def legacy_class(tmp_path: Path) -> Any:

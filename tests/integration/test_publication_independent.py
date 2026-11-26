@@ -537,6 +537,15 @@ def _fixture_gateway(
                 )
             )
         kwargs["expected_grants"] = tuple(bindings)
+        if "auth_binding" not in kwargs:
+            from tests.unit.test_secret_lifetime import fake_auth_binding
+
+            for binding in bindings:
+                if binding.provider_id in {"openai", "anthropic", "gemini"}:
+                    kwargs["auth_binding"] = fake_auth_binding(
+                        policy, binding.provider_id, binding.endpoint, request.capability
+                    )
+                    break
         root = factory(policy, **kwargs)
     return root.for_session(
         session_id,

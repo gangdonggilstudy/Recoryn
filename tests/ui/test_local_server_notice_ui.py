@@ -15,6 +15,7 @@ from recoryn.security import SecurityError
 from tests.property.test_provider_facts_case_space import execution_audit as execution_audit
 from tests.ui.test_provider_facts_ui import facts_world as facts_world
 from tests.ui.test_provider_facts_ui import focus, select
+from tests.ui.test_secret_lifetime_ui import settle_privacy
 from tests.unit.test_provider_facts import EXECUTED, body, descriptor, no_io
 
 pytestmark = pytest.mark.ui
@@ -154,18 +155,21 @@ def test_server_notice_and_facts(
             ("delete", control.delete_key),
         ):
             inject()
+            settle_privacy(world.panel)
             if action == "save":
                 focus(world, control.key)
                 QTest.keyClicks(control.key, "GS04-fake-key")
             focus(world, button)
             QTest.keyClick(button, Qt.Key.Key_Space)
             world.app.processEvents()
+            settle_privacy(world.panel)
             assert control.fact_observation.text().startswith("최근 관측 없음"), action
             if action == "grant":
                 assert "동의 활성" in control.status.text()
         assert len(writes) == len(deletes) == 1
         inject()
     if evidence == "OBSERVED":
+        world.panel._facts_timer.setInterval(10)  # fake clock; retain actual timer callback
         world.clock[0] += 300
         deadline = time.monotonic() + 1
         while (
@@ -173,7 +177,9 @@ def test_server_notice_and_facts(
             and time.monotonic() < deadline
         ):
             QTest.qWait(5)
-            # Deliver timer events queued as qWait returns.
+            # A long preceding Qt event batch can consume this wait's whole
+            # deadline before the now-due timer is dispatched. Give that real
+            # timer its next event turn before checking the deadline again.
             world.app.processEvents()
         assert (
             control.fact_observation.text()

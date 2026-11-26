@@ -118,7 +118,7 @@ class Window:
             self.prepared.append(kind)
             raise StateConflict("CONSENT_REQUIRED")
 
-        mp.setattr(privacy, "prepare_execution", prepare)
+        mp.setattr(privacy.backend, "prepare_execution", lambda intent: prepare(intent.kind))
         mp.setattr(panel, "request_attestation_check", lambda: self.attestations.append("req"))
 
     def close(self) -> None:
@@ -378,7 +378,9 @@ def test_t30_continue_after_policy_change_takes_a_new_snapshot(
             gateway=None,
         )
 
-    monkeypatch.setattr(window.privacy_panel, "prepare_execution", prepare)
+    monkeypatch.setattr(
+        window.privacy_panel.backend, "prepare_execution", lambda intent: prepare(intent.kind)
+    )
     monkeypatch.setattr(summarization, "OllamaSummarizer", lambda *args: FakeSummary())
     monkeypatch.setattr(service.runner, "submit", lone.real_submit)
     bridge.continue_blocked()
@@ -424,7 +426,11 @@ def test_aux_second_gate_uses_the_prepared_provider(
         ("stt", "ollama", U),
         ("stt", "mystery", U),
     ):
-        monkeypatch.setattr(window.privacy_panel, "prepare_execution", prepare_as(provider))
+        monkeypatch.setattr(
+            window.privacy_panel.backend,
+            "prepare_execution",
+            lambda intent, provider=provider: prepare_as(provider)(intent.kind),
+        )
         prepared.clear()
         lone.click(kind)
         assert prepared == [kind] and code in lone.text() and "작업 미접수" in lone.text()
@@ -705,7 +711,9 @@ def test_t29_unknown_requirement_never_reaches_the_legacy_helper(
             gateway=None,
         )
 
-    monkeypatch.setattr(window.privacy_panel, "prepare_execution", prepare)
+    monkeypatch.setattr(
+        window.privacy_panel.backend, "prepare_execution", lambda intent: prepare(intent.kind)
+    )
     window.device_policy.setCurrentText("CPU_ONLY")
     before = len(service.jobs.list_for_session(lone.session))
     bridge.transcribe()

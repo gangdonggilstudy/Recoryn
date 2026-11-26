@@ -36,6 +36,13 @@ from recoryn.security._core import Endpoint
 from recoryn.summarization import OllamaSummarizer, OpenAISummarizer
 from recoryn.transcription import OpenAITranscriber
 from tests.ui.test_cost_cap_ui import fixture_panel_balance, fixture_panel_catalog
+from tests.ui.test_secret_lifetime_ui import (
+    close_privacy,
+    privacy_action,
+    privacy_context,
+    privacy_gateway,
+    settle_privacy,
+)
 from tests.unit.test_cost_cap import fixture_balance, fixture_reservation, fixture_wire
 
 pytestmark = pytest.mark.integration
@@ -123,7 +130,7 @@ def _panel(tmp_path: Path):
         try:
             yield panel, backend, transport
         finally:
-            panel.close()
+            close_privacy(panel)
             panel.deleteLater()
 
 
@@ -143,9 +150,9 @@ def _configure(panel, kind: str = "stt"):
     control.per_request.setValue(0.1)
     panel._g06_prices()
     control.key.setText("BR23-FAKE-KEY-A")
-    panel._action(kind, "save")
-    panel._action(kind, "budget")
-    panel._action(kind, "grant")
+    privacy_action(panel, kind, "save")
+    privacy_action(panel, kind, "budget")
+    privacy_action(panel, kind, "grant")
     return control
 
 
@@ -186,15 +193,16 @@ def test_privacy_summary_supplies_explicit_bounded_context(app, tmp_path: Path) 
         before = panel.config_key("summary", session_id="session")
         # Caller-facing DTO must be usable without patching a private Qt control.
         result = OpenAISummarizer(
-            panel.gateway_for("summary-session", kind="summary"), config
+            privacy_gateway(panel, "summary-session", kind="summary"), config
         ).summarize(
             SummaryRequest("revision", (TranscriptSegment("s", 0, 10, "Synthetic source"),)),
-            panel.execution_context("summary", threading.Event(), session_id="session"),
+            privacy_context(panel, "summary", threading.Event(), session_id="session"),
         )
         assert result.complete and result.claims[0].segment_ids == ("s",)
         assert transport.connections
         panel.controls["summary"].context_window.setValue(16384)
         assert panel.config_key("summary", session_id="session") != before
+        settle_privacy(panel)
         assert not panel.consents.allowed(
             "openai",
             URL,
@@ -211,14 +219,15 @@ def test_new_grant_cannot_revive_old_model_or_key_context(
     with _panel(tmp_path) as (panel, _, transport):
         control = _configure(panel)
         old_config = panel.provider_config("stt")
-        old_context = panel.execution_context("stt", threading.Event(), session_id="session")
-        old_gateway = panel.gateway_for("old-job", kind="stt")
+        old_context = privacy_context(panel, "stt", threading.Event(), session_id="session")
+        old_gateway = privacy_gateway(panel, "old-job", kind="stt")
         if change == "model":
             control.model.setText("model-B")
         else:
-            panel._action("stt", "delete")
+            privacy_action(panel, "stt", "delete")
             control.key.setText("BR23-FAKE-KEY-B")
-            panel._action("stt", "save")
+            privacy_action(panel, "stt", "save")
+        settle_privacy(panel)
         assert not panel.consents.allowed(
             "openai",
             URL,
@@ -226,7 +235,7 @@ def test_new_grant_cannot_revive_old_model_or_key_context(
             scope=ConsentScope.library(),
             request=_fixture_request(panel.consents, "session", _fixture_feature("audio"), 0),
         )
-        panel._action("stt", "grant")  # a new plan can run; old plan remains revoked
+        privacy_action(panel, "stt", "grant")  # a new plan can run; old plan remains revoked
         assert panel.consents.allowed(
             "openai",
             URL,
@@ -243,10 +252,10 @@ def test_new_grant_cannot_revive_old_model_or_key_context(
         assert not result.complete
         assert not transport.connections
         fresh = OpenAITranscriber(
-            panel.gateway_for("new-job", kind="stt"), panel.provider_config("stt")
+            privacy_gateway(panel, "new-job", kind="stt"), panel.provider_config("stt")
         ).transcribe(
             STTRequest(audio),
-            panel.execution_context("stt", threading.Event(), session_id="session"),
+            privacy_context(panel, "stt", threading.Event(), session_id="session"),
         )
         assert fresh.complete and len(transport.connections) == 1
         assert (b"model-B" if change == "model" else b"model-A") in b"".join(
@@ -263,8 +272,8 @@ def test_ui_budget_and_headers_are_immutable_but_revocation_blocks_worker(
     with _panel(tmp_path) as (panel, backend, _):
         assert backend.reads == 0 and not backend.values
         control = _configure(panel)
-        context = panel.execution_context("stt", threading.Event(), session_id="session")
-        assert context.headers["authorization"] == "Bearer BR23-FAKE-KEY-A"
+        context = privacy_context(panel, "stt", threading.Event(), session_id="session")
+        assert dict(context.headers) == {} and backend.reads == 0
         assert context.reservation_factory is not None
         with ThreadPoolExecutor(max_workers=1) as workers:
             reservation = workers.submit(
@@ -274,7 +283,7 @@ def test_ui_budget_and_headers_are_immutable_but_revocation_blocks_worker(
         assert reservation and fixture_panel_balance(panel)["reserved"] == 50_000
         control.per_request.setValue(0.9)  # new contract: changing budget invalidates old plan
         control.key.setText("UNSAVED-DIFFERENT-KEY")
-        assert context.headers["authorization"] == "Bearer BR23-FAKE-KEY-A"
+        assert dict(context.headers) == {} and backend.reads == 0
         with ThreadPoolExecutor(max_workers=1) as workers:
             with pytest.raises(SecurityError):
                 workers.submit(
@@ -690,8 +699,8 @@ def test_regrant_between_reservation_and_permit_cannot_reauthorize_old_request(
     with _panel(tmp_path) as (panel, _, transport):
         _configure(panel)
         config = panel.provider_config("stt")
-        context = panel.execution_context("stt", threading.Event(), session_id="session")
-        gateway = panel.gateway_for("session", kind="stt")
+        context = privacy_context(panel, "stt", threading.Event(), session_id="session")
+        gateway = privacy_gateway(panel, "session", kind="stt")
         reserve = context.reservation_factory
         assert reserve is not None
 
@@ -731,13 +740,13 @@ def test_local_ollama_gateway_binding_blocks_old_model_after_regrant(app, tmp_pa
         proof = LocalModelAttestation(target, "local-A", "a" * 64, True, time.monotonic() + 30)
         panel.set_local_attestation(proof)
         control.context_window.setValue(8192)
-        panel._action("summary", "grant")
+        privacy_action(panel, "summary", "grant")
         config = panel.provider_config("summary")
-        context = panel.execution_context("summary", threading.Event(), session_id="session")
+        context = privacy_context(panel, "summary", threading.Event(), session_id="session")
         assert context.reservation_factory is None
-        gateway = panel.gateway_for("old-local-job", kind="summary")
+        gateway = privacy_gateway(panel, "old-local-job", kind="summary")
         panel.set_local_attestation(replace(proof, model="local-B", artifact_sha256="b" * 64))
-        panel._action("summary", "grant")
+        privacy_action(panel, "summary", "grant")
         result = OllamaSummarizer(gateway, config).summarize(
             SummaryRequest("revision", (TranscriptSegment("s", 0, 10, "Synthetic"),)), context
         )
@@ -749,10 +758,10 @@ def test_previously_ungranted_context_scope_cannot_widen_existing_gateway(
 ) -> None:
     with _panel(tmp_path) as (panel, _, transport):
         control = _configure(panel, "summary")
-        context = panel.execution_context("summary", threading.Event(), session_id="session")
-        gateway = panel.gateway_for("session", kind="summary")
+        context = privacy_context(panel, "summary", threading.Event(), session_id="session")
+        gateway = privacy_gateway(panel, "session", kind="summary")
         control.data_type.setCurrentIndex(control.data_type.findData("context"))
-        panel._action("summary", "grant")
+        privacy_action(panel, "summary", "grant")
         assert panel.consents.allowed(
             "openai",
             URL,
@@ -776,12 +785,14 @@ def test_unverified_summary_context_stays_blocked_with_no_dispatch(app, tmp_path
         assert control.context_window.value() == 0
         _configure(panel, "summary")
         control.context_window.setValue(0)
-        panel._action("summary", "grant")
+        privacy_action(panel, "summary", "grant")
         config = panel.provider_config("summary")
         assert config.context_window_tokens is None
-        result = OpenAISummarizer(panel.gateway_for("unknown", kind="summary"), config).summarize(
+        result = OpenAISummarizer(
+            privacy_gateway(panel, "unknown", kind="summary"), config
+        ).summarize(
             SummaryRequest("revision", (TranscriptSegment("s", 0, 10, "Synthetic"),)),
-            panel.execution_context("summary", threading.Event(), session_id="session"),
+            privacy_context(panel, "summary", threading.Event(), session_id="session"),
         )
         assert result.error_code == "CONTEXT_LIMIT_UNKNOWN" and not result.complete
         assert not transport.connections
@@ -950,8 +961,8 @@ def test_frozen_privacy_proof_replacement_during_open_cannot_authorize_first_bod
         )
         panel.set_local_attestation(proof)
         control.context_window.setValue(8192)
-        panel._action("summary", "grant")
-        frozen = panel.gateway_for("guard-session", kind="summary")
+        privacy_action(panel, "summary", "grant")
+        frozen = privacy_gateway(panel, "guard-session", kind="summary")
         original = transport.open
 
         def opened(*args):
@@ -1073,6 +1084,15 @@ def _fixture_gateway(
                 )
             )
         kwargs["expected_grants"] = tuple(bindings)
+        if "auth_binding" not in kwargs:
+            from tests.unit.test_secret_lifetime import fake_auth_binding
+
+            for binding in bindings:
+                if binding.provider_id in {"openai", "anthropic", "gemini"}:
+                    kwargs["auth_binding"] = fake_auth_binding(
+                        policy, binding.provider_id, binding.endpoint, request.capability
+                    )
+                    break
         root = factory(policy, **kwargs)
     return root.for_session(
         session_id, generation, capability="stt", scope=ConsentScope.library(), policy_version=2

@@ -8,6 +8,7 @@ import threading
 import time
 import wave
 from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -39,6 +40,13 @@ from recoryn.security._core import Endpoint
 from recoryn.ui.privacy import PrivacyPanel
 from tests.resource_fakes import STT
 from tests.ui.test_cost_cap_ui import fixture_panel_balance, fixture_panel_catalog
+from tests.ui.test_secret_lifetime_ui import (
+    close_privacy,
+    prepare_privacy,
+    privacy_action,
+    privacy_click,
+    settle_privacy,
+)
 from tests.unit.test_cost_cap import fixture_wire
 
 URL = "https://scope.example.test/v1"
@@ -170,9 +178,9 @@ def panel(
                 control.blockSignals(previous)
         widget._changed(kind)
         fixture_panel_catalog(widget, pricing)
-        widget._action(kind, "budget")
+        privacy_action(widget, kind, "budget")
         yield widget, backend, wire
-        widget.close()
+        close_privacy(widget)
 
 
 def seed(
@@ -219,7 +227,7 @@ def test_scope_actions(
             0
         ]
         if action == "grant":
-            control.allow.click()
+            privacy_click(control.allow)
             enabled = sid is not None or scope_kind == "library"
             selected = (
                 ConsentScope.library()
@@ -251,7 +259,7 @@ def test_scope_actions(
                 ):
                     assert text in confirmations[0]
         elif action == "revoke":
-            control.revoke.click()
+            privacy_click(control.revoke)
             if sid is not None or scope_kind == "library":
                 selected = (
                     ConsentScope.library() if scope_kind == "library" else ConsentScope.session(sid)
@@ -261,18 +269,19 @@ def test_scope_actions(
                 )
                 assert not info or not info["active"]
         else:
+            settle_privacy(widget)
             expected = sid is not None and (
                 (scope_kind == "session" and sid == "A" and catalog in (1, 3))
                 or (scope_kind == "library" and catalog in (2, 3))
             )
             if expected:
-                execution = widget.prepare_execution(kind, sid, threading.Event())
+                execution = prepare_privacy(widget, kind, sid, threading.Event())
                 assert execution.gateway is not None
                 assert execution.gateway.session_id == sid
                 assert execution.context.reservation_factory is not None
             else:
                 with pytest.raises(SecurityError):
-                    widget.prepare_execution(kind, sid, threading.Event())
+                    prepare_privacy(widget, kind, sid, threading.Event())
                 assert backend.reads == 0
         assert wire.opens == 0 and not wire.writes
         assert control.scope.accessibleName() and control.scope_info.accessibleName()
@@ -293,7 +302,7 @@ def test_library_confirmation_cancel(
             QMessageBox.StandardButton.No if how == "cancel" else QMessageBox.StandardButton.Cancel
         )
         monkeypatch.setattr(QMessageBox, "question", lambda *args: response)
-        control.allow.click()
+        privacy_click(control.allow)
         assert (
             widget.consents._db.execute("SELECT COUNT(*) FROM security_grants_v2").fetchone()[0]
             == 0
@@ -311,7 +320,7 @@ def test_scope_snapshot_is_fixed(app: QApplication, tmp_path: Path, row: tuple[A
         scopes = (ConsentScope.session("A"), ConsentScope.library())
         data = seed(widget, kind, scopes)
         if when == "after":
-            execution = widget.prepare_execution(kind, "A", threading.Event())
+            execution = prepare_privacy(widget, kind, "A", threading.Event())
         if change == "selection":
             widget.select_session("B")
         elif change == "scope":
@@ -320,7 +329,7 @@ def test_scope_snapshot_is_fixed(app: QApplication, tmp_path: Path, row: tuple[A
             widget.consents.advance_policy_version(3)
             seed(widget, kind, scopes, 3)
         if when == "before":
-            execution = widget.prepare_execution(kind, "A", threading.Event())
+            execution = prepare_privacy(widget, kind, "A", threading.Event())
         assert execution.gateway is not None
         assert execution.gateway.session_id == "A"
         binding = execution.gateway.expected_grants[0]
@@ -352,7 +361,7 @@ def test_scope_snapshot_is_fixed(app: QApplication, tmp_path: Path, row: tuple[A
             )
             execution.gateway.request("openai", URL, data, b"a", reservation_id=reservation)
             assert wire.opens == 1 and wire.writes == [b"a"]
-        assert backend.reads == 1
+        assert backend.reads == (0 if change == "policy" and when == "after" else 1)
 
 
 @pytest.mark.parametrize("kind", ("stt", "summary"), ids=CASE_IDS["UI"][180:])
@@ -406,12 +415,13 @@ def test_bridge_submission_keeps_one_fixed_session_snapshot(
         )
         bridge = object.__new__(DesktopAI)
         bridge.window, bridge.privacy = window, widget
+        bridge.privacy_backend = widget.backend
         bridge.panel = SimpleNamespace(job_status=QLabel())
         bridge.busy, bridge._shutting_down = False, False
         bridge._live_snapshots, bridge._live_nonces, bridge._live_blocked = {}, {}, set()
         actions: list[Callable[[], Any]] = []
         prepared: list[Any] = []
-        prepare = widget.prepare_execution
+        prepare = widget.backend.prepare_execution
 
         def capture(*args: Any) -> Any:
             execution = prepare(*args)
@@ -437,18 +447,19 @@ def test_bridge_submission_keeps_one_fixed_session_snapshot(
             provider.gateway.request("openai", URL, data, b"a", reservation_id=reservation)
             return "fake-job"
 
-        monkeypatch.setattr(widget, "prepare_execution", capture)
+        monkeypatch.setattr(widget.backend, "prepare_execution", capture)
         monkeypatch.setattr(bridge, "operation", queue)
         bridge.service = SimpleNamespace(transcribe=submit, summarize=submit)
         if kind == "stt":
             bridge._transcribe(session_id="A")
         else:
             bridge.summarize("meeting")
-        assert len(prepared) == len(actions) == 1
-        assert prepared[0].gateway.session_id == "A"
+        assert len(prepared) == 0 and len(actions) == 1  # only GUI intent captured
         selected[0] = "B"
         widget.select_session("B")
-        assert actions[0]() == "fake-job"
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            assert workers.submit(actions[0]).result(5) == "fake-job"
+        assert prepared[0].gateway.session_id == "A"
         assert len(prepared) == 1 and backend.reads == 1
         assert wire.opens == 1 and wire.writes == [b"a"]
 
@@ -470,7 +481,7 @@ def test_library_confirmation_freezes_expiry(
             return QMessageBox.StandardButton.Yes
 
         monkeypatch.setattr(QMessageBox, "question", delayed_yes)
-        widget.controls[kind].allow.click()
+        privacy_click(widget.controls[kind].allow)
         data = "audio" if kind == "stt" else "transcript"
         info = widget.consents.grant_info(
             "openai", URL, data, capability=kind, scope=ConsentScope.library(), policy_version=2
@@ -544,13 +555,13 @@ def test_refresh_scope_is_preserved_only_for_same_session(
             assert widget._selected_session == target
             assert control.scope.currentData() == ("library" if target == "A" else "session")
             if target == "A":
-                execution = widget.prepare_execution(kind, "new-recording", threading.Event())
+                execution = prepare_privacy(widget, kind, "new-recording", threading.Event())
                 assert execution.gateway is not None
                 assert execution.gateway.expected_grants[0].scope == ConsentScope.library()
             else:
                 assert control.scope.currentIndex() == 0
             assert "A" in loaded
-            assert wire.opens == 0 and backend.reads == int(target == "A")
+            assert wire.opens == 0 and backend.reads == 0  # prepare is secret-free
             assert widget.consents.grant_info(
                 "openai", URL, data, capability=kind, scope=ConsentScope.library(), policy_version=2
             )["active"]
@@ -581,13 +592,14 @@ def test_unavailable_session_never_leaves_previous_consent_target(
             sessions.setCurrentItem(add_session(sessions, "C"))
             assert loaded[-2:] == ["C", "details:C"]
             assert widget._selected_session == "C"
+            settle_privacy(widget)
             for control in widget.controls.values():
                 assert "C" in control.scope_info.text()
                 assert not control.allow.isEnabled() and not control.revoke.isEnabled()
                 assert (
                     "확인 중" if reason == "incomplete" else "삭제 진행 중"
                 ) in control.scope_info.text()
-                control.allow.click()
+                privacy_click(control.allow)
             assert (
                 widget.consents._db.execute("SELECT COUNT(*) FROM security_grants_v2").fetchone()[0]
                 == 0
@@ -633,12 +645,13 @@ def test_scope_labels_distinguish_inactive_grants_and_local_expiry(
         control = widget.controls[kind]
         seed(widget, kind, (ConsentScope.library(),))
         if state != "previous":
-            control.allow.click()
+            privacy_click(control.allow)
         if state == "revoked":
-            control.revoke.click()
+            privacy_click(control.revoke)
         elif state == "expired":
             clock[0] += 3600
         widget._show_scope(kind)
+        settle_privacy(widget)
         text = control.scope_info.text()
         assert "이 세션만: A" in text and "정책 version 2" in text and kind in text
         assert ("전체 허용 유지 중" in text) == (state != "expired")
@@ -664,7 +677,7 @@ def test_navigation_returns_while_remote_write_still_holds_policy(
         bridge, sessions, loaded = linked_selection(widget)
         sessions.setCurrentItem(add_session(sessions, "A"))
         control = widget.controls[kind]
-        control.allow.click()
+        privacy_click(control.allow)
         if kind == "summary":
             seed(widget, kind, (ConsentScope.session("A"),))
             widget.consents.grant(
@@ -675,7 +688,7 @@ def test_navigation_returns_while_remote_write_still_holds_policy(
                 scope=ConsentScope.session("A"),
                 policy_version=2,
             )
-        execution = widget.prepare_execution(kind, "A", threading.Event())
+        execution = prepare_privacy(widget, kind, "A", threading.Event())
         factory = execution.context.reservation_factory
         assert execution.gateway is not None and factory is not None
         data = "audio" if kind == "stt" else "transcript"
@@ -746,7 +759,7 @@ def test_result_identity_is_separate_from_fresh_consent_bindings(
                 widget.consents.grant(
                     "openai", URL, "context", capability=kind, scope=scope, policy_version=2
                 )
-        first = widget.prepare_execution(kind, "A", threading.Event())
+        first = prepare_privacy(widget, kind, "A", threading.Event())
         assert first.gateway is not None
         first_binding = first.gateway.expected_grants[0]
         if change == "scope":
@@ -767,7 +780,7 @@ def test_result_identity_is_separate_from_fresh_consent_bindings(
         if change == "model":
             assert widget.config_key(kind, session_id="A") != first.config_key
         else:
-            second = widget.prepare_execution(kind, "A", threading.Event())
+            second = prepare_privacy(widget, kind, "A", threading.Event())
             assert second.config_key == first.config_key
             assert second.gateway is not None
             second_binding = second.gateway.expected_grants[0]
@@ -822,7 +835,7 @@ def test_permission_only_change_sends_only_new_stream_chunk(
             with panel(tmp_path, "stt") as (widget, backend, wire):
                 widget.select_session(sid)
                 seed(widget, "stt", (ConsentScope.session(sid), ConsentScope.library()))
-                first = widget.prepare_execution("stt", sid, threading.Event())
+                first = prepare_privacy(widget, "stt", sid, threading.Event())
 
                 def seal(stamp: int) -> None:
                     assert recorder.submit(
@@ -860,7 +873,7 @@ def test_permission_only_change_sends_only_new_stream_chunk(
                 else:
                     widget.consents.advance_policy_version(3)
                     seed(widget, "stt", (ConsentScope.session(sid),), version=3)
-                second = widget.prepare_execution("stt", sid, threading.Event())
+                second = prepare_privacy(widget, "stt", sid, threading.Event())
                 completed(
                     service,
                     service.transcribe(
@@ -913,12 +926,12 @@ def test_nonissuing_action_reports_grant_facts_without_binding(
         widget.select_session("A")
         control = widget.controls[kind]
         if state in ("active", "revoked", "expired"):
-            control.allow.click()
+            privacy_click(control.allow)
         if state == "revoked":
-            control.revoke.click()
+            privacy_click(control.revoke)
         if state == "expired":
             clock[0] += 3600
-        (control.refresh if action == "refresh" else control.apply_budget).click()
+        privacy_click(control.refresh if action == "refresh" else control.apply_budget)
         word = {
             "active": "동의 활성",
             "revoked": "철회됨",
@@ -987,17 +1000,17 @@ def test_fixed_request_uses_its_grant_across_selection_gap(
                 with pytest.raises(SecurityError, match="CONSENT_REQUIRED"):
                     widget._selected_scope(kind)  # screen-based action remains fail closed
             if state == "active":
-                execution = widget.prepare_execution(kind, "R", threading.Event())
+                execution = prepare_privacy(widget, kind, "R", threading.Event())
                 assert execution.gateway is not None and execution.gateway.session_id == "R"
                 assert all(
                     binding.scope == selected and binding.request.session_id == "R"
                     for binding in execution.gateway.expected_grants
                 )
-                assert backend.reads == 1
+                assert backend.reads == 0  # no HTTP request was admitted
             else:
                 expected = "SESSION_REVOKED" if state == "deleted" else "CONSENT_REQUIRED"
                 with pytest.raises(SecurityError, match=expected):
-                    widget.prepare_execution(kind, "R", threading.Event())
+                    prepare_privacy(widget, kind, "R", threading.Event())
                 assert backend.reads == 0
             assert wire.opens == 0
         finally:
@@ -1025,32 +1038,34 @@ def test_deleted_selection_preserves_unrelated_privacy_controls(
         monkeypatch.setattr(backend, "delete", removed_keys.append)
         widget.consents.revoke_session("C")
         widget.select_session("C")
+        settle_privacy(widget)
         control = widget.controls[kind]
         assert control.isEnabled() and control.scope.isEnabled()
         assert not control.allow.isEnabled() and not control.revoke.isEnabled()
         assert "삭제 진행 중" in control.scope_info.text()
         if action == "delete_key":
             assert control.delete_key.isEnabled()
-            control.delete_key.click()
+            privacy_click(control.delete_key)
             assert len(removed_keys) == 1
         elif action == "revoke_library":
             control.scope.setCurrentIndex(1)
+            settle_privacy(widget)
             assert control.allow.isEnabled() and control.revoke.isEnabled()
             assert "삭제 진행 중" in control.scope_info.text()
-            control.revoke.click()
+            privacy_click(control.revoke)
         elif action == "budget":
             control.total.setValue(2)
             assert control.apply_budget.isEnabled()
-            control.apply_budget.click()
+            privacy_click(control.apply_budget)
             assert fixture_panel_balance(widget, kind)["limit"] == 2_000_000
         elif action == "settle":
             reservation = widget.ledger.reserve("openai", "pending", 1000, 1_000_000)
             widget.ledger.mark_unknown(reservation)
-            control.refresh.click()
+            privacy_click(control.refresh)
             control.actual.setValue(0.0005)
             control.confirm_actual.setChecked(True)
             assert control.settle.isEnabled()
-            control.settle.click()
+            privacy_click(control.settle)
             balance = widget.ledger.snapshot("openai")
             assert balance["confirmed"] == 500 and balance["unknown_exposure"] == 0
         else:
@@ -1060,7 +1075,7 @@ def test_deleted_selection_preserves_unrelated_privacy_controls(
                     "SELECT * FROM security_grants_v2 ORDER BY scope_kind,scope_id"
                 )
             ]
-            (control.allow if action == "grant_session" else control.revoke).click()
+            privacy_click(control.allow if action == "grant_session" else control.revoke)
             assert [
                 tuple(row)
                 for row in widget.consents._db.execute(
@@ -1074,7 +1089,7 @@ def test_deleted_selection_preserves_unrelated_privacy_controls(
         if info["active"]:
             control.scope.setCurrentIndex(1)
         with pytest.raises(SecurityError, match="SESSION_REVOKED"):
-            widget.prepare_execution(kind, "C", threading.Event())
+            prepare_privacy(widget, kind, "C", threading.Event())
         assert backend.reads == 0 and wire.opens == 0
 
 

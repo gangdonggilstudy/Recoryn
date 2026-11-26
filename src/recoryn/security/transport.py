@@ -76,16 +76,29 @@ class _HttpConnection:
         self._client.sock.settimeout(timeout)
 
     def write(self, data: bytes, timeout: float) -> None:
-        self._timeout(timeout)
-        if not self._started:
-            self._client.putrequest("POST", self._target.target, skip_accept_encoding=True)
-            for name, value in self._headers.items():
-                self._client.putheader(name, value)
-            self._client.putheader("Content-Length", str(self._length))
-            self._client.endheaders()
-            self._started = True
-        if data:
-            self._client.send(data)
+        try:
+            self._timeout(timeout)
+            if not self._started:
+                self._client.putrequest("POST", self._target.target, skip_accept_encoding=True)
+                for name, value in self._headers.items():
+                    self._client.putheader(name, value)
+                self._client.putheader("Content-Length", str(self._length))
+                self._client.endheaders()
+                self._started = True
+            if data:
+                self._client.send(data)
+        finally:
+            self._clear_auth()
+
+    def _clear_auth(self) -> None:
+        for name in tuple(self._headers):
+            if name.lower() in {"authorization", "x-api-key", "x-goog-api-key"}:
+                self._headers.pop(name)
+        # putheader may have queued secret bytes before endheaders fails.
+        # This abandoned request is never retried; discard its app-owned buffer.
+        pending = getattr(self._client, "_buffer", None)
+        if isinstance(pending, list):
+            pending.clear()
 
     def read(self, limit: int, timeout: float) -> bytes:
         self._timeout(timeout)
@@ -98,7 +111,10 @@ class _HttpConnection:
         return self._response.read1(limit)
 
     def close(self) -> None:
-        self._client.close()
+        try:
+            self._client.close()
+        finally:
+            self._clear_auth()
 
 
 class DirectTransport:

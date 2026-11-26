@@ -17,6 +17,7 @@ from recoryn.providers import ObservationOutcome, ObservationState, parse_observ
 from recoryn.security import ConsentStore, CostLedger, CredentialVault
 from recoryn.ui.privacy import PrivacyPanel
 from tests.property.test_provider_facts_case_space import execution_audit as execution_audit
+from tests.ui.test_secret_lifetime_ui import close_privacy, settle_privacy
 from tests.unit.test_provider_facts import EXECUTED, descriptor, no_io
 
 pytestmark = pytest.mark.ui
@@ -64,7 +65,7 @@ def facts_world(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
         yield SimpleNamespace(
             app=app, panel=panel, root=root, backend=backend, clock=clock, states=states
         )
-        panel.close()
+        close_privacy(panel)
         panel.deleteLater()
         app.processEvents()
 
@@ -132,6 +133,7 @@ def test_fake_inputs_leave_no_private_material(
                 "transcript": canary,
             }
         ).encode()
+    settle_privacy(world.panel)
     before = {p.name: p.read_bytes() for p in world.root.iterdir() if p.is_file()}
     observed = parse_observation(raw, descriptor(), "chosen", **kwargs)
     key = world.panel.provider_identity("summary")
@@ -155,6 +157,7 @@ def test_fake_inputs_leave_no_private_material(
     elif surface == 2:
         material = caplog.text
     else:
+        settle_privacy(world.panel)
         after = {p.name: p.read_bytes() for p in world.root.iterdir() if p.is_file()}
         assert before == after
         material = repr(after)

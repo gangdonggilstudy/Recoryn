@@ -25,6 +25,7 @@ from recoryn.jobs import JobStore
 from recoryn.ui.ai_bridge import DesktopAI
 from recoryn.ui.content import ContentPanel
 from tests.resource_fakes import STT
+from tests.ui.test_secret_lifetime_ui import privacy_action
 
 
 def _spin(app, condition, *, timeout=15):
@@ -115,8 +116,10 @@ def test_continue_preparation_space_uses_actual_authority_and_reader_boundaries(
             control.per_request.setValue(0.01)
             privacy._confirm_general = lambda _: True
             control.cost_mode.setCurrentIndex(control.cost_mode.findData("general"))
-            privacy._action("stt", "budget")
-            privacy._gateway = Gateway(privacy.consents, ledger=privacy.ledger, transport=wire)
+            privacy_action(privacy, "stt", "budget")
+            privacy.backend.gateway = Gateway(
+                privacy.consents, ledger=privacy.ledger, transport=wire
+            )
             scope = ConsentScope.session(session)
 
             def grant():
@@ -131,14 +134,14 @@ def test_continue_preparation_space_uses_actual_authority_and_reader_boundaries(
 
             grant()
             preparations = []
-            original_prepare = privacy.prepare_execution
+            original_prepare = privacy.backend.prepare_execution
 
             def prepare(*args):
                 execution = original_prepare(*args)
                 preparations.append(execution)
                 return execution
 
-            monkeypatch.setattr(privacy, "prepare_execution", prepare)
+            monkeypatch.setattr(privacy.backend, "prepare_execution", prepare)
             # Only fixture setup holds the first QUEUED intent without dispatch.
             # Restore the real runner before the observed UI continue operation.
             original_submit = service.runner.submit
@@ -321,8 +324,10 @@ def test_ui_continue_uses_real_privacy_ledger_gateway_and_fresh_authority(
             privacy._confirm_general = lambda _: True
             control.cost_mode.setCurrentIndex(control.cost_mode.findData("general"))
             assert control.general_acknowledged
-            privacy._action(feature, "budget")
-            privacy._gateway = Gateway(privacy.consents, ledger=privacy.ledger, transport=wire)
+            privacy_action(privacy, feature, "budget")
+            privacy.backend.gateway = Gateway(
+                privacy.consents, ledger=privacy.ledger, transport=wire
+            )
             scope = ConsentScope.session(session)
             types = ("audio",) if feature == "stt" else ("transcript", "context")
 
@@ -350,10 +355,10 @@ def test_ui_continue_uses_real_privacy_ledger_gateway_and_fresh_authority(
 
             grant()
             prepared, requests, preparation_calls = [], [], []
-            prepare = privacy.prepare_execution
+            prepare = privacy.backend.prepare_execution
 
             def observed_prepare(*args):
-                preparation_calls.append(args[:2])
+                preparation_calls.append((args[0].kind, args[0].session_id))
                 execution = prepare(*args)
                 original_factory = execution.context.reservation_factory
 
@@ -367,7 +372,7 @@ def test_ui_continue_uses_real_privacy_ledger_gateway_and_fresh_authority(
                     context=replace(execution.context, reservation_factory=reserved),
                 )
 
-            monkeypatch.setattr(privacy, "prepare_execution", observed_prepare)
+            monkeypatch.setattr(privacy.backend, "prepare_execution", observed_prepare)
             (bridge.transcribe if feature == "stt" else lambda: bridge.summarize("meeting"))()
 
             def terminal():

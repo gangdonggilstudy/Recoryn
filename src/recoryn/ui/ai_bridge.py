@@ -366,6 +366,7 @@ class DesktopAI:
         self._selected_ai_session: str | None = None
         self._last_snapshot = ""
         self.privacy: Any = None
+        self._privacy_backend: Any = None
 
     def operation(
         self,
@@ -437,6 +438,7 @@ class DesktopAI:
 
     def attach_privacy(self, panel: Any) -> None:
         self.privacy = panel
+        self._privacy_backend = panel.backend
         self.window.tabs.addTab(panel, "제공업체 · 동의 · 비용")
 
         def selected(current: Any, previous: Any) -> None:
@@ -769,30 +771,16 @@ class DesktopAI:
             return
         try:
             if self.privacy is not None:
-                execution = self.privacy.prepare_execution("stt", fixed_session, threading.Event())
-                config, context = execution.config, execution.context
-                config_key, gateway = execution.config_key, execution.gateway
+                intent = self.privacy.capture_execution("stt", fixed_session, threading.Event())
+                privacy_backend = self.privacy.backend
             else:
-                config, context, config_key, gateway = None, ExecutionContext(), "local", None
+                intent, privacy_backend = None, None
         except Exception as error:
             self._show_preparation(normalize_failure(error), preserve_job=expected is not None)
             if provisional:
                 self._live_blocked.add(session_id)
             return
-        resources = self._request(
-            "stt",
-            "faster_whisper" if config is None else config.provider_id,
-            policy,
-            provisional=provisional,
-        )
-        if resources is None or self._refused(resources, "stt", expected):
-            if resources is None:
-                self._show_preparation(
-                    NormalizedFailure("CAPABILITY_UNSUPPORTED"), preserve_job=expected is not None
-                )
-            if provisional:
-                self._live_blocked.add(session_id)
-            return
+        resources = early
         model = window.local_model.text()
         # Read on the UI thread: a queued GPU runtime install/removal excludes the runtime.
         # A removal is only queued while this bridge is idle, so the two never interleave.
@@ -809,7 +797,23 @@ class DesktopAI:
                 raise StateConflict("CANCELLED")
 
         def submit() -> str | AIStatus:
+            nonlocal resources
             check_cancel()
+            if privacy_backend is not None:
+                execution = privacy_backend.prepare_execution(intent)
+                config, context = execution.config, execution.context
+                config_key, gateway = execution.config_key, execution.gateway
+            else:
+                config, context, config_key, gateway = None, ExecutionContext(), "local", None
+            resources = self._request(
+                "stt",
+                "faster_whisper" if config is None else config.provider_id,
+                policy,
+                provisional=provisional,
+            )
+            if resources is None:
+                raise ProviderError("CAPABILITY_UNSUPPORTED")
+            plan_static(resources)
             service = self._service()
             options: dict[str, Any] = {
                 "provisional": provisional,
@@ -920,11 +924,8 @@ class DesktopAI:
         policy = self._selected_policy()
         # T31: the strict Ollama refusal precedes the attestation check, so a refused
         # request never asks the local server anything.
-        if self._refused(
-            self._request("summary", self._selected_provider("summary"), policy),
-            "summary",
-            expected,
-        ):
+        early = self._request("summary", self._selected_provider("summary"), policy)
+        if self._refused(early, "summary", expected):
             return
         try:
             if (
@@ -932,31 +933,30 @@ class DesktopAI:
                 and self.privacy.controls["summary"].provider.currentData() == "ollama"
             ):
                 self.window.model_panel.checked_attestation()
-            execution = self.privacy.prepare_execution("summary", session_id, threading.Event())
-            config, context = execution.config, execution.context
-            config_key, gateway = execution.config_key, execution.gateway
+            intent = self.privacy.capture_execution("summary", session_id, threading.Event())
+            privacy_backend = self.privacy.backend
         except Exception as error:
             self._show_preparation(
                 normalize_failure(error), kind="summary", preserve_job=expected is not None
             )
             return
-        resources = self._request("summary", config.provider_id, policy)
-        if resources is None or self._refused(resources, "summary", expected):
-            if resources is None:
-                self._show_preparation(
-                    NormalizedFailure("CAPABILITY_UNSUPPORTED"),
-                    kind="summary",
-                    preserve_job=expected is not None,
-                )
-            return
+        resources = early
         if expected is None:
             nonce = uuid4().hex if retry else None
         preparation_cancel = threading.Event()
         self._preparation_cancel = preparation_cancel
 
         def submit() -> str:
+            nonlocal resources
             if preparation_cancel.is_set():
                 raise StateConflict("CANCELLED")
+            execution = privacy_backend.prepare_execution(intent)
+            config, context = execution.config, execution.context
+            config_key, gateway = execution.config_key, execution.gateway
+            resources = self._request("summary", config.provider_id, policy)
+            if resources is None:
+                raise ProviderError("CAPABILITY_UNSUPPORTED")
+            plan_static(resources)
             from recoryn.summarization import (
                 AnthropicSummarizer,
                 GeminiSummarizer,
@@ -1576,10 +1576,15 @@ class DesktopAI:
     def close(self) -> None:
         self._shutting_down = True
         self._preparation_cancel.set()
+        backend = getattr(self, "_privacy_backend", None)
+        if backend is not None:
+            backend.begin_shutdown()
         if not self.pool.waitForDone(5000):
             raise StateConflict("INFERENCE_ACK_PENDING")
         if self.service:
             self.service.close()
+        if backend is not None and not backend.await_shutdown(5):
+            raise StateConflict("INFERENCE_ACK_PENDING")
         from recoryn.models._artifact_io import release_idle
 
         release_idle()  # sealed copies no Job uses any more (after every worker's ACK)

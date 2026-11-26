@@ -24,6 +24,7 @@ from recoryn.domain import StateConflict
 from recoryn.models import ResourceRequest
 from recoryn.storage import Library
 from tests.e2e.test_ai_workflow import FakeSTT, finished, recording
+from tests.ui.test_secret_lifetime_ui import privacy_action
 
 pytestmark = pytest.mark.integration
 POLICIES = ("CPU_ONLY", "GPU_ONLY", "GPU_WITH_CPU_FALLBACK_ALLOWED")
@@ -107,7 +108,9 @@ def test_t_remote_exemption_never_bypasses_consent_or_cost(
             window.sessions.setCurrentRow(0)
             bridge, privacy, wire = window.ai_bridge, window.privacy_panel, Wire()
             service = bridge._service()
-            privacy._gateway = Gateway(privacy.consents, ledger=privacy.ledger, transport=wire)
+            privacy.backend.gateway = Gateway(
+                privacy.consents, ledger=privacy.ledger, transport=wire
+            )
             control = privacy.controls["stt"]
             control.provider.setCurrentIndex(control.provider.findData("openai"))
             control.endpoint.setText("https://g11-remote.invalid/v1")
@@ -118,12 +121,12 @@ def test_t_remote_exemption_never_bypasses_consent_or_cost(
             privacy._confirm_general = lambda _: True
             prepared: list[str] = []
             raised: list[str] = []
-            original = privacy.prepare_execution
+            original = privacy.backend.prepare_execution
 
             def prepare(*args: Any) -> Any:
                 # G11R-05: the refusal code is read from the guard's own exception, never
                 # searched for in the status text.
-                prepared.append(args[0])
+                prepared.append(args[0].kind)
                 try:
                     return original(*args)
                 except Exception as error:
@@ -131,7 +134,7 @@ def test_t_remote_exemption_never_bypasses_consent_or_cost(
                     raised.append(str(code))
                     raise
 
-            monkeypatch.setattr(privacy, "prepare_execution", prepare)
+            monkeypatch.setattr(privacy.backend, "prepare_execution", prepare)
 
             def grant() -> None:
                 privacy.consents.grant(
@@ -155,7 +158,7 @@ def test_t_remote_exemption_never_bypasses_consent_or_cost(
 
             def mode(name: str) -> None:
                 control.cost_mode.setCurrentIndex(control.cost_mode.findData(name))
-                privacy._action("stt", "budget")
+                privacy_action(privacy, "stt", "budget")
 
             def run(model: str) -> tuple[str, str | None, list[Any]]:
                 """Click, settle, then read the refusal from the record or the status."""

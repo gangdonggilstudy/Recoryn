@@ -201,10 +201,12 @@ def confirmed(path: Path) -> dict[str, Any]:
 
 
 def test_frozen_values_and_secret_context_repr() -> None:
-    ctx = ExecutionContext(headers={"Authorization": "CANARY"})
+    with pytest.raises(ProviderError, match="^INPUT_INVALID$"):
+        ExecutionContext(headers={"Authorization": "CANARY"})
+    ctx = ExecutionContext(headers={"X-Trace-ID": "CANARY"})
     assert "CANARY" not in repr(ctx)
     with pytest.raises(TypeError):
-        ctx.headers["Authorization"] = "other"  # type: ignore[index]
+        ctx.headers["X-Trace-ID"] = "other"  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         ctx.progress = None  # type: ignore[misc]
     assert str(ProviderError("unsafe secret")) == "PROVIDER_FAILED"

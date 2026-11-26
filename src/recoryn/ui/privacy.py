@@ -8,8 +8,9 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import AbstractContextManager, ExitStack, contextmanager
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from recoryn.jobs.failures import CODE_GROUPS
 from recoryn.providers import (
     ExecutionContext,
     FactIdentity,
@@ -57,6 +59,13 @@ from recoryn.security import (
     cost_catalog,
 )
 from recoryn.security._core import endpoint as parse_endpoint
+from recoryn.security.credentials import (
+    AuthBinding,
+    CredentialService,
+    CredentialTarget,
+    KeyResult,
+    PlanBinding,
+)
 from recoryn.ui import a11y
 
 FACTS_UNKNOWN = "최근 관측 없음 · 이 버전은 제공업체에 확인 요청을 보내지 않습니다"
@@ -103,6 +112,537 @@ class _Snapshot:
     limit: int
     config_key: str
     cost_policy: CostPolicy | None
+
+
+def _execution_key(config: ProviderConfig, kind: str, session_id: str) -> str:
+    data = [
+        config.provider_id,
+        config.model,
+        config.endpoint,
+        config.execution_location,
+        config.local_attestation.artifact_sha256 if config.local_attestation else None,
+        config.context_window_tokens,
+        config.max_output_tokens,
+        kind,
+        session_id,
+    ]
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class CostIntent:
+    mode: str
+    currency: str
+    start: int
+    end: int
+    cap: int
+    limit: int
+    general_acknowledged: bool
+
+
+@dataclass(frozen=True)
+class ProviderIntent:
+    provider_id: str
+    model: str
+    endpoint: str
+    context_window: int | None
+    max_output: int
+    proof: LocalModelAttestation | None = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class ExecutionIntent:
+    kind: str
+    session_id: str
+    settings: ProviderIntent
+    scope: ConsentScope
+    cost: CostIntent | None
+    cancel: threading.Event = field(repr=False, compare=False)
+    plan: PlanBinding
+    auth: AuthBinding | None = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class ViewIntent:
+    kind: str
+    provider: str | None
+    endpoint: str | None
+    data_type: str | None
+    scope: ConsentScope | None
+    session_id: str | None
+    cost: CostIntent | None
+
+
+@dataclass(frozen=True)
+class PrivacyView:
+    scope: dict[str, Any]
+    unavailable: str | None
+    account: dict[str, Any] | None
+    balance: dict[str, int] | None
+    legacy: bool
+    records: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class ActionIntent:
+    kind: str
+    action: str
+    provider: str
+    endpoint: str
+    data_type: str
+    scope: ConsentScope
+    config: ProviderConfig | None
+    cost: CostIntent | None
+    plan: PlanBinding
+    reservation_id: str | None = None
+    actual: int = 0
+    confirmed: bool = False
+
+
+@dataclass(frozen=True)
+class ActionProposal:
+    intent: ActionIntent
+    version: int
+    deadline: float
+    cost_policy: CostPolicy | None = None
+
+
+@dataclass(frozen=True)
+class PrivacyReply:
+    kind: str
+    nonce: str
+    generation: int
+    tag: str
+    value: object = field(default=None, repr=False)
+    error_code: str | None = None
+
+
+class PrivacyBackend:
+    """No widget references; policy/query and native command lanes are separate."""
+
+    def __init__(
+        self,
+        consents: ConsentStore,
+        ledger: CostLedger,
+        vault: CredentialVault,
+        *,
+        gateway: Gateway | None,
+        notify_quote: Callable[[str, object], None],
+    ) -> None:
+        self.consents, self.ledger = consents, ledger
+        self.credentials = CredentialService(vault, consents=consents)
+        self.gateway = gateway
+        self._notify_quote = notify_quote
+        self._condition = threading.Condition()
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recoryn-privacy")
+        self._capacity = threading.BoundedSemaphore(32)
+        self._active = 0
+        self._closing = False
+        self._changes: dict[str, int] = {}
+        self._revision = 0
+        self.granted: dict[str, set[tuple[str, str, str, ConsentScope, int]]] = {
+            "stt": set(),
+            "summary": set(),
+        }
+
+    @property
+    def closing(self) -> bool:
+        with self._condition:
+            return self._closing
+
+    @property
+    def idle(self) -> bool:
+        with self._condition:
+            return self._active == 0 and self.credentials.idle
+
+    def submit(
+        self,
+        operation: Callable[[], object],
+        *,
+        kind: str,
+        nonce: str,
+        generation: int,
+        tag: str,
+        reply: Callable[[PrivacyReply], None],
+    ) -> bool:
+        if not self._capacity.acquire(blocking=False):
+            return False
+        with self._condition:
+            if self._closing:
+                self._capacity.release()
+                return False
+            self._active += 1
+
+        def work() -> None:
+            try:
+                try:
+                    answer = PrivacyReply(kind, nonce, generation, tag, operation())
+                except Exception as error:
+                    allowed = set(CODE_GROUPS) | {
+                        "VAULT_WRITE_FAILED",
+                        "VAULT_DELETE_FAILED",
+                        "VAULT_INVALID_VALUE",
+                        "SECURITY_STATE_UNAVAILABLE",
+                        "INVALID_PRIVACY_ACTION",
+                        "SETTLEMENT_CONFIRMATION_REQUIRED",
+                    }
+                    code = getattr(error, "code", None)
+                    safe = code if type(code) is str and code in allowed else "TASK_FAILED"
+                    answer = PrivacyReply(kind, nonce, generation, tag, error_code=safe)
+                try:
+                    reply(answer)
+                except RuntimeError:
+                    pass
+            finally:
+                with self._condition:
+                    self._active -= 1
+                    self._capacity.release()
+                    self._condition.notify_all()
+
+        self._pool.submit(work)
+        return True
+
+    def invalidate_kind(self, kind: str) -> int:
+        self.credentials.invalidate_plan(kind)
+        with self._condition:
+            self._revision += 1
+            self._changes[kind] = self._revision
+            return self._revision
+
+    def revoke_pending(self, kind: str) -> None:
+        with self._condition:
+            revision = self._changes.get(kind)
+        if revision is None:
+            return
+        with self.consents.coordinator.hold():
+            for provider, target, data_type, scope, version in tuple(self.granted[kind]):
+                self.consents.revoke(
+                    provider,
+                    target,
+                    data_type,
+                    capability=kind,
+                    scope=scope,
+                    policy_version=version,
+                )
+            self.granted[kind].clear()
+        with self._condition:
+            if self._changes.get(kind) == revision:
+                self._changes.pop(kind, None)
+
+    def cost_policy(
+        self, provider: str, values: CostIntent, *, advance: bool = False
+    ) -> CostPolicy:
+        old = self.ledger.account(provider, values.currency, values.start, values.end)
+        version = int(old["policy_version"]) + int(advance) if old else 1
+        return CostPolicy(
+            values.mode,
+            values.currency,
+            values.start,
+            values.end,
+            values.cap,
+            values.limit,
+            version,
+            cost_catalog.load_catalog().sha256,
+            values.general_acknowledged,
+        )
+
+    def read_view(self, intent: ViewIntent) -> PrivacyView:
+        self.revoke_pending(intent.kind)
+        scope = self.consents.scope_view(
+            intent.provider,
+            intent.endpoint,
+            intent.data_type,
+            capability=intent.kind,
+            scope=intent.scope,
+            session_id=intent.session_id,
+        )
+        unavailable = self.ledger.availability()
+        if unavailable is not None or intent.provider is None or intent.cost is None:
+            return PrivacyView(scope, unavailable, None, None, False, [])
+        values = intent.cost
+        account = self.ledger.account(intent.provider, values.currency, values.start, values.end)
+        balance = self.ledger.account_snapshot(
+            intent.provider, values.currency, values.start, values.end
+        )
+        legacy = self.ledger.legacy_unscoped(intent.provider)
+        records = self.ledger.reservations(intent.provider)
+        return PrivacyView(scope, None, account, balance, legacy, records)
+
+    def prepare_action(self, intent: ActionIntent) -> ActionProposal:
+        self.revoke_pending(intent.kind)
+        self.credentials.assert_plan(intent.plan)
+        if intent.action == "reset_clock":
+            return ActionProposal(intent, 0, 0)
+        version, deadline = self.consents.policy_version, self.consents.grant_deadline
+        policy = None
+        if intent.action == "grant":
+            self.credentials.check_grant_allowed(CredentialTarget(intent.provider, intent.endpoint))
+            if intent.provider != "ollama" and (
+                intent.cost is None or intent.cost.cap <= 0 or intent.cost.limit <= 0
+            ):
+                raise SecurityError("BUDGET_REQUIRED")
+        if intent.action in {"budget", "adopt"}:
+            if intent.cost is None:
+                raise SecurityError("COST_REQUEST_INVALID")
+            policy = self.cost_policy(
+                intent.provider, intent.cost, advance=intent.action == "budget"
+            )
+        return ActionProposal(intent, version, deadline, policy)
+
+    def commit_action(self, proposal: ActionProposal) -> None:
+        intent = proposal.intent
+        self.credentials.assert_plan(intent.plan)
+        provider, target, kind = intent.provider, intent.endpoint, intent.kind
+        with self.consents.coordinator.hold():
+            self.credentials.assert_plan(intent.plan)
+            if (
+                intent.action not in {"reset_clock"}
+                and proposal.version != self.consents.policy_version
+            ):
+                raise SecurityError("CONSENT_POLICY_CHANGED")
+            if intent.action == "grant":
+                with self.credentials.grant_gate(CredentialTarget(provider, target)):
+                    if provider == "ollama":
+                        proof = (
+                            intent.config.local_attestation if intent.config is not None else None
+                        )
+                        if proof is None:
+                            raise SecurityError("LOCAL_EXECUTION_UNVERIFIED")
+                        self.consents.approve_local_endpoint(
+                            target,
+                            proof.artifact_sha256,
+                            ttl_seconds=proof.expires_at_monotonic - time.monotonic(),
+                        )
+                    self.consents.grant(
+                        provider,
+                        target,
+                        intent.data_type,
+                        capability=kind,
+                        scope=intent.scope,
+                        policy_version=proposal.version,
+                        expires_at=proposal.deadline,
+                    )
+                    self.granted[kind].add(
+                        (provider, target, intent.data_type, intent.scope, proposal.version)
+                    )
+            elif intent.action == "revoke":
+                self.consents.revoke(
+                    provider,
+                    target,
+                    intent.data_type,
+                    capability=kind,
+                    scope=intent.scope,
+                    policy_version=proposal.version,
+                )
+                self.granted[kind].discard(
+                    (provider, target, intent.data_type, intent.scope, proposal.version)
+                )
+            elif intent.action == "budget":
+                assert proposal.cost_policy is not None
+                self.ledger.apply_policy(provider, proposal.cost_policy)
+            elif intent.action == "adopt":
+                assert proposal.cost_policy is not None
+                self.ledger.adopt_legacy(provider, proposal.cost_policy, confirmed=True)
+            elif intent.action == "settle":
+                if not intent.confirmed or not intent.reservation_id:
+                    raise SecurityError("SETTLEMENT_CONFIRMATION_REQUIRED")
+                self.ledger.settle(intent.reservation_id, intent.actual)
+            elif intent.action == "reset_clock":
+                self.ledger.reset_clock(confirmed=True)
+            elif intent.action != "refresh":
+                raise SecurityError("INVALID_PRIVACY_ACTION")
+
+    def _configuration(self, intent: ExecutionIntent) -> ProviderConfig:
+        self.revoke_pending(intent.kind)
+        self.credentials.assert_plan(intent.plan)
+        values = intent.settings
+        provider = values.provider_id
+        config = ProviderConfig(
+            provider,
+            values.model or ("local" if provider == "faster_whisper" else ""),
+            endpoint="" if provider == "faster_whisper" else parse_endpoint(values.endpoint).url,
+            execution_location="local" if provider in {"faster_whisper", "ollama"} else "remote",
+            local_attestation=values.proof if provider == "ollama" else None,
+            context_window_tokens=values.context_window,
+            max_output_tokens=values.max_output,
+        )
+        if provider == "ollama" and (
+            values.proof is None
+            or not values.proof.cloud_disabled
+            or values.proof.endpoint != config.endpoint
+            or values.proof.model != config.model
+            or values.proof.expires_at_monotonic <= time.monotonic()
+        ):
+            raise SecurityError("LOCAL_EXECUTION_UNVERIFIED")
+        return config
+
+    def _snapshot(self, intent: ExecutionIntent, config: ProviderConfig) -> _Snapshot:
+        key = _execution_key(config, intent.kind, intent.session_id)
+        with self.consents.coordinator.hold():
+            version = self.consents.policy_version
+            self.consents.bind_session(intent.session_id)
+            request = ConsentRequest(intent.session_id, 0, intent.kind, version)
+            types = ("audio",) if intent.kind == "stt" else ("transcript", "context")
+            bindings = self.consents.capture_bindings(
+                config.provider_id, config.endpoint, types, scope=intent.scope, request=request
+            )
+            policy = (
+                None
+                if config.provider_id == "ollama" or intent.cost is None
+                else self.cost_policy(config.provider_id, intent.cost)
+            )
+        snapshot = _Snapshot(
+            config,
+            intent.scope,
+            request,
+            bindings,
+            types,
+            intent.cost.cap if intent.cost is not None else 0,
+            intent.cost.limit if intent.cost is not None else 0,
+            key,
+            policy,
+        )
+        return snapshot
+
+    def prepare_execution(self, intent: ExecutionIntent) -> PrivacyExecution:
+        config = self._configuration(intent)
+        if config.provider_id == "faster_whisper":
+            return PrivacyExecution(
+                config,
+                _execution_key(config, intent.kind, intent.session_id),
+                ExecutionContext(cancel=intent.cancel),
+                None,
+            )
+        snapshot = self._snapshot(intent, config)
+        context = self._execution_context(snapshot, intent.cancel, intent.auth)
+        gateway = self._gateway_for(snapshot, intent.plan, intent.auth)
+        return PrivacyExecution(config, snapshot.config_key, context, gateway)
+
+    def prepare_gateway(self, intent: ExecutionIntent) -> Gateway | None:
+        """Prepare an unprivileged frozen root; the Gateway still checks every grant."""
+        config = self._configuration(intent)
+        if config.provider_id == "faster_whisper":
+            return None
+        return self._gateway_for(self._snapshot(intent, config), intent.plan, intent.auth)
+
+    def _execution_context(
+        self, snapshot: _Snapshot, cancel: threading.Event, auth: AuthBinding | None
+    ) -> ExecutionContext:
+        config = snapshot.config
+        if not snapshot.bindings:
+            raise SecurityError("CONSENT_REQUIRED")
+        if config.provider_id == "ollama":
+            return ExecutionContext(cancel=cancel)
+        if snapshot.cap <= 0 or snapshot.limit <= 0:
+            raise SecurityError("BUDGET_REQUIRED")
+        cost_policy = snapshot.cost_policy
+        if cost_policy is None:
+            raise SecurityError("COST_REQUEST_INVALID")
+        policy, ledger, notify = self.consents, self.ledger, self._notify_quote
+        types, bindings = snapshot.data_types, snapshot.bindings
+        provider, target = config.provider_id, config.endpoint
+
+        def reserve(request: CostRequest) -> str:
+            if (
+                type(request) is not CostRequest
+                or request.provider_id != provider
+                or request.endpoint != target
+                or request.model_revision != config.model
+                or request.operation != snapshot.request.capability
+                or request.data_type not in types
+            ):
+                raise SecurityError("BUDGET_SCOPE_MISMATCH")
+            binding = next((item for item in bindings if item.data_type == request.data_type), None)
+            if binding is None:
+                raise SecurityError("CONSENT_REQUIRED")
+            with policy.coordinator.hold():
+                policy.validate_binding(binding)
+                if auth is not None:
+                    auth.service.assert_current(auth.ref, auth.plan)
+                try:
+                    quoted = ledger.quote_request(request, cost_policy)
+                    reservation = ledger.reserve_quote(
+                        uuid.uuid4().hex, quoted, cost_policy, request
+                    )
+                except SecurityError as error:
+                    try:
+                        notify(snapshot.request.capability, error.code)
+                    except RuntimeError:
+                        pass
+                    raise
+                try:
+                    notify(snapshot.request.capability, quoted)
+                except RuntimeError:
+                    pass
+                return reservation
+
+        return ExecutionContext(cancel=cancel, reservation_factory=reserve)
+
+    def _gateway_for(
+        self, snapshot: _Snapshot, plan: PlanBinding, auth: AuthBinding | None
+    ) -> Gateway:
+        config, base = snapshot.config, self.gateway
+        base_guard = base.dispatch_guard if base else None
+        proof = config.local_attestation
+
+        @contextmanager
+        def plan_guard(permit: SendPermit) -> Iterator[None]:
+            if (
+                permit.provider_id != config.provider_id
+                or permit.endpoint != config.endpoint
+                or permit.data_type not in snapshot.data_types
+                or permit.request != snapshot.request
+                or permit.scope != snapshot.scope
+            ):
+                raise SecurityError("LOCAL_EXECUTION_UNVERIFIED")
+            with ExitStack() as stack:
+                if base_guard is not None:
+                    stack.enter_context(base_guard(permit))
+                if config.provider_id == "ollama":
+                    if (
+                        proof is None
+                        or proof.endpoint != config.endpoint
+                        or proof.model != config.model
+                    ):
+                        raise SecurityError("LOCAL_EXECUTION_UNVERIFIED")
+                    stack.enter_context(proof.execution_guard())
+                yield
+
+        view = Gateway(
+            self.consents,
+            ledger=None if config.provider_id == "ollama" else self.ledger,
+            transport=base.transport if base else None,
+            timeout=base.timeout if base else 30,
+            max_request_bytes=base.max_request_bytes if base else 32 * 1024 * 1024,
+            max_response_bytes=base.max_response_bytes if base else 8 * 1024 * 1024,
+            chunk_bytes=base.chunk_bytes if base else 64 * 1024,
+            expected_grants=snapshot.bindings,
+            dispatch_guard=plan_guard,
+            auth_binding=auth,
+        ).for_session(
+            snapshot.request.session_id,
+            snapshot.request.session_generation,
+            capability=snapshot.request.capability,
+            scope=snapshot.scope,
+            policy_version=snapshot.request.policy_version,
+        )
+        view._plan_check = lambda: self.credentials.assert_plan(plan)
+        return view
+
+    def begin_shutdown(self) -> None:
+        with self._condition:
+            self._closing = True
+        self.credentials.begin_shutdown()
+
+    def await_shutdown(self, timeout: float = 5) -> bool:
+        self.begin_shutdown()
+        until = time.monotonic() + timeout
+        with self._condition:
+            done = self._condition.wait_for(lambda: self._active == 0, timeout)
+        if not done or not self.credentials.await_shutdown(max(0, until - time.monotonic())):
+            return False
+        self._pool.shutdown(wait=True)
+        return True
 
 
 class _Controls(QGroupBox):
@@ -252,6 +792,7 @@ class _Controls(QGroupBox):
 
 class PrivacyPanel(QWidget):
     quote_ready = Signal(str, object)
+    work_ready = Signal(object)
 
     def __init__(
         self,
@@ -265,6 +806,19 @@ class PrivacyPanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self.consents, self.ledger, self.vault, self._gateway = consents, ledger, vault, gateway
+        self.backend = PrivacyBackend(
+            consents, ledger, vault, gateway=gateway, notify_quote=self.quote_ready.emit
+        )
+        self._selection_generation = 0
+        self._closed = False
+        self._views: dict[str, PrivacyView] = {}
+        self._desired_views: dict[str, ViewIntent] = {}
+        self._sent_views: dict[str, ViewIntent] = {}
+        self._view_pending: dict[str, bool] = {}
+        self._view_nonces: dict[str, str] = {}
+        self._command_nonces: dict[str, str] = {}
+        self._status_errors: dict[str, str] = {}
+        self.work_ready.connect(self._on_work_ready)
         self.announcer = a11y.Announcer()
         self._attestation: LocalModelAttestation | None = None
         self._selected_session: str | None = None
@@ -274,10 +828,7 @@ class PrivacyPanel(QWidget):
         self._scope_retry.setSingleShot(True)
         self._scope_retry.setInterval(50)
         self._scope_retry.timeout.connect(self._retry_scope_views)
-        self._granted: dict[str, set[tuple[str, str, str, ConsentScope, int]]] = {
-            "stt": set(),
-            "summary": set(),
-        }
+        self._granted = self.backend.granted
         self.controls = {kind: _Controls(kind) for kind in ("stt", "summary")}
         self.provider_facts = {
             kind: provider_facts[kind]
@@ -475,6 +1026,9 @@ class PrivacyPanel(QWidget):
     def select_session(self, session_id: str | None) -> None:
         previous = self._selection_origin if self._selection_pending else self._selected_session
         changed = session_id != previous
+        if changed:
+            self._selection_generation += 1
+            self._views.clear()
         self._selected_session = session_id
         self._selection_pending = False
         for kind, control in self.controls.items():
@@ -500,6 +1054,8 @@ class PrivacyPanel(QWidget):
             self._show_scope(kind)
 
     def closeEvent(self, event: Any) -> None:
+        self._closed = True
+        self.backend.begin_shutdown()
         self._scope_retry.stop()
         self._facts_timer.stop()
         super().closeEvent(event)
@@ -514,7 +1070,7 @@ class PrivacyPanel(QWidget):
             raise SecurityError("CONSENT_REQUIRED")
         return ConsentScope.session(selected)
 
-    def _show_scope(self, kind: str) -> str:
+    def _render_scope(self, kind: str) -> str:
         control = self._controls(kind)
         if self._selection_pending:
             return "선택 갱신 중 — 실행 준비 시 대상·권한을 확인합니다"
@@ -528,20 +1084,15 @@ class PrivacyPanel(QWidget):
             if library
             else f"이 세션만: {self._selected_session or '선택 없음'}"
         )
-        provider: str | None
-        target: str | None
-        data_type: str | None
-        try:
-            provider, target, data_type = self._scope(kind)
-        except (SecurityError, ProviderError):
-            provider, target, data_type = None, None, None
-        view = self.consents.scope_view(
-            provider,
-            target,
-            data_type,
-            capability=kind,
-            scope=self._selected_scope(kind) if enabled else None,
-            session_id=self._selected_session,
+        cached = self._views.get(kind)
+        view = (
+            cached.scope
+            if cached is not None
+            else {
+                "state": "checking",
+                "library": None,
+                "selected": None,
+            }
         )
         state = view["state"]
         if state != "ready" and not (state == "deleted" and library):
@@ -621,21 +1172,12 @@ class PrivacyPanel(QWidget):
     def _changed(self, kind: str) -> None:
         self._fact_epochs[kind] += 1
         self.refresh_provider_facts(kind)
-        try:
-            for provider, target, data_type, scope, version in self._granted[kind]:
-                self.consents.revoke(
-                    provider,
-                    target,
-                    data_type,
-                    capability=kind,
-                    scope=scope,
-                    policy_version=version,
-                )
-            self._granted[kind].clear()
-            self.controls[kind].status.setText("설정 변경 — 선택한 범위를 다시 허용하세요")
-        except SecurityError as error:
-            self.controls[kind].status.setText(error.code)
-        self._show_scope(kind)
+        self._command_nonces[kind] = uuid.uuid4().hex
+        self._status_errors.pop(kind, None)
+        self._views.pop(kind, None)
+        self.backend.invalidate_kind(kind)
+        self.controls[kind].status.setText("설정 변경 — 선택한 범위를 다시 허용하세요")
+        self._request_view(kind)
 
     def set_local_attestation(self, attestation: LocalModelAttestation | None) -> None:
         self._changed("summary")
@@ -680,184 +1222,8 @@ class PrivacyPanel(QWidget):
         config = self.provider_config(kind)
         return self._config_key(config, kind, session_id)
 
-    def _config_key(
-        self,
-        config: ProviderConfig,
-        kind: str,
-        session_id: str,
-    ) -> str:
-        data = [
-            config.provider_id,
-            config.model,
-            config.endpoint,
-            config.execution_location,
-            config.local_attestation.artifact_sha256 if config.local_attestation else None,
-            config.context_window_tokens,
-            config.max_output_tokens,
-            kind,
-            session_id,
-        ]
-        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
-
-    def _snapshot(self, kind: str, session_id: str, config: ProviderConfig) -> _Snapshot:
-        scope = self._selected_scope(kind, session_id)
-        types = ("audio",) if kind == "stt" else ("transcript", "context")
-        with self.consents.coordinator.hold():
-            version = self.consents.policy_version
-            self.consents.bind_session(session_id)
-            request = ConsentRequest(session_id, 0, kind, version)
-            bindings = self.consents.capture_bindings(
-                config.provider_id, config.endpoint, types, scope=scope, request=request
-            )
-            key = self._config_key(config, kind, session_id)
-        control = self._controls(kind)
-        return _Snapshot(
-            config,
-            scope,
-            request,
-            bindings,
-            types,
-            _micros(control.per_request),
-            _micros(control.total),
-            key,
-            None if config.provider_id == "ollama" else self._cost_policy(kind),
-        )
-
-    def prepare_execution(
-        self, kind: str, session_id: str, cancel: threading.Event
-    ) -> PrivacyExecution:
-        config = self.provider_config(kind)
-        if config.provider_id == "faster_whisper":
-            return PrivacyExecution(
-                config,
-                self._config_key(config, kind, session_id),
-                ExecutionContext(cancel=cancel),
-                None,
-            )
-        snapshot = self._snapshot(kind, session_id, config)
-        return PrivacyExecution(
-            config,
-            snapshot.config_key,
-            self._execution_context(snapshot, cancel),
-            self._gateway_for(snapshot),
-        )
-
-    def execution_context(
-        self, kind: str, cancel: threading.Event, *, session_id: str
-    ) -> ExecutionContext:
-        return self.prepare_execution(kind, session_id, cancel).context
-
-    def _execution_context(self, snapshot: _Snapshot, cancel: threading.Event) -> ExecutionContext:
-        config = snapshot.config
-        policy, ledger = self.consents, self.ledger
-        types, bindings = snapshot.data_types, snapshot.bindings
-        if not bindings:
-            raise SecurityError("CONSENT_REQUIRED")
-        if config.provider_id == "ollama":
-            return ExecutionContext(cancel=cancel)
-        cap, limit = snapshot.cap, snapshot.limit
-        if cap <= 0 or limit <= 0:
-            raise SecurityError("BUDGET_REQUIRED")
-        secret = self.vault.get(self._vault_key(config.provider_id, config.endpoint))
-        if not secret:
-            raise SecurityError("AUTH_REQUIRED")
-        header = {"openai": "authorization", "anthropic": "x-api-key", "gemini": "x-goog-api-key"}[
-            config.provider_id
-        ]
-        headers = {header: ("Bearer " + secret if config.provider_id == "openai" else secret)}
-        provider, target = config.provider_id, config.endpoint
-
-        cost_policy = snapshot.cost_policy
-        if cost_policy is None:
-            raise SecurityError("COST_REQUEST_INVALID")
-        notify = self.quote_ready.emit
-
-        def reserve(request: CostRequest) -> str:
-            if (
-                type(request) is not CostRequest
-                or request.provider_id != provider
-                or request.endpoint != target
-                or request.model_revision != config.model
-                or request.operation != snapshot.request.capability
-                or request.data_type not in types
-            ):
-                raise SecurityError("BUDGET_SCOPE_MISMATCH")
-            binding = next((item for item in bindings if item.data_type == request.data_type), None)
-            if binding is None:
-                raise SecurityError("CONSENT_REQUIRED")
-            with policy.coordinator.hold():
-                policy.validate_binding(binding)
-                try:
-                    quoted = ledger.quote_request(request, cost_policy)
-                    reservation = ledger.reserve_quote(
-                        uuid.uuid4().hex, quoted, cost_policy, request
-                    )
-                except SecurityError as error:
-                    try:
-                        notify(snapshot.request.capability, error.code)
-                    except RuntimeError:
-                        pass  # Closing the display must not change cost admission.
-                    raise
-                try:
-                    notify(snapshot.request.capability, quoted)
-                except RuntimeError:
-                    pass
-                return reservation
-
-        return ExecutionContext(cancel=cancel, headers=headers, reservation_factory=reserve)
-
-    def gateway_for(self, session_id: str, *, kind: str = "summary") -> Gateway:
-        config = self.provider_config(kind)
-        return self._gateway_for(self._snapshot(kind, session_id, config))
-
-    def _gateway_for(self, snapshot: _Snapshot) -> Gateway:
-        config = snapshot.config
-        types, bindings = snapshot.data_types, snapshot.bindings
-        base = self._gateway
-        base_guard = base.dispatch_guard if base else None
-        proof = config.local_attestation
-
-        @contextmanager
-        def local_guard(permit: SendPermit) -> Iterator[None]:
-            # Freeze this plan's proof and scope. Never consult widgets or adopt
-            # a subsequently installed proof from a worker/transport callback.
-            if (
-                permit.provider_id != config.provider_id
-                or permit.endpoint != config.endpoint
-                or permit.data_type not in types
-                or permit.request != snapshot.request
-                or permit.scope != snapshot.scope
-                or proof is None
-                or proof.endpoint != config.endpoint
-                or proof.model != config.model
-            ):
-                raise SecurityError("LOCAL_EXECUTION_UNVERIFIED")
-            with ExitStack() as stack:
-                if base_guard is not None:
-                    stack.enter_context(base_guard(permit))
-                stack.enter_context(proof.execution_guard())
-                yield
-
-        dispatch_guard: Callable[[SendPermit], AbstractContextManager[None]] | None = (
-            local_guard if proof is not None else base_guard
-        )
-        return Gateway(
-            self.consents,
-            ledger=None if config.provider_id == "ollama" else self.ledger,
-            transport=base.transport if base else None,
-            timeout=base.timeout if base else 30,
-            max_request_bytes=base.max_request_bytes if base else 32 * 1024 * 1024,
-            max_response_bytes=base.max_response_bytes if base else 8 * 1024 * 1024,
-            chunk_bytes=base.chunk_bytes if base else 64 * 1024,
-            expected_grants=bindings,
-            dispatch_guard=dispatch_guard,
-        ).for_session(
-            snapshot.request.session_id,
-            snapshot.request.session_generation,
-            capability=snapshot.request.capability,
-            scope=snapshot.scope,
-            policy_version=snapshot.request.policy_version,
-        )
+    def _config_key(self, config: ProviderConfig, kind: str, session_id: str) -> str:
+        return _execution_key(config, kind, session_id)
 
     def _period(self, kind: str) -> tuple[int, int]:
         control = self._controls(kind)
@@ -878,22 +1244,20 @@ class PrivacyPanel(QWidget):
         return values[0], values[1]
 
     def _cost_policy(self, kind: str, *, advance: bool = False) -> CostPolicy:
-        control = self._controls(kind)
-        provider, _, _ = self._scope(kind)
-        start, end = self._period(kind)
-        code = control.currency.text()
-        old = self.ledger.account(provider, code, start, end)
+        values = self._cost_intent(kind)
+        view = self._views.get(kind)
+        old = view.account if view is not None else None
         version = int(old["policy_version"]) + int(advance) if old else 1
         return CostPolicy(
-            str(control.cost_mode.currentData()),
-            code,
-            start,
-            end,
-            _micros(control.per_request),
-            _micros(control.total),
+            values.mode,
+            values.currency,
+            values.start,
+            values.end,
+            values.cap,
+            values.limit,
             version,
             cost_catalog.load_catalog().sha256,
-            control.general_acknowledged,
+            values.general_acknowledged,
         )
 
     def _confirm_general(self, kind: str) -> bool:
@@ -970,7 +1334,11 @@ class PrivacyPanel(QWidget):
 
     def _cost_unavailable(self, kind: str) -> bool:
         control = self.controls[kind]
-        unavailable = self.ledger.availability()
+        cached = self._views.get(kind)
+        if cached is None:
+            control.balance.setText("비용 정보 확인 중")
+            return True
+        unavailable = cached.unavailable
         control.reset_clock.setEnabled(unavailable == "COST_CLOCK_INVALID")
         if unavailable is not None:
             control.balance.setText(
@@ -985,18 +1353,19 @@ class PrivacyPanel(QWidget):
             return True
         return False
 
-    def _refresh(self, kind: str) -> None:
+    def _render_cost(self, kind: str) -> None:
         control = self.controls[kind]
         if self._cost_unavailable(kind):
+            return
+        cached = self._views.get(kind)
+        if cached is None or cached.balance is None:
             return
         provider, _, _ = self._scope(kind)
         start, end = self._period(kind)
         code = control.currency.text()
-        balance = self.ledger.account_snapshot(provider, code, start, end)
-        account = self.ledger.account(provider, code, start, end)
-        legacy = self.ledger.legacy_unscoped(provider)
+        balance, account, legacy = cached.balance, cached.account, cached.legacy
         control.adopt_legacy.setEnabled(legacy)
-        records = self.ledger.reservations(provider)
+        records = cached.records
         other = sum(
             1
             for row in records
@@ -1054,118 +1423,330 @@ class PrivacyPanel(QWidget):
         control.actual.setPrefix("확인 금액 " + str(code or "통화 미확정") + " ")
         control.confirm_actual.setChecked(False)
 
-    def _action(self, kind: str, action: str) -> None:
+    def _cost_intent(self, kind: str) -> CostIntent:
         control = self._controls(kind)
+        start, end = self._period(kind)
+        return CostIntent(
+            str(control.cost_mode.currentData()),
+            control.currency.text(),
+            start,
+            end,
+            _micros(control.per_request),
+            _micros(control.total),
+            control.general_acknowledged,
+        )
+
+    def capture_execution(
+        self, kind: str, session_id: str, cancel: threading.Event
+    ) -> ExecutionIntent:
+        control = self._controls(kind)
+        provider = str(control.provider.currentData())
+        values = ProviderIntent(
+            provider,
+            control.model.text(),
+            control.endpoint.text(),
+            control.context_window.value() or None,
+            control.max_output.value(),
+            self._attestation,
+        )
+        auth = None
+        if provider in {"openai", "anthropic", "gemini"}:
+            try:
+                auth = self.backend.credentials.capture_binding(
+                    CredentialTarget(provider, values.endpoint), kind
+                )
+            except SecurityError:
+                pass
+        cost = None if provider in {"faster_whisper", "ollama"} else self._cost_intent(kind)
+        return ExecutionIntent(
+            kind,
+            session_id,
+            values,
+            self._selected_scope(kind, session_id),
+            cost,
+            cancel,
+            self.backend.credentials.capture_plan(kind),
+            auth,
+        )
+
+    def _capture_view(self, kind: str) -> ViewIntent:
+        try:
+            provider, endpoint, data_type = self._scope(kind)
+        except (SecurityError, ProviderError):
+            provider, endpoint, data_type = None, None, None
+        try:
+            scope = self._selected_scope(kind)
+        except SecurityError:
+            scope = None
+        try:
+            cost = self._cost_intent(kind)
+        except SecurityError:
+            cost = None
+        return ViewIntent(kind, provider, endpoint, data_type, scope, self._selected_session, cost)
+
+    def _request_view(self, kind: str) -> None:
+        if self._closed or self.backend.closing:
+            return
+        intent = self._capture_view(kind)
+        self._desired_views[kind] = intent
+        if self._view_pending.get(kind):
+            return
+        nonce = uuid.uuid4().hex
+        self._view_nonces[kind] = nonce
+        self._sent_views[kind] = intent
+        self._view_pending[kind] = True
+        accepted = self.backend.submit(
+            lambda: self.backend.read_view(intent),
+            kind=kind,
+            nonce=nonce,
+            generation=self._selection_generation,
+            tag="view",
+            reply=self.work_ready.emit,
+        )
+        if not accepted:
+            self._view_pending[kind] = False
+            self._scope_retry.start()
+
+    def _show_scope(self, kind: str) -> str:
+        self._request_view(kind)
+        return self._render_scope(kind)
+
+    def _refresh(self, kind: str) -> None:
+        self._request_view(kind)
+
+    def _on_work_ready(self, reply: PrivacyReply) -> None:
+        kind = reply.kind
+        if reply.tag == "view":
+            self._view_pending[kind] = False
+        if self._closed or self.backend.closing:
+            return
+        if reply.tag == "view":
+            if (
+                reply.generation != self._selection_generation
+                or reply.nonce != self._view_nonces.get(kind)
+                or self._sent_views.get(kind) != self._desired_views.get(kind)
+            ):
+                self._request_view(kind)
+                return
+            if isinstance(reply.value, PrivacyView):
+                self._views[kind] = reply.value
+            else:
+                self._views[kind] = PrivacyView(
+                    {"state": "unavailable", "library": None, "selected": None},
+                    reply.error_code or "SECURITY_STATE_UNAVAILABLE",
+                    None,
+                    None,
+                    False,
+                    [],
+                )
+            self._render_cost(kind)
+            status = self._render_scope(kind)
+            self.controls[kind].status.setText(self._status_errors.get(kind) or status)
+            return
+        if (
+            reply.generation != self._selection_generation
+            or reply.nonce != self._command_nonces.get(kind)
+        ):
+            return
+        error = reply.error_code
+        if isinstance(reply.value, KeyResult):
+            error = reply.value.error_code
+        if error is not None:
+            self._status_errors[kind] = error
+            self.controls[kind].status.setText(error)
+            self._request_view(kind)
+            return
+        if reply.tag == "proposal":
+            if not isinstance(reply.value, ActionProposal):
+                return
+            proposal = reply.value
+            if not self._confirm_proposal(proposal):
+                return
+            if (
+                self._closed
+                or self.backend.closing
+                or reply.nonce != self._command_nonces.get(kind)
+            ):
+                return
+
+            def commit() -> ActionProposal:
+                self.backend.commit_action(proposal)
+                return proposal
+
+            if not self.backend.submit(
+                commit,
+                kind=kind,
+                nonce=reply.nonce,
+                generation=reply.generation,
+                tag="committed",
+                reply=self.work_ready.emit,
+            ):
+                self._status_errors[kind] = "RESOURCE_EXHAUSTED"
+                self.controls[kind].status.setText("RESOURCE_EXHAUSTED")
+            return
+        if isinstance(reply.value, ActionProposal) and reply.value.intent.action == "revoke":
+            intent = reply.value.intent
+            self.announcer.announce(
+                "privacy",
+                self.controls[kind].revoke,
+                "REVOCATION_PERSISTED",
+                f"{kind} 전송 동의 철회를 저장했습니다 · 이미 전송한 결과는 별도로 표시합니다",
+                version=(
+                    "revoke",
+                    kind,
+                    intent.provider,
+                    intent.endpoint,
+                    intent.data_type,
+                    intent.scope.kind,
+                    reply.value.version,
+                ),
+            )
+        self._request_view(kind)
+        if isinstance(reply.value, ActionProposal) and reply.value.intent.action == "reset_clock":
+            for control in self.controls.values():
+                control.balance.setText("시계 기준 재설정 완료")
+            for target_kind in self.controls:
+                self._request_view(target_kind)
+
+    def _confirm_proposal(self, proposal: ActionProposal) -> bool:
+        intent, kind = proposal.intent, proposal.intent.kind
+        if intent.action == "grant" and intent.scope.kind == "library":
+            return self._confirm_library(
+                kind,
+                intent.provider,
+                intent.endpoint,
+                intent.data_type,
+                proposal.version,
+                proposal.deadline,
+            )
+        if intent.action == "reset_clock":
+            return a11y.confirm(
+                self,
+                "시계 기준 재설정 확인",
+                "운영체제의 현재 시각을 확인하셨습니까? 시계 기준 변경은 감사 이력에 남습니다. "
+                "기존 예약·UNKNOWN·확정 지출은 줄어들지 않습니다. 모든 기간의 같은 제공업체·통화 "
+                "확정액을 현재 예산에 보수적으로 합산합니다. 재설정하시겠습니까?",
+                still_current=self._same_selection(),
+                fallback=self._safe_focus(kind),
+            )[0]
+        if intent.action == "adopt":
+            policy = proposal.cost_policy
+            assert policy is not None
+            return a11y.confirm(
+                self,
+                "이전 비용 이력 승계 확인",
+                f"이전 이력은 통화·기간 근거가 없습니다. 제공업체 {intent.provider}의 이력을 "
+                f"{policy.currency}, UTC [{policy.period_start_utc}, {policy.period_end_utc})로 "
+                "직접 확인하여 승계합니까? UNKNOWN과 예약 노출은 그대로 유지합니다.",
+                still_current=self._same_selection(),
+                fallback=self._safe_focus(kind),
+            )[0]
+        return True
+
+    def _capture_action(self, kind: str, action: str) -> ActionIntent:
+        control = self._controls(kind)
+        if action == "reset_clock":
+            provider, endpoint, data_type = "", "", ""
+            scope = ConsentScope.library()
+        else:
+            provider, endpoint, data_type = self._scope(kind)
+            scope = (
+                self._selected_scope(kind)
+                if action in {"grant", "revoke"}
+                else ConsentScope.library()
+            )
+        config = self.provider_config(kind) if action == "grant" else None
+        cost = self._cost_intent(kind) if action in {"grant", "budget", "adopt"} else None
+        return ActionIntent(
+            kind,
+            action,
+            provider,
+            endpoint,
+            data_type,
+            scope,
+            config,
+            cost,
+            self.backend.credentials.capture_plan(kind),
+            str(control.requests.currentData()) if control.requests.currentData() else None,
+            _micros(control.actual),
+            control.confirm_actual.isChecked(),
+        )
+
+    def _action(self, kind: str, action: str) -> None:
+        if self._closed or self.backend.closing:
+            return
+        control = self._controls(kind)
+        nonce = uuid.uuid4().hex
+        generation = self._selection_generation
+        self._command_nonces[kind] = nonce
+        self._status_errors.pop(kind, None)
         if action in {"grant", "revoke", "save", "delete"}:
             self._fact_epochs[kind] += 1
             self.refresh_provider_facts(kind)
         try:
-            if action == "reset_clock":
-                if not a11y.confirm(
-                    self,
-                    "시계 기준 재설정 확인",
-                    "운영체제의 현재 시각을 확인하셨습니까? 시계 기준 변경은 감사 이력에 남습니다. "
-                    "기존 예약·UNKNOWN·확정 지출은 줄어들지 않습니다. 모든 기간의 같은 제공업체·통화 "
-                    "확정액을 현재 예산에 보수적으로 합산합니다. 재설정하시겠습니까?",
-                    still_current=self._same_selection(),
-                    fallback=self._safe_focus(kind),
-                )[0]:
-                    return
-                self.ledger.reset_clock(confirmed=True)
-                for target_kind, target_control in self.controls.items():
-                    if not self._cost_unavailable(target_kind):
-                        target_control.balance.setText(
-                            "시계 기준 재설정 완료 — 기존 지출을 보존합니다"
-                        )
+            if action in {"save", "delete"}:
+                provider, target, _ = self._scope(kind)
+                credential_target = CredentialTarget(provider, target)
+
+                def key_done(result: KeyResult) -> None:
+                    self.work_ready.emit(PrivacyReply(kind, nonce, generation, "key", result))
+
+                accepted = self.backend.credentials.try_enqueue_key_change(
+                    credential_target,
+                    action,
+                    control.key.text() if action == "save" else None,
+                    command_nonce=nonce,
+                    selection_generation=generation,
+                    done=key_done,
+                )
+                if not accepted:
+                    raise SecurityError("RESOURCE_EXHAUSTED")
+                if action == "save":
+                    control.key.clear()
+                for target_kind in self.controls:
+                    try:
+                        other_provider, other_target, _ = self._scope(target_kind)
+                    except (SecurityError, ProviderError):
+                        continue
+                    if (other_provider, other_target) == (provider, target):
+                        self.backend.credentials.invalidate_plan(target_kind)
+                        if target_kind != kind:
+                            self._fact_epochs[target_kind] += 1
+                            self.refresh_provider_facts(target_kind)
+                control.status.setText("키 변경 접수됨 · 실제 완료 확인 중")
                 return
-            provider, target, data_type = self._scope(kind)
-            if action == "grant":
-                config = self.provider_config(kind)
-                scope = self._selected_scope(kind)
-                version, deadline = self.consents.policy_version, self.consents.grant_deadline
-                if provider != "ollama" and (
-                    _micros(control.per_request) <= 0 or _micros(control.total) <= 0
-                ):
-                    raise SecurityError("BUDGET_REQUIRED")
-                if scope.kind == "library" and not self._confirm_library(
-                    kind, provider, target, data_type, version, deadline
-                ):
-                    return
-                if provider == "ollama":
-                    assert config.local_attestation is not None
-                    self.consents.approve_local_endpoint(
-                        target,
-                        config.local_attestation.artifact_sha256,
-                        ttl_seconds=config.local_attestation.expires_at_monotonic
-                        - time.monotonic(),
-                    )
-                self.consents.grant(
-                    provider,
-                    target,
-                    data_type,
-                    capability=kind,
-                    scope=scope,
-                    policy_version=version,
-                    expires_at=deadline,
-                )
-                self._granted[kind].add((provider, target, data_type, scope, version))
-            elif action == "revoke":
-                scope, version = self._selected_scope(kind), self.consents.policy_version
-                self.consents.revoke(
-                    provider,
-                    target,
-                    data_type,
-                    capability=kind,
-                    scope=scope,
-                    policy_version=version,
-                )
-                self._granted[kind].discard((provider, target, data_type, scope, version))
-                self.announcer.announce(
-                    "privacy",
-                    control.revoke,
-                    "REVOCATION_PERSISTED",
-                    f"{kind} 전송 동의 철회를 저장했습니다 · 이미 전송한 결과는 별도로 표시합니다",
-                    version=("revoke", kind, provider, target, data_type, scope.kind, version),
-                )
-            elif action == "save":
-                self._revoke_endpoint(provider, target)
-                self.vault.set(self._vault_key(provider, target), control.key.text())
-                control.key.clear()
-                self._changed(kind)
-            elif action == "delete":
-                self._revoke_endpoint(provider, target)
-                self.vault.delete(self._vault_key(provider, target))
-                self._changed(kind)
-            elif action == "budget":
-                self.ledger.apply_policy(provider, self._cost_policy(kind, advance=True))
-            elif action == "adopt":
-                policy = self._cost_policy(kind)
-                if not a11y.confirm(
-                    self,
-                    "이전 비용 이력 승계 확인",
-                    f"이전 이력은 통화·기간 근거가 없습니다. 제공업체 {provider}의 이력을 "
-                    f"{policy.currency}, UTC [{policy.period_start_utc}, {policy.period_end_utc})로 "
-                    "직접 확인하여 승계합니까? UNKNOWN과 예약 노출은 그대로 유지합니다.",
-                    still_current=self._same_selection(),
-                    fallback=self._safe_focus(kind),
-                )[0]:
-                    return
-                self.ledger.adopt_legacy(provider, policy, confirmed=True)
-            elif action == "settle":
-                if not control.confirm_actual.isChecked() or not control.requests.currentData():
-                    raise SecurityError("SETTLEMENT_CONFIRMATION_REQUIRED")
-                self.ledger.settle(str(control.requests.currentData()), _micros(control.actual))
-                control.confirm_actual.setChecked(False)
-            elif action != "refresh":
-                raise SecurityError("INVALID_PRIVACY_ACTION")
-            self._refresh(kind)
+            if action == "refresh":
+                self._request_view(kind)
+                return
+            intent = self._capture_action(kind, action)
+            accepted = self.backend.submit(
+                lambda: self.backend.prepare_action(intent),
+                kind=kind,
+                nonce=nonce,
+                generation=generation,
+                tag="proposal",
+                reply=self.work_ready.emit,
+            )
+            if not accepted:
+                raise SecurityError("RESOURCE_EXHAUSTED")
+            control.status.setText("확인 중 · 아직 완료되지 않았습니다")
         except (SecurityError, ProviderError) as error:
+            self._status_errors[kind] = error.code
             control.status.setText(error.code)
-            self._show_scope(kind)
-        else:
-            control.status.setText(self._show_scope(kind))
+            self._request_view(kind)
 
     def _revoke_endpoint(self, provider: str, target: str) -> None:
-        self.consents.revoke_endpoint(provider, target)
-        for scopes in self._granted.values():
-            scopes.difference_update({scope for scope in scopes if scope[:2] == (provider, target)})
+        def revoke() -> None:
+            self.consents.revoke_endpoint(provider, target)
+            for scopes in self.backend.granted.values():
+                scopes.difference_update({s for s in scopes if s[:2] == (provider, target)})
+
+        if not self.backend.submit(
+            revoke,
+            kind="summary",
+            nonce=uuid.uuid4().hex,
+            generation=self._selection_generation,
+            tag="revoked",
+            reply=self.work_ready.emit,
+        ):
+            raise SecurityError("RESOURCE_EXHAUSTED")

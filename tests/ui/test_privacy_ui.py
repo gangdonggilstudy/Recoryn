@@ -25,6 +25,14 @@ from recoryn.security import ConsentStore, CostLedger, CredentialVault, Gateway,
 from recoryn.security._core import Endpoint
 from recoryn.ui.privacy import PrivacyPanel
 from tests.ui.test_cost_cap_ui import fixture_panel_balance, fixture_panel_catalog
+from tests.ui.test_secret_lifetime_ui import (
+    close_privacy,
+    prepare_privacy,
+    privacy_action,
+    privacy_context,
+    privacy_gateway,
+    settle_privacy,
+)
 from tests.unit.test_cost_cap import fixture_wire
 
 pytestmark = pytest.mark.ui
@@ -49,6 +57,11 @@ class DummyVault:
         self.values.pop(target, None)
 
 
+class _DenyTransport:
+    def open(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("credential-only fixture must never open a transport")
+
+
 @pytest.fixture(scope="module")
 def app() -> QApplication:
     existing = QApplication.instance()
@@ -65,11 +78,14 @@ def panel(app: QApplication, tmp_path: Path) -> Iterator[tuple[PrivacyPanel, Dum
         pytest.MonkeyPatch.context() as pricing,
     ):
         widget = PrivacyPanel(
-            consents, ledger, CredentialVault(backend=backend, namespace="B14-test")
+            consents,
+            ledger,
+            CredentialVault(backend=backend, namespace="B14-test"),
+            gateway=Gateway(consents, transport=_DenyTransport()),
         )
         widget._g06_prices = lambda: fixture_panel_catalog(widget, pricing)
         yield widget, backend
-        widget.close()
+        close_privacy(widget)
 
 
 def configure(widget: PrivacyPanel, kind: str = "stt", provider: str = "openai") -> None:
@@ -84,7 +100,7 @@ def configure(widget: PrivacyPanel, kind: str = "stt", provider: str = "openai")
     controls.per_request.setValue(0.1)
     widget._g06_prices()
     if provider != "ollama":
-        widget._action(kind, "budget")
+        privacy_action(widget, kind, "budget")
 
 
 def click(button: object) -> None:
@@ -92,7 +108,13 @@ def click(button: object) -> None:
     from PySide6.QtWidgets import QPushButton
 
     assert isinstance(button, QPushButton)
+    owner = button.parentWidget()
+    while owner is not None and not isinstance(owner, PrivacyPanel):
+        owner = owner.parentWidget()
+    assert isinstance(owner, PrivacyPanel)
+    settle_privacy(owner)
     QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+    settle_privacy(owner)
 
 
 def test_constructor_default_denial_no_vault_read_and_summary_off(
@@ -161,6 +183,7 @@ def test_exact_datatype_consent_independent_settings_and_endpoint_change(
         request=_fixture_request(widget.consents, "session", _fixture_feature("context"), 0),
     )
     control.endpoint.setText("https://other.example.test/stt")
+    settle_privacy(widget)
     assert not widget.consents.allowed(
         "openai",
         "https://api.example.test/stt",
@@ -191,10 +214,22 @@ def test_credentials_are_endpoint_bound_fail_closed_and_never_in_config_key(
     assert len(backend.values) == 1
     assert all("CANARY" not in target for target in backend.values)
     control.endpoint.setText("https://other.example.test/stt")
+    widget._g06_prices()
     click(control.apply_budget)
     click(control.allow)
+    execution = prepare_privacy(widget, "stt", "session", threading.Event())
+    assert not execution.context.headers and backend.reads == 0
+    assert execution.context.reservation_factory is not None and execution.gateway is not None
+    body = b"credential-scope-fixture"
+    reservation = execution.context.reservation_factory(
+        fixture_wire(
+            "openai", control.endpoint.text(), "audio", body, model="user-selected-test-model"
+        )
+    )
     with pytest.raises(SecurityError, match="AUTH_REQUIRED"):
-        widget.execution_context("stt", threading.Event(), session_id="session")
+        execution.gateway.request(
+            "openai", control.endpoint.text(), "audio", body, reservation_id=reservation
+        )
     backend.fail = True
     control.key.setText("B14-CANARY-PRIVATE")
     click(control.save_key)
@@ -219,7 +254,7 @@ def test_worker_reservation_factory_uses_frozen_gui_values(
     control.key.setText("dummy-key")
     click(control.save_key)
     click(control.allow)
-    context = widget.execution_context("stt", threading.Event(), session_id="session")
+    context = privacy_context(widget, "stt", threading.Event(), session_id="session")
     assert context.reservation_factory is not None
     with ThreadPoolExecutor(max_workers=1) as worker:
         reservation = worker.submit(
@@ -251,7 +286,7 @@ def test_worker_reservation_factory_uses_frozen_gui_values(
     click(control.refresh)
     assert "UNKNOWN 0.050000" in control.balance.text()
     control.actual.setValue(0.04)
-    widget._action("stt", "settle")
+    privacy_action(widget, "stt", "settle")
     assert control.status.text() == "SETTLEMENT_CONFIRMATION_REQUIRED"
     control.confirm_actual.setChecked(True)
     click(control.settle)
@@ -285,7 +320,7 @@ def test_execution_settings_change_key_and_revoke_old_plan(
     click(controls.apply_budget)
     click(controls.allow)
     key = widget.config_key("summary", session_id="session")
-    old_context = widget.execution_context("summary", threading.Event(), session_id="session")
+    old_context = privacy_context(widget, "summary", threading.Event(), session_id="session")
     assert old_context.reservation_factory is not None
     control = getattr(controls, setting)
     control.setValue(control.value() + 1)
@@ -327,13 +362,14 @@ def test_summary_context_limit_is_explicit_and_unknown_by_default(
     click(widget.controls["summary"].allow)
     assert widget.provider_config("summary").local_attestation == proof
     assert (
-        widget.execution_context(
-            "summary", threading.Event(), session_id="session"
+        privacy_context(
+            widget, "summary", threading.Event(), session_id="session"
         ).reservation_factory
         is None
     )
-    assert widget.gateway_for("session", kind="summary").ledger is None
+    assert privacy_gateway(widget, "session", kind="summary").ledger is None
     widget.set_local_attestation(None)
+    settle_privacy(widget)
     assert not widget.consents.allowed(
         "ollama",
         proof.endpoint,
@@ -353,7 +389,7 @@ def test_frozen_worker_scope_cannot_widen_or_outlive_revocation(
     click(controls.save_key)
     click(controls.apply_budget)
     click(controls.allow)
-    context = widget.execution_context("stt", threading.Event(), session_id="session")
+    context = privacy_context(widget, "stt", threading.Event(), session_id="session")
     reserve = context.reservation_factory
     assert reserve is not None
     for provider, target, kind, size in (
@@ -477,10 +513,10 @@ def test_frozen_managed_proof_protects_every_privacy_gateway_boundary(
     widget.set_local_attestation(proof)
     click(widget.controls["summary"].allow)
     transport = LocalTransport()
-    widget._gateway = Gateway(
+    widget.backend.gateway = Gateway(
         widget.consents, transport=transport, chunk_bytes=2, dispatch_guard=base_guard
     )
-    gateway = widget.gateway_for("session", kind="summary").for_session(
+    gateway = privacy_gateway(widget, "session", kind="summary").for_session(
         "session", capability="summary", scope=ConsentScope.library(), policy_version=2
     )
     if boundary == "none":
@@ -526,7 +562,7 @@ def test_gateway_guard_keeps_old_proof_and_rejects_wrong_scope(
     )
     widget.set_local_attestation(proof)
     click(widget.controls["summary"].allow)
-    frozen = widget.gateway_for("session", kind="summary")
+    frozen = privacy_gateway(widget, "session", kind="summary")
     guard = frozen.dispatch_guard
     assert guard is not None
     permit = widget.consents.permit(

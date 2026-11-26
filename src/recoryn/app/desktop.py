@@ -361,7 +361,15 @@ class DesktopRecorder:
     def close(self) -> None:
         self._close_sources()
         if self.recording is not None:
-            state = self.library.get_session(self.recording.session_id).state
+            try:
+                state = self.library.get_session(self.recording.session_id).state
+            except StateConflict as error:
+                if error.args != ("Session has a deletion intent",):
+                    raise
+                # Deletion already fences publication/state transitions. Only
+                # acknowledge the actual owned writer/sealer exit after sources.
+                self.recording.join_writer()
+                return
             if state in {SessionState.CREATED, SessionState.RECORDING, SessionState.PAUSED}:
                 self.stop()
             self.recording.join_writer()

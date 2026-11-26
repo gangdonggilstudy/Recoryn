@@ -2,6 +2,19 @@
 
 현재 단계: 사용자 지시에 따라 설계 v1.0의 구현 완료까지 개발한다. 아래 D/P 배정은 완료 이력이며 B 배정이 현재 활성 범위다. 배정 없는 신규 세션은 온보딩 후 대기한다. 오케스트레이터만 이 표를 수정한다. pane ID는 조회 시점의 식별자이며 재접속 후 재조회한다.
 
+## GS05 / d127019
+
+X00이 동결된 비밀 수명 단위만 통합한다. G09 등 다른 미공개 범위는 제외한다. 로컬 검증·push·원격 CI는 별도 게이트다.
+
+| 배정 | 역할 | 소유 파일 | 수락 기준 | 상태 |
+| --- | --- | --- | --- | --- |
+| GS05-GS11-FINAL | w5:pA Codex | 새 OS TEMP 사본과 `build/gs05-gs11-final/` 증거만 | 공개 `494342a` archive와 동결 GS05 32만. a11y·L003 양측의 원 단언과 실제 ACK·READY·만료 이벤트 보존, 정확 해시/부모·실제 spawn, 교차 회귀·782/60초·변이·전체 CI 동등/coverage7/offline wheel | LOCAL_VERIFIED — 정확 `494342a`+32 전체30,131 PASS, 신규782/40.95초, 교차1,672, 변이67 및 L01, coverage7·wheel 통과. 선행 GS11a 원격 실패로 공개 보류. 복구 후 정확 새 기준으로 재검증 |
+| GS05-D127-LOCAL-PREVIEW | w5:pA Codex 검증, X00 인수 | build/gs05-d127-preview/·새 OS TEMP만. 공유 제품/시험/계약·Git쓰기0 | 공개d127019 archive+동결 GS05 실효32(LF871417e8…)만. 신규782/60초·교차1672·AUTH14/publication386·전체G15·67변이+복구10/L01·정확30145 예상ID·core flags/coverage7/offlinewheel·부모/실spawn. 실패는 수정 전 보고 | CORE_RUNNING — 신규782/40.986823초·교차1672·AUTH14/publication386·G15/PERF/capture109 PASS. 정상63→GS05 67변이 목표FAIL/INVALID0·복구10/L01 검출을 X00 대조, 최초하네스INVALID1은별도. 선택합집합2918·수집30145 unique·입력LFea63f57655cbd0b0233611319436bb1af27793fd665c909854ca54238f3a72c3 유지. 정확30145 전체/coverage/wheel 진행, 복구3job성공·기준불변 전 최종승인/공개0 |
+| GS05-D127-HARNESS01 | X00 결정, w5:pA Codex 반영 | 기존 build/gs05-d127-preview/run-gate.py의 AUTH launcher만. 제품/제출시험/copied recovery-validate.py 변경0 | 첫 auth14.log/process를 보존. 외부 로그 label은 auth14-r2, 명령은 recovery-validate.py child auth14 새T 동일AUTHnode로 한 소유자만 사용. 최초 AUTH XML/audit/node를 정상14/선택/call 감사 후 dependent mutation 진행 | HARNESS_VERIFIED — 재시도AUTH14 PASS·선택/call14·오류0·같은입력을 X00 대조. 최초 nested invoke의 시험전 INVALID1과 원log/process 보존, 외부auth14-r2↔내부auth14감사 이름 매핑 확인. 제품/시험변경0, 신규782 성공 유지 |
+| GS05-D127-CROSS-REVIEW | w5:pB Codex 독립 검토 | build/gs05-d127-cross-review/·작은 새 OS TEMP만. 공유/Git쓰기0 | d127019+동결 실효32를 독립 구성. 기존 GS05 독립판정과 복구14 변경의 교차·기본 API/capture/실제secret worker ACK를 검토. 작은 위험별 선택/부정 대조와 출처·hash, 새 전체중복0 | REVIEW_ACCEPTED — 제품 OPEN0. report LFa60d09ec863ec92b564eef10d3255b689aa19fca1ace6af6a8ed42120c7e341a·evidence LF94e0e228855dd4607ec596b1730112dae1d296fd018c5b69f259613b4c847a5e. 독립입력435 일치·선택30/API3 PASS·단일부정2 목표FAIL/INVALID0을 X00 대조. 전체/원격·최종공개 별도 |
+| GS05-D127-FINAL | w5:pA Codex 최종 검증, X00 인수 | 기존 build/gs05-d127-preview/와 동일 OS TEMP 실행을 그대로 유지. 공유/Git쓰기0 | 복구CI45845073225 core3.11/3.13/optional-runtime 모두 success와 실제 d127 ref 일치 확인. BASE/435입력ea63f576… 불변이므로 진행 중30145 전체를 재시작하지 않고 최종로컬 검증으로 인수, 종료 후 XML각1/coverage7/wheel/예산/변이/독립입력 대조 | LOCAL_VERIFIED — 30145 PASS·ID각1·신규782/40.986823초, 67+10/L01 목표검출·변이INVALID0·coverage7/정적/wheel PASS를 X00 대조. report LF8f7d5909…2411f·evidence LF58b618af…5519e. 정확34파일 통합/최종독립 대조 대기 |
+| GS05-D127-INTEGRATION | X00 통합, w5:pB Codex 독립 최종 대조 | build/gs05-d127-integration/final-review.md·읽기 TEMP만(pB). 검증된 제품/시험31·case·공식review·GS05 배정만의 assignments 총34파일(X00) | 공개d127+실효32의 검사 입력과 runtime31 raw bytes 일치, 계약/리뷰 prefix·최종문서·기존 독립판정·30145/변이/coverage/wheel 및 정확tree·부모/실제메시지/trailer0 대조. G09 등 다른 미공개 파일 제외 | ASSIGNED — 최종34 후보를 동결해 pB 대조, 전체시험 반복0·공유/Git쓰기0(pB). X00만 검증후 commit/push·원격 확인. GS05 원격 성공 전 G09 공개/구현 착수 보류 |
+
 ## GS11a CI 회복 / 494342a
 
 실패 원인을 수정한 이 복구만 X00이 통합한다. 정확한 제품·시험 입력과 로컬 검증은 gs11 case/review에 고정한다. 후속 공개는 복구본 원격 CI 성공 뒤다.
@@ -16,7 +29,7 @@
 | GS11A-CI-F3-R3-REVIEW | w5:p8 Codex, 변경 작성자 pA/X00와 별도 | build/gs11a-x00-review/f3-r3-cross-review.md·작은 TEMP만 | 494342a+구13 후보 library ca0d0529…·test c31dc261…·publication dad7ac1c…의 독립 검토. 마지막 검사 뒤 실제 peer 새READY 반례를 원입력/관측과 함께 기록 | REVIEW_RECEIVED — LF5a77b15d2699d1c8d1d3ffddb9b4132bcbcf37ab979235e64c124f3590662e26. 구ca0d0529 입장 경합 S2 직접 재현 이력 보존. 최종14 종결은 별도 pB R4, 보고 전송 승인 UI는 조작하지 않음 |
 | GS11A-CI-F3-R4-REVIEW | w5:pB Codex 독립 최종 검토 | build/gs11a-x00-review/f3-r4-cross-review.md·작은 TEMP | pA의 AUTH14 최종manifest 동결 후 실제 admission/claim과 같은 root 안 binding 대조, 최종 게시·기존epoch/clock/API/capture/source·14행/변이 검토. 13행 반례의 새 양성/음성 포함 | REVIEW_ACCEPTED — LF0606aaf9299ed1a2269581de8dbaae3479c72e3ae866a3b2aeab5fbbe40696b5, 제품 OPEN0. 구13 실제입장/claim/manifest 각1→최종14 각0, 독립14·M09·capture/API 확인. 전체/원격 별도 |
 | GS11A-CI-RECOVERY-DOC | w5:pB Codex 독립 문서 검토 | build/gs11a-x00-review/recovery-doc-review.md 및 작은 읽기 증거만 | X00이 갱신한 gs11 case 끝 절·공식 gs11 review 끝 절·H03 복구 배정 및 checklist의 최종14/10·입력해시·독립성·남은 게이트·기존 push 권한과 실패 회복 절차 일치. 제품/시험/Git/공유 문서 쓰기0·시험 실행 불필요 | REVIEW_ACCEPTED — LF6497d0255887844d3389792700cf25b9ef3c11d4e74dfae6600111eba5c7ec6f, OPEN0. 최종14/10/29363·정확3·작성/검토 분리·기존 실패 복구 공개 절차 확인. 전체/coverage/wheel·원격 게이트는 별도 |
-| GS11A-CI-RECOVERY-FINAL | X00 통합, w5:pB Codex 최종 문서/후보 독립 대조 | build/gs11a-x00-review/recovery-final-review.md·TEMP 읽기 증거만(pB); 제품/시험3·gs11 case/review·복구 배정만의 assignments 총6파일(X00) | 494342a에 최종3 runtime이 정확히 같고 기타 제품/시험은 전부 기준 그대로인지 확인. 작성자29363/XML/coverage/wheel 증거·기존 독립OPEN0·최신 문서·후속CI 게이트·부모/ref·메시지/trailer0 확인 | ASSIGNED — 후보와 검증을 결속, 전체 시험 재실행0·공유제품/시험/Git쓰기0(pB). X00만 검증 후 commit/push, GS05/G09 공개는 복구 원격3job 성공 뒤 |
+| GS11A-CI-RECOVERY-FINAL | X00 통합, w5:pB Codex 최종 문서/후보 독립 대조 | build/gs11a-x00-review/recovery-final-review.md·TEMP 읽기 증거만(pB); 제품/시험3·gs11 case/review·복구 배정만의 assignments 총6파일(X00) | 494342a에 최종3 runtime이 정확히 같고 기타 제품/시험은 전부 기준 그대로인지 확인. 작성자29363/XML/coverage/wheel 증거·기존 독립OPEN0·최신 문서·후속CI 게이트·부모/ref·메시지/trailer0 확인 | VERIFIED / CI_PASS — d1270191382363cc6486d9ccac02e187ce18f661, tree614b0a0f176163904f0f7757a016759b02376f8e. 최종 pB LF126ff4c3a9ba66470412c606af4abe43e5a74f23bb0d2bd4c311b146f8066959 OPEN0. 실제메시지/trailer0·원격ref일치·공유441파일raw 보존. [45845073225](https://github.com/gangdonggilstudy/Recoryn/actions/runs/45845073225) core 3.11/3.13/optional-runtime 세 job 실제 success. 복구 선행CI 게이트 종결, GS05 동일기준 전체 검증 인수 계속 |
 
 ## 2026-11-26 H02: 오케스트레이터 임시 이관
 

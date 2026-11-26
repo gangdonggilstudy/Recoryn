@@ -203,7 +203,9 @@ class SEnv:
                 gateway=object(),
             )
 
-        mp.setattr(window.privacy_panel, "prepare_execution", prepare)
+        mp.setattr(
+            window.privacy_panel.backend, "prepare_execution", lambda intent: prepare(intent.kind)
+        )
         request = self.bridge._request
 
         def spy(kind: str, provider: Any, policy: str, **kwargs: Any) -> Any:

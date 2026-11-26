@@ -38,6 +38,12 @@ from recoryn.providers import (
 from recoryn.security import ConsentRequest, ConsentScope, ConsentStore, Gateway, SecurityError
 from recoryn.storage import Library
 from tests.resource_fakes import STT, SUMMARY
+from tests.ui.test_secret_lifetime_ui import (
+    close_privacy,
+    privacy_action,
+    privacy_gateway,
+    settle_privacy,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -959,8 +965,8 @@ def test_late_attestation_result_cannot_restore_retired_privacy_proof(
         controls.context_window.setValue(8192)
         model.ollama = retired
         model._accept_proof(old, model._ollama_generation)
-        privacy._action("summary", "grant")
-        frozen = privacy.gateway_for("retired-job", kind="summary")
+        privacy_action(privacy, "summary", "grant")
+        frozen = privacy_gateway(privacy, "retired-job", kind="summary")
         assert frozen.request("ollama", local, "transcript", b"positive-control") == b""
         assert leases == ["retired"] * 3
         delivered.clear()
@@ -989,10 +995,10 @@ def test_late_attestation_result_cannot_restore_retired_privacy_proof(
                 retired.live = False
                 model.ollama = replacement
                 model._accept_proof(newer, model._ollama_generation)
-                privacy._action("summary", "grant")
+                privacy_action(privacy, "summary", "grant")
             else:
-                # Revoke synchronously, then let only our pending fake getter
-                # finish while shutdown waits. Its queued GUI result arrives later.
+                # Invalidate the frozen plan synchronously, then let only our
+                # pending fake getter finish. Policy revocation ACK is below.
                 model.attestationChanged.connect(
                     lambda value: release.set() if model._shutdown_requested else None
                 )
@@ -1003,6 +1009,7 @@ def test_late_attestation_result_cannot_restore_retired_privacy_proof(
             with pytest.raises(SecurityError):
                 frozen.request("ollama", local, "transcript", b"old-plan-must-stay-dead")
             assert delivered == []
+            settle_privacy(privacy)  # actual policy worker ACK before durable grant assertions
             if race == "replacement":
                 assert model.checked_attestation() is newer
                 assert privacy._attestation is newer
@@ -1013,7 +1020,7 @@ def test_late_attestation_result_cannot_restore_retired_privacy_proof(
                     scope=ConsentScope.library(),
                     request=_fixture_request(policy, "session", _fixture_feature("transcript"), 0),
                 )
-                fresh = privacy.gateway_for("replacement-job", kind="summary")
+                fresh = privacy_gateway(privacy, "replacement-job", kind="summary")
                 assert fresh.request("ollama", local, "transcript", b"new-plan") == b""
                 assert leases[-3:] == ["replacement"] * 3
                 replacement.live = False
@@ -1034,7 +1041,7 @@ def test_late_attestation_result_cannot_restore_retired_privacy_proof(
             model.shutdown()
             model.close()
             model.deleteLater()
-            privacy.close()
+            close_privacy(privacy)
             privacy.deleteLater()
             app.processEvents()
 

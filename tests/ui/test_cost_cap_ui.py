@@ -16,6 +16,13 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from recoryn.security import ConsentStore, CostLedger, CostRequest, CredentialVault, SecurityError
 from recoryn.ui.privacy import PrivacyPanel
+from tests.ui.test_secret_lifetime_ui import (
+    close_privacy,
+    prepare_privacy,
+    privacy_action,
+    privacy_click,
+    settle_privacy,
+)
 from tests.unit.test_cost_cap import FIXTURE_END, Clock, flat_price, install_catalog, price
 
 pytestmark = pytest.mark.ui
@@ -144,14 +151,14 @@ def test_cost_mode_quote_and_frozen_inputs(
             panel._confirm_general = lambda selected: True
             if mode == "general":
                 control.cost_mode.setCurrentIndex(1)
-            panel._action(kind, "budget")
+            privacy_action(panel, kind, "budget")
             control.key.setText("G06-FAKE-SECRET")
-            panel._action(kind, "save")
-            panel._action(kind, "grant")
+            privacy_action(panel, kind, "save")
+            privacy_action(panel, kind, "grant")
             if kind == "summary":
                 control.data_type.setCurrentIndex(control.data_type.findData("context"))
-                panel._action(kind, "grant")
-            execution = panel.prepare_execution(kind, "s", threading.Event())
+                privacy_action(panel, kind, "grant")
+            execution = prepare_privacy(panel, kind, "s", threading.Event())
             factory = execution.context.reservation_factory
             assert factory is not None
             original_key = execution.config_key
@@ -200,7 +207,7 @@ def test_cost_mode_quote_and_frozen_inputs(
             else:
                 assert "요청 차단" in display
         finally:
-            panel.close()
+            close_privacy(panel)
 
 
 def test_general_mode_requires_explicit_confirmation_and_does_not_change_default(
@@ -233,7 +240,7 @@ def test_general_mode_requires_explicit_confirmation_and_does_not_change_default
             assert "전송 동의를 대신하지" in seen[0][2]
             assert control.cost_mode.currentData() == "strict" and not control.general_acknowledged
         finally:
-            panel.close()
+            close_privacy(panel)
 
 
 def test_clock_recovery_confirmation_works_without_a_remote_provider_selected(
@@ -249,6 +256,7 @@ def test_clock_recovery_confirmation_works_without_a_remote_provider_selected(
         panel = PrivacyPanel(consent, ledger, CredentialVault(backend=Vault()))
         try:
             control = panel.controls["stt"]
+            settle_privacy(panel)
             assert control.provider.currentData() == "faster_whisper"
             assert "시계 확인 필요" in control.balance.text() and control.reset_clock.isEnabled()
             seen = []
@@ -258,13 +266,13 @@ def test_clock_recovery_confirmation_works_without_a_remote_provider_selected(
                 return QMessageBox.StandardButton.No
 
             monkeypatch.setattr(QMessageBox, "question", refuse)
-            control.reset_clock.click()
+            privacy_click(control.reset_clock)
             assert seen[0][-1] == QMessageBox.StandardButton.No
             assert ledger.availability() == "COST_CLOCK_INVALID"
             monkeypatch.setattr(
                 QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes
             )
-            control.reset_clock.click()
+            privacy_click(control.reset_clock)
             app.processEvents()
             assert ledger.availability() is None and not control.reset_clock.isEnabled()
             assert "재설정 완료" in control.balance.text()
@@ -273,7 +281,7 @@ def test_clock_recovery_confirmation_works_without_a_remote_provider_selected(
             ).fetchone()[0]
             assert '"previous_high_water":2000' in audits
         finally:
-            panel.close()
+            close_privacy(panel)
 
 
 def test_budget_apply_cannot_hide_or_clear_underestimated_spending(
@@ -300,25 +308,25 @@ def test_budget_apply_cannot_hide_or_clear_underestimated_spending(
         panel = PrivacyPanel(consent, ledger, CredentialVault(backend=Vault()))
         try:
             control = configure(panel, "stt", 13)
-            panel._action("stt", "refresh")
+            privacy_action(panel, "stt", "refresh")
             assert "예산 미적용" in control.balance.text()
             control.total.setValue(0)
-            panel._action("stt", "budget")
+            privacy_action(panel, "stt", "budget")
             assert ledger.account("openai", "USD", 0, 2000) is not None
             assert "예산 미적용" not in control.balance.text()
             control.total.setValue(0.000100)
-            panel._action("stt", "budget")
+            privacy_action(panel, "stt", "budget")
             request = CostRequest("openai", URL, "model", "v1", "stt", "audio", b"synthetic-packet")
             reservation = reserve(ledger, request, panel._cost_policy("stt"), "underestimated")
             ledger.settle(reservation, 14)
-            panel._action("stt", "refresh")
+            privacy_action(panel, "stt", "refresh")
             assert "COST_PLAN_UNDERESTIMATED" in control.balance.text()
-            panel._action("stt", "budget")
+            privacy_action(panel, "stt", "budget")
             app.processEvents()
             assert ledger.account("openai", "USD", 0, 2000)["blocked"] == 1
             assert "COST_PLAN_UNDERESTIMATED" in control.balance.text()
         finally:
-            panel.close()
+            close_privacy(panel)
 
 
 def test_worker_model_scope_rejection_has_its_own_code(
@@ -343,12 +351,12 @@ def test_worker_model_scope_rejection_has_its_own_code(
         panel = PrivacyPanel(consent, ledger, CredentialVault(backend=Vault()))
         try:
             control = configure(panel, "stt", 13)
-            panel._action("stt", "budget")
+            privacy_action(panel, "stt", "budget")
             control.key.setText("FAKE-ONLY")
-            panel._action("stt", "save")
-            panel._action("stt", "grant")
-            factory = panel.prepare_execution(
-                "stt", "s", threading.Event()
+            privacy_action(panel, "stt", "save")
+            privacy_action(panel, "stt", "grant")
+            factory = prepare_privacy(
+                panel, "stt", "s", threading.Event()
             ).context.reservation_factory
             assert factory is not None
             wrong = CostRequest(
@@ -359,7 +367,7 @@ def test_worker_model_scope_rejection_has_its_own_code(
             assert ledger.reservations("openai") == []
             app.processEvents()
         finally:
-            panel.close()
+            close_privacy(panel)
 
 
 @pytest.mark.parametrize("fault", ["clock", "integrity"])
@@ -430,14 +438,15 @@ def test_user_cost_edit_revokes_old_binding_without_changing_result_identity(
         )
         try:
             control = configure(panel, "stt", 13)
-            panel._action("stt", "budget")
+            privacy_action(panel, "stt", "budget")
             control.key.setText("G06-FAKE-SECRET")
-            panel._action("stt", "save")
-            panel._action("stt", "grant")
-            plan = panel.prepare_execution("stt", "s", threading.Event())
+            privacy_action(panel, "stt", "save")
+            privacy_action(panel, "stt", "grant")
+            plan = prepare_privacy(panel, "stt", "s", threading.Event())
             control.per_request.setValue(0.000099)
             assert panel.config_key("stt", session_id="s") == plan.config_key
             assert plan.context.reservation_factory is not None
+            settle_privacy(panel)
             with pytest.raises(SecurityError, match="CONSENT_REVOKED|CONSENT_REQUIRED"):
                 plan.context.reservation_factory(
                     CostRequest("openai", URL, "model", "v1", "stt", "audio", b"synthetic-packet")
@@ -445,4 +454,4 @@ def test_user_cost_edit_revokes_old_binding_without_changing_result_identity(
             assert ledger.account_snapshot("openai", "USD", 0, 2000)["reserved"] == 0
             app.processEvents()
         finally:
-            panel.close()
+            close_privacy(panel)

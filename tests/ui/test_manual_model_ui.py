@@ -509,7 +509,9 @@ class Window:
                 gateway=None,
             )
 
-        mp.setattr(window.privacy_panel, "prepare_execution", prepare)
+        mp.setattr(
+            window.privacy_panel.backend, "prepare_execution", lambda intent: prepare(intent.kind)
+        )
         stt = window.privacy_panel.controls["stt"].provider
         stt.setCurrentIndex(stt.findData("faster_whisper"))
         self.model = write(root / "model", FILES)

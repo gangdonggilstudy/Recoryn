@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from weakref import ReferenceType, ref
@@ -35,6 +36,24 @@ _V2 = {
     "security_cost_usage_events",
     "security_cost_meta_v2",
 }
+
+
+@dataclass(frozen=True)
+class CostPreflight:
+    """Non-authorizing, same-ledger request binding and a non-extending deadline."""
+
+    _owner: object = field(repr=False, compare=False)
+    reservation_id: str
+    fingerprint: str
+    deadline: float
+
+
+@dataclass(frozen=True)
+class _OpenValidation:
+    row: sqlite3.Row
+    policy: CostPolicy
+    quoted: dict[str, Any]
+    deadline: float
 
 
 @dataclass(frozen=True)
@@ -69,6 +88,7 @@ class CostLedger:
         self._closed = False
         self._clock, self._monotonic = clock, monotonic
         self._last_now = clock_value(clock())
+        self._preflight_owner = object()
         self._quote_deadlines: dict[str, float] = {}
         self._dispatches: dict[str, _Dispatch] = {}
         self._verified_stamp: tuple[object, ...] | None = None
@@ -859,8 +879,16 @@ class CostLedger:
 
             self._change(apply)
 
-    def _eligible_account(self, provider: str, policy: CostPolicy, now: float) -> sqlite3.Row:
-        if self.legacy_unscoped(provider):
+    def _eligible_account(
+        self, provider: str, policy: CostPolicy, now: float, *, verified: bool = False
+    ) -> sqlite3.Row:
+        # Open/preflight already authenticated the witness under this coordinator.
+        legacy = (
+            provider in self._legacy_providers() - self._adopted()
+            if verified
+            else self.legacy_unscoped(provider)
+        )
+        if legacy:
             raise SecurityError("COST_LEGACY_UNSCOPED")
         if not policy.period_start_utc <= now < policy.period_end_utc:
             raise SecurityError("COST_PERIOD_CHANGED")
@@ -987,6 +1015,169 @@ class CostLedger:
                 self._reserved_quotes.popitem(last=False)
             return reservation_id
 
+    def _validate_open_request(
+        self,
+        reservation_id: str,
+        provider: str,
+        target: str,
+        body: bytes,
+        data_type: str,
+        operation: str,
+        headers: dict[str, str] | None,
+        *,
+        consume_quote: bool,
+        prior: CostPreflight | None,
+    ) -> _OpenValidation:
+        self._verify()
+        now = self._now()
+        row = self._request(reservation_id)
+        if "account_id" not in row.keys() or row["quote_kind"] == "LEGACY_UNSCOPED":
+            raise SecurityError("COST_LEGACY_UNSCOPED")
+        if row["provider"] != provider:
+            raise SecurityError("COST_QUOTE_MISMATCH")
+        saved = json.loads(row["request_json"])
+        policy = CostPolicy(**json.loads(row["policy_json"]))
+        prepared = (
+            self._reserved_quotes.pop(reservation_id, None)
+            if consume_quote
+            else self._reserved_quotes.get(reservation_id)
+        )
+        prepared_request = prepared[0]() if prepared is not None else None
+        reusable = (
+            prepared is not None
+            and prepared_request is not None
+            and prepared_request.body is body
+            and prepared[1] == policy
+        )
+        body_digest = (
+            prepared_request.body_sha256
+            if reusable and prepared_request is not None
+            else digest(body)
+        )
+        if (
+            body_digest != saved["body_sha256"]
+            or len(body) != saved["byte_length"]
+            or target != saved["endpoint"]
+            or data_type != saved["data_type"]
+            or operation != saved["operation"]
+            or cost_headers(headers) != tuple(tuple(p) for p in saved["headers"])
+        ):
+            raise SecurityError("COST_QUOTE_MISMATCH")
+        request = (
+            prepared_request
+            if reusable and prepared_request is not None
+            else CostRequest(
+                provider,
+                target,
+                saved["model_revision"],
+                saved["api_version"],
+                saved["operation"],
+                saved["data_type"],
+                body,
+                cost_headers(headers),
+            )
+        )
+        if request.fingerprint != row["request_fingerprint"]:
+            raise SecurityError("COST_QUOTE_MISMATCH")
+        self._eligible_account(provider, policy, now, verified=True)
+        quoted = json.loads(row["quote_json"])
+        catalog = cost_catalog.load_catalog()
+        if catalog.sha256 != policy.catalog_digest:
+            raise SecurityError("COST_QUOTE_MISMATCH")
+        if quoted["kind"] == "VERIFIED" and (
+            quoted["valid_until_utc"] is None
+            or not quoted["valid_from_utc"] <= now < quoted["valid_until_utc"]
+        ):
+            raise SecurityError("COST_QUOTE_EXPIRED")
+        if quoted["kind"] == "VERIFIED":
+            expected = (
+                prepared[2]
+                if reusable and prepared is not None
+                else quote(request, policy, catalog, now)
+            )
+            if canonical(asdict(expected)).decode() != row["quote_json"]:
+                raise SecurityError("COST_QUOTE_MISMATCH")
+        else:
+            from .cost import inspect_wire
+
+            if not reusable:
+                inspect_wire(request, catalog.find(request))
+            if (
+                policy.mode != "general"
+                or not policy.general_acknowledged
+                or quoted["amount"] != policy.cap
+            ):
+                raise SecurityError("COST_QUOTE_MISMATCH")
+            expected = CostQuote(**{**quoted, "policy": policy})
+        until = min(
+            policy.period_end_utc,
+            expected.valid_until_utc
+            if expected.valid_until_utc is not None
+            else policy.period_end_utc,
+        )
+        deadline = self._quote_deadlines.get(
+            reservation_id, self._monotonic() + max(0, until - now)
+        )
+        if prior is not None:
+            if (
+                type(prior) is not CostPreflight
+                or prior._owner is not self._preflight_owner
+                or prior.reservation_id != reservation_id
+                or prior.fingerprint != row["request_fingerprint"]
+                or type(prior.deadline) not in (int, float)
+                or not math.isfinite(prior.deadline)
+            ):
+                raise SecurityError("COST_QUOTE_MISMATCH")
+            deadline = min(deadline, prior.deadline)
+        if self._monotonic() >= deadline:
+            raise SecurityError("COST_QUOTE_EXPIRED")
+        return _OpenValidation(row, policy, quoted, deadline)
+
+    def _open_balance(self, row: sqlite3.Row) -> None:
+        account = self._account_id(row["account_id"])
+        balance = self._account_snapshot(account["account_id"])
+        if (
+            balance["confirmed"] + balance["reserved"] + balance["unknown_exposure"]
+            > balance["limit"]
+        ):
+            raise SecurityError("BUDGET_EXCEEDED")
+
+    @safe_operation
+    def preflight_request(
+        self,
+        reservation_id: str,
+        provider: str,
+        target: str,
+        body: bytes,
+        *,
+        data_type: str,
+        operation: str,
+        headers: dict[str, str] | None = None,
+        prior: CostPreflight | None = None,
+    ) -> CostPreflight:
+        """Validate without consuming quotes, registering dispatch or writing money."""
+        with self.coordinator.hold():
+            checked = self._validate_open_request(
+                reservation_id,
+                provider,
+                target,
+                body,
+                data_type,
+                operation,
+                headers,
+                consume_quote=False,
+                prior=prior,
+            )
+            if checked.row["state"] != "RESERVED" or checked.row["dispatch_id"] is not None:
+                raise SecurityError("RESERVATION_NOT_DISPATCHABLE")
+            self._open_balance(checked.row)
+            return CostPreflight(
+                self._preflight_owner,
+                reservation_id,
+                str(checked.row["request_fingerprint"]),
+                checked.deadline,
+            )
+
     @safe_operation
     def validate_dispatch(
         self,
@@ -1001,8 +1192,9 @@ class CostLedger:
         dispatch_id: str,
         phase: str = "open",
         bytes_sent: int | None = None,
+        preflight: CostPreflight | None = None,
     ) -> None:
-        if phase not in {"open", "write"}:
+        if phase not in {"open", "write"} or phase == "write" and preflight is not None:
             raise SecurityError("COST_REQUEST_INVALID")
         identifier(dispatch_id)
         with self.coordinator.hold():
@@ -1019,118 +1211,42 @@ class CostLedger:
                     bytes_sent,
                 )
                 return
-            self._verify()
-            now = self._now()
-            row = self._request(reservation_id)
-            if "account_id" not in row.keys() or row["quote_kind"] == "LEGACY_UNSCOPED":
-                raise SecurityError("COST_LEGACY_UNSCOPED")
-            if row["provider"] != provider:
-                raise SecurityError("COST_QUOTE_MISMATCH")
-            saved = json.loads(row["request_json"])
-            policy = CostPolicy(**json.loads(row["policy_json"]))
-            prepared = self._reserved_quotes.pop(reservation_id, None)
-            prepared_request = prepared[0]() if prepared is not None else None
-            reusable = (
-                prepared is not None
-                and prepared_request is not None
-                and prepared_request.body is body
-                and prepared[1] == policy
+            checked = self._validate_open_request(
+                reservation_id,
+                provider,
+                target,
+                body,
+                data_type,
+                operation,
+                headers,
+                consume_quote=True,
+                prior=preflight,
             )
-            body_digest = (
-                prepared_request.body_sha256
-                if reusable and prepared_request is not None
-                else digest(body)
-            )
-            if (
-                body_digest != saved["body_sha256"]
-                or len(body) != saved["byte_length"]
-                or target != saved["endpoint"]
-                or data_type != saved["data_type"]
-                or operation != saved["operation"]
-                or cost_headers(headers) != tuple(tuple(p) for p in saved["headers"])
-            ):
-                raise SecurityError("COST_QUOTE_MISMATCH")
-            request = (
-                prepared_request
-                if reusable and prepared_request is not None
-                else CostRequest(
-                    provider,
-                    target,
-                    saved["model_revision"],
-                    saved["api_version"],
-                    saved["operation"],
-                    saved["data_type"],
-                    body,
-                    cost_headers(headers),
+            row, policy, quoted = checked.row, checked.policy, checked.quoted
+            self._quote_deadlines[reservation_id] = checked.deadline
+            if row["state"] != "RESERVED" or row["dispatch_id"] is not None:
+                raise SecurityError("RESERVATION_NOT_DISPATCHABLE")
+            self._change(
+                lambda: self._db.execute(
+                    "UPDATE security_cost_requests_v2 SET dispatch_id=? WHERE reservation_id=?",
+                    (dispatch_id, reservation_id),
                 )
             )
-            if request.fingerprint != row["request_fingerprint"]:
-                raise SecurityError("COST_QUOTE_MISMATCH")
-            self._eligible_account(provider, policy, now)
-            quoted = json.loads(row["quote_json"])
-            catalog = cost_catalog.load_catalog()
-            if catalog.sha256 != policy.catalog_digest:
-                raise SecurityError("COST_QUOTE_MISMATCH")
-            if quoted["kind"] == "VERIFIED" and (
-                quoted["valid_until_utc"] is None
-                or not quoted["valid_from_utc"] <= now < quoted["valid_until_utc"]
-            ):
-                raise SecurityError("COST_QUOTE_EXPIRED")
-            if quoted["kind"] == "VERIFIED":
-                expected = (
-                    prepared[2]
-                    if reusable and prepared is not None
-                    else quote(request, policy, catalog, now)
-                )
-                if canonical(asdict(expected)).decode() != row["quote_json"]:
-                    raise SecurityError("COST_QUOTE_MISMATCH")
-            else:
-                from .cost import inspect_wire
-
-                if not reusable:
-                    inspect_wire(request, catalog.find(request))
-                if (
-                    policy.mode != "general"
-                    or not policy.general_acknowledged
-                    or quoted["amount"] != policy.cap
-                ):
-                    raise SecurityError("COST_QUOTE_MISMATCH")
-                expected = CostQuote(**{**quoted, "policy": policy})
-            until = min(
-                policy.period_end_utc,
-                expected.valid_until_utc
-                if expected.valid_until_utc is not None
-                else policy.period_end_utc,
+            self._dispatches[dispatch_id] = _Dispatch(
+                reservation_id,
+                str(row["account_id"]),
+                provider,
+                target,
+                data_type,
+                operation,
+                cost_headers(headers),
+                body,
+                policy,
+                row["quote_json"],
+                checked.deadline,
+                quoted["valid_from_utc"],
+                quoted["valid_until_utc"],
             )
-            deadline = self._quote_deadlines.setdefault(
-                reservation_id, self._monotonic() + max(0, until - now)
-            )
-            if self._monotonic() >= deadline:
-                raise SecurityError("COST_QUOTE_EXPIRED")
-            if phase == "open":
-                if row["state"] != "RESERVED" or row["dispatch_id"] is not None:
-                    raise SecurityError("RESERVATION_NOT_DISPATCHABLE")
-                self._change(
-                    lambda: self._db.execute(
-                        "UPDATE security_cost_requests_v2 SET dispatch_id=? WHERE reservation_id=?",
-                        (dispatch_id, reservation_id),
-                    )
-                )
-                self._dispatches[dispatch_id] = _Dispatch(
-                    reservation_id,
-                    str(row["account_id"]),
-                    provider,
-                    target,
-                    data_type,
-                    operation,
-                    cost_headers(headers),
-                    body,
-                    policy,
-                    row["quote_json"],
-                    deadline,
-                    quoted["valid_from_utc"],
-                    quoted["valid_until_utc"],
-                )
             account = self._account_id(row["account_id"])
             balance = self._account_snapshot(account["account_id"])
             self._balance_cache[str(account["account_id"])] = balance

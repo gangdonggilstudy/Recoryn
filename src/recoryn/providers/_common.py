@@ -239,6 +239,11 @@ class Run:
             self.reservations.add(reservation)
         self.check()
         combined = dict(self.context.headers)
+        if any(
+            name.lower() in {"authorization", "x-api-key", "x-goog-api-key"}
+            for name in headers or {}
+        ):
+            raise ProviderError("INPUT_INVALID")
         combined.update(headers or {})
         self.calls += 1
         try:
@@ -277,6 +282,10 @@ class Run:
             }
             failure = normalize_failure(exc, remote_boundary=True)
             code = failure.code
+            if code in {"AUTH_REQUIRED", "VAULT_UNAVAILABLE", "VAULT_READ_FAILED"}:
+                if not failure.outcome_known:
+                    raise ProviderError("REMOTE_OUTCOME_UNKNOWN", outcome_known=False) from None
+                raise ProviderError(code, retryable=False, outcome_known=True) from None
             safe_codes.update(BOUNDARY_CODES)
             safe_codes.update(COST_CODES)
             safe_codes.update(

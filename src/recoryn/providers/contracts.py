@@ -167,6 +167,8 @@ class ExecutionContext:
         for key, value in self.headers.items():
             checked_text(key, maximum=128)
             checked_text(value, maximum=8192)
+            if key.lower() in {"authorization", "x-api-key", "x-goog-api-key"}:
+                raise ProviderError("INPUT_INVALID")
             copied[key] = value
         object.__setattr__(self, "headers", MappingProxyType(copied))
 

@@ -12,7 +12,9 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from ._core import SecurityError, digest, duration
 from ._core import endpoint as parse_endpoint
 from .consent import ConsentBinding, ConsentRequest, ConsentScope, ConsentStore, SendPermit
-from .ledger import CostLedger
+from .cost import cost_headers
+from .credentials import AuthBinding, CredentialLease, CredentialTarget, ReadScope, ReadTicket
+from .ledger import CostLedger, CostPreflight
 from .transport import Connection, DirectTransport, Transport
 
 _HEADER_NAMES = {
@@ -41,8 +43,12 @@ class Gateway:
         chunk_bytes: int = 64 * 1024,
         expected_grants: tuple[ConsentBinding, ...] | None = None,
         dispatch_guard: Callable[[SendPermit], AbstractContextManager[None]] | None = None,
+        auth_binding: AuthBinding | None = None,
     ) -> None:
         self.consents, self.ledger = consents, ledger
+        self.auth_binding = auth_binding
+        self._plan_check: Callable[[], None] | None = None
+        self._clock: Callable[[], float] | None = None
         self.transport = transport if transport is not None else DirectTransport()
         self.timeout = duration(timeout)
         if expected_grants is not None and (
@@ -109,8 +115,11 @@ class Gateway:
             chunk_bytes=self.chunk_bytes,
             expected_grants=self.expected_grants,
             dispatch_guard=self.dispatch_guard,
+            auth_binding=self.auth_binding,
         )
         view._request, view._scope = request, scope
+        view._plan_check = self._plan_check
+        view._clock = self._clock
         return view
 
     @contextmanager
@@ -160,6 +169,28 @@ class Gateway:
             result[name.lower()] = value
         return result
 
+    def _auth_current(self, permit: SendPermit) -> None:
+        if self._plan_check is not None:
+            self._plan_check()
+        binding = self.auth_binding
+        cloud = permit.provider_id in {"openai", "anthropic", "gemini"}
+        if binding is None:
+            if cloud:
+                raise SecurityError("AUTH_REQUIRED")
+            return
+        if not cloud:
+            raise SecurityError("INPUT_INVALID")
+        if binding.ref.target != CredentialTarget(permit.provider_id, permit.endpoint):
+            raise SecurityError("AUTH_REQUIRED")
+        binding.service.assert_current(binding.ref, binding.plan)
+
+    def _now(self) -> float:
+        return self._clock() if self._clock is not None else time.monotonic()
+
+    def _auth_event(self, stage: str, nonce: str) -> None:
+        if self.auth_binding is not None:
+            self.auth_binding.service._emit(stage, nonce)
+
     def request(
         self,
         provider_id: str,
@@ -175,11 +206,19 @@ class Gateway:
             raise SecurityError("REQUEST_TOO_LARGE")
         target_endpoint = parse_endpoint(endpoint)
         safe_headers = self._headers(headers)
-        deadline = time.monotonic() + self.timeout
+        auth_names = {"authorization", "x-api-key", "x-goog-api-key"}
+        if auth_names.intersection(safe_headers):
+            raise SecurityError("INPUT_INVALID")
+        price_headers = dict(cost_headers(safe_headers))
+        lease: CredentialLease | None = None
+        ticket: ReadTicket | None = None
+        preflight: CostPreflight | None = None
+        deadline = self._now() + self.timeout
         connection: Connection | None = None
         handed_off = False
         dispatch_id = uuid.uuid4().hex
         write_end = 0
+        request_started = False
 
         def remaining() -> float:
             if cancel is not None and cancel.is_set():
@@ -187,7 +226,7 @@ class Gateway:
                     "CANCELLED" if not handed_off else "REMOTE_OUTCOME_UNKNOWN",
                     outcome_known=not handed_off,
                 )
-            result = deadline - time.monotonic()
+            result = deadline - self._now()
             if result <= 0:
                 raise SecurityError(
                     "TIMEOUT" if not handed_off else "REMOTE_OUTCOME_UNKNOWN",
@@ -206,14 +245,24 @@ class Gateway:
                     body,
                     data_type=data_type,
                     operation=self._request.capability,
-                    headers=safe_headers,
+                    headers=price_headers,
                     dispatch_id=dispatch_id,
                     phase="write",
                     bytes_sent=write_end,
                 )
             return remaining()
 
+        def release_auth() -> None:
+            if lease is not None:
+                lease.release()
+            for name in auth_names:
+                safe_headers.pop(name, None)
+
         try:
+            if self.auth_binding is not None:
+                self.auth_binding.service.begin_request()
+                request_started = True
+            remaining()
             if self._request is None or self._scope is None or not self.expected_grants:
                 raise SecurityError("CONSENT_REQUIRED")
             expected = next(
@@ -245,42 +294,117 @@ class Gateway:
                 raise SecurityError("LEDGER_REQUIRED")
             elif provider_id in {"openai", "anthropic", "gemini"}:
                 raise SecurityError("LEDGER_REQUIRED")
-            with (
-                self.consents.coordinator.hold(),
-                self.ledger.coordinator.hold() if self.ledger is not None else nullcontext(),
-            ):
-                self.consents.validate(permit)
-                if self.ledger is not None:
-                    assert reservation_id is not None
-                    self.ledger.validate_dispatch(
+            if provider_id in {"openai", "anthropic", "gemini"}:
+                if self.auth_binding is None:
+                    raise SecurityError("AUTH_REQUIRED")
+                assert self.ledger is not None and reservation_id is not None
+                request_ledger, request_policy = self.ledger, self._request
+                binding = self.auth_binding
+                scope = ReadScope(
+                    dispatch_id,
+                    CredentialTarget(provider_id, target_endpoint.url),
+                    permit.binding,
+                    digest(body),
+                    reservation_id,
+                    deadline,
+                )
+                self._auth_event("i_enter", dispatch_id)
+
+                def before_read() -> None:
+                    nonlocal preflight
+                    remaining()
+                    self.consents.validate(permit)
+                    preflight = request_ledger.preflight_request(
                         reservation_id,
                         provider_id,
                         target_endpoint.url,
                         body,
                         data_type=data_type,
-                        operation=self._request.capability,
-                        headers=safe_headers,
-                        dispatch_id=dispatch_id,
+                        operation=request_policy.capability,
+                        headers=price_headers,
+                        prior=preflight,
                     )
+                    self._auth_current(permit)
+
+                with self.consents.coordinator.hold(), self.ledger.coordinator.hold():
+                    before_read()
+                    ticket = binding.service.issue_ticket(binding.ref, scope, binding.plan)
+                self._auth_event("i_released", ticket.nonce)
+                with self.consents.coordinator.hold(), self.ledger.coordinator.hold():
+                    before_read()
+                    claim = binding.service.consume_ticket(ticket, scope)
+                self._auth_event("u_released", ticket.nonce)
+                try:
+                    lease = binding.service.read_claim(claim)
+                except SecurityError:
+                    # A concurrent revoke/delete may make the native result absent.
+                    # The r policy/deadline gate still precedes its public read error.
+                    with self.consents.coordinator.hold(), self.ledger.coordinator.hold():
+                        before_read()
+                    raise
+                with self.consents.coordinator.hold(), self.ledger.coordinator.hold():
+                    before_read()
+                self._auth_event("r_released", ticket.nonce)
+                lease.add_headers(safe_headers)
+            elif self.auth_binding is not None:
+                raise SecurityError("INPUT_INVALID")
+            self._auth_event("o_enter", dispatch_id)
+            with (
+                self.consents.coordinator.hold(),
+                self.ledger.coordinator.hold() if self.ledger is not None else nullcontext(),
+            ):
+                self.consents.validate(permit)
+                self._auth_current(permit)
+                if self.ledger is not None:
+                    assert reservation_id is not None
+                    if preflight is None:
+                        self.ledger.validate_dispatch(
+                            reservation_id,
+                            provider_id,
+                            target_endpoint.url,
+                            body,
+                            data_type=data_type,
+                            operation=self._request.capability,
+                            headers=price_headers,
+                            dispatch_id=dispatch_id,
+                        )
+                    else:
+                        self.ledger.validate_dispatch(
+                            reservation_id,
+                            provider_id,
+                            target_endpoint.url,
+                            body,
+                            data_type=data_type,
+                            operation=self._request.capability,
+                            headers=price_headers,
+                            dispatch_id=dispatch_id,
+                            preflight=preflight,
+                        )
                 with self._execution_guard(permit):
                     connection = self.transport.open(
                         target_endpoint, safe_headers, len(body), remaining()
                     )
+            self._auth_event("o_released", dispatch_id)
             chunk_bytes = self.chunk_bytes
             sent_bytes = 0
             pieces = range(0, len(body), chunk_bytes) if body else (0,)
             for offset in pieces:
                 piece = body[offset : offset + chunk_bytes]
                 write_end = sent_bytes + len(piece)
-                self._write(
-                    connection,
-                    permit,
-                    piece,
-                    write_remaining,
-                    first=not handed_off,
-                )
+                try:
+                    self._write(
+                        connection,
+                        permit,
+                        piece,
+                        write_remaining,
+                        first=not handed_off,
+                    )
+                finally:
+                    if not handed_off:
+                        release_auth()
                 sent_bytes = write_end
                 handed_off = True
+                self._auth_event("write_released", dispatch_id)
             output = bytearray()
             while True:
                 data = connection.read(
@@ -294,10 +418,17 @@ class Gateway:
                 if not data:
                     with self.consents.coordinator.hold():
                         self.consents.validate(permit)
+                        self._auth_current(permit)
                         with self._execution_guard(permit):
                             remaining()
                             return bytes(output)
         except SecurityError as error:
+            if (handed_off or not error.outcome_known) and error.code in {
+                "AUTH_REQUIRED",
+                "VAULT_UNAVAILABLE",
+                "VAULT_READ_FAILED",
+            }:
+                raise SecurityError("REMOTE_OUTCOME_UNKNOWN", outcome_known=False) from None
             if handed_off and error.outcome_known:
                 raise SecurityError(error.code, outcome_known=False) from None
             raise
@@ -307,13 +438,20 @@ class Gateway:
                 outcome_known=not handed_off,
             ) from None
         finally:
-            if self.ledger is not None:
-                self.ledger.finish_dispatch(dispatch_id)
-            if connection is not None:
-                try:
-                    connection.close()
-                except Exception:
-                    pass
+            try:
+                release_auth()
+                if ticket is not None and self.auth_binding is not None:
+                    self.auth_binding.service.discard_ticket(ticket)
+                if self.ledger is not None:
+                    self.ledger.finish_dispatch(dispatch_id)
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except Exception:
+                        pass
+            finally:
+                if request_started and self.auth_binding is not None:
+                    self.auth_binding.service.end_request()
 
     def _write(
         self,
@@ -329,6 +467,7 @@ class Gateway:
             self.ledger.coordinator.hold() if self.ledger is not None else nullcontext(),
         ):
             self.consents.validate(permit)
+            self._auth_current(permit)
             timeout = remaining()
             write_started = False
             try:
@@ -340,6 +479,12 @@ class Gateway:
                     write_started = True
                     connection.write(data, timeout)
             except SecurityError as error:
+                if write_started and error.code in {
+                    "AUTH_REQUIRED",
+                    "VAULT_UNAVAILABLE",
+                    "VAULT_READ_FAILED",
+                }:
+                    raise SecurityError("REMOTE_OUTCOME_UNKNOWN", outcome_known=False) from None
                 if write_started and error.outcome_known:
                     raise SecurityError(error.code, outcome_known=False) from None
                 raise
