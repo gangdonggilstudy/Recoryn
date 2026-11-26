@@ -20,6 +20,19 @@ from .contracts import (
     SummaryResult,
     TranscriptSegment,
 )
+from .facts import (
+    FactIdentity,
+    MetadataDescriptor,
+    ObservationOutcome,
+    ObservationState,
+    ProviderDeclaration,
+    ProviderEvidenceLevel,
+    ProviderFactSnapshot,
+    ProviderObservation,
+    default_endpoint,
+    describe,
+    parse_observation,
+)
 
 __all__ = [
     "ChunkSummary",
@@ -40,4 +53,15 @@ __all__ = [
     "SummaryRequest",
     "SummaryResult",
     "TranscriptSegment",
+    "FactIdentity",
+    "MetadataDescriptor",
+    "ObservationOutcome",
+    "ObservationState",
+    "ProviderDeclaration",
+    "ProviderEvidenceLevel",
+    "ProviderFactSnapshot",
+    "ProviderObservation",
+    "describe",
+    "parse_observation",
+    "default_endpoint",
 ]

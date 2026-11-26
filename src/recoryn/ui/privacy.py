@@ -7,7 +7,7 @@ import json
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,7 +30,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from recoryn.providers import ExecutionContext, LocalModelAttestation, ProviderConfig, ProviderError
+from recoryn.providers import (
+    ExecutionContext,
+    FactIdentity,
+    LocalModelAttestation,
+    ObservationState,
+    ProviderConfig,
+    ProviderError,
+    ProviderEvidenceLevel,
+    default_endpoint,
+    describe,
+)
 from recoryn.security import (
     ConsentBinding,
     ConsentRequest,
@@ -48,6 +58,18 @@ from recoryn.security import (
 )
 from recoryn.security._core import endpoint as parse_endpoint
 from recoryn.ui import a11y
+
+FACTS_UNKNOWN = "최근 관측 없음 · 이 버전은 제공업체에 확인 요청을 보내지 않습니다"
+SERVER_TRUST_GENERAL = (
+    "이 주소는 연결 대상입니다. loopback 주소만으로 실제 추론 위치나 서버의 후속 전송을 "
+    "확인할 수 없습니다. 사용자 지정 서버의 설정과 신뢰 범위는 사용자가 확인해야 합니다. "
+    "loopback 예외는 원격 주소·redirect·proxy 전송을 허용하지 않습니다."
+)
+SERVER_TRUST = SERVER_TRUST_GENERAL + (
+    " "
+    "Ollama는 cloud 모델 경로를 사용할 수 있습니다. 목록 응답은 로컬 추론·외부 무전송의 "
+    "증거가 아닙니다. 로컬 실행 증명이 없으면 추론은 차단됩니다."
+)
 
 
 def _micros(control: QDoubleSpinBox) -> int:
@@ -102,6 +124,15 @@ class _Controls(QGroupBox):
         for label, value in choices:
             self.provider.addItem(label, value)
         self.endpoint, self.model = QLineEdit(), QLineEdit()
+        self.fact_declaration, self.fact_observation, self.server_trust = (
+            QLabel(),
+            QLabel(),
+            QLabel(),
+        )
+        for fact_label in (self.fact_declaration, self.fact_observation, self.server_trust):
+            fact_label.setWordWrap(True)
+            fact_label.setTextFormat(Qt.TextFormat.PlainText)
+            fact_label.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.context_window, self.max_output = QSpinBox(), QSpinBox()
         self.context_window.setRange(0, 2_000_000)
         self.context_window.setSpecialValueText("미확인 — 요약 실행 차단")
@@ -182,6 +213,9 @@ class _Controls(QGroupBox):
             ("제공업체", self.provider),
             ("수신 endpoint", self.endpoint),
             ("모델", self.model),
+            ("제공업체 기능 선언", self.fact_declaration),
+            ("제공업체 최근 관측", self.fact_observation),
+            ("서버 신뢰 범위", self.server_trust),
             ("검증한 모델 컨텍스트 한도", self.context_window),
             ("최대 출력 토큰", self.max_output),
             ("동의할 데이터", self.data_type),
@@ -227,6 +261,7 @@ class PrivacyPanel(QWidget):
         *,
         gateway: Gateway | None = None,
         parent: QWidget | None = None,
+        provider_facts: Mapping[str, ObservationState] | None = None,
     ) -> None:
         super().__init__(parent)
         self.consents, self.ledger, self.vault, self._gateway = consents, ledger, vault, gateway
@@ -244,6 +279,17 @@ class PrivacyPanel(QWidget):
             "summary": set(),
         }
         self.controls = {kind: _Controls(kind) for kind in ("stt", "summary")}
+        self.provider_facts = {
+            kind: provider_facts[kind]
+            if provider_facts and kind in provider_facts
+            else ObservationState()
+            for kind in self.controls
+        }
+        self._fact_epochs = {kind: 0 for kind in self.controls}
+        self._fact_notice = {kind: "" for kind in self.controls}
+        self._facts_timer = QTimer(self)
+        self._facts_timer.setInterval(1000)
+        self._facts_timer.timeout.connect(self._refresh_fact_views)
         self._request_info: dict[str, list[dict[str, object]]] = {"stt": [], "summary": []}
         self.quote_ready.connect(self._quote_display)
         layout = QVBoxLayout(self)
@@ -324,6 +370,86 @@ class PrivacyPanel(QWidget):
                 setting.valueChanged.connect(lambda value, k=kind: self._changed(k))
             self._show_scope(kind)
             self._cost_unavailable(kind)
+            self.refresh_provider_facts(kind)
+        self._facts_timer.start()
+
+    def _refresh_fact_views(self) -> None:
+        for kind in self.controls:
+            self.refresh_provider_facts(kind)
+
+    def provider_identity(self, kind: str) -> FactIdentity:
+        """Display identity only; deliberately bypasses execution/vault preparation."""
+        control = self.controls[kind]
+        endpoint = control.endpoint.text()
+        try:
+            endpoint = parse_endpoint(endpoint).url
+        except SecurityError:
+            endpoint = ""  # invalid URL remains editable, never an observed destination
+        return FactIdentity(
+            str(control.provider.currentData()),
+            kind,
+            endpoint,
+            control.model.text(),
+            inference_endpoint=endpoint,
+            credential_revision=self._fact_epochs[kind],
+            consent_epoch=self._fact_epochs[kind],
+            session_generation=self._selected_session or "",
+        )
+
+    def refresh_provider_facts(self, kind: str) -> None:
+        """Render memory-only facts, including expiry; never ask a service anything."""
+        control = self.controls[kind]
+        identity = self.provider_identity(kind)
+        state = self.provider_facts[kind]
+        state.bind(identity)
+        try:
+            declaration = describe(identity.provider_id, kind)
+        except ProviderError:
+            text = "기능 선언 없음 · 실제 서비스 미검증"
+        else:
+            feature = "전사" if kind == "stt" else "요약"
+            text = (
+                f"기능 선언: {feature} {'지원' if declaration.supported else '미지원'}"
+                " · adapter 선언, 실제 서비스 미검증"
+            )
+        control.fact_declaration.setText(text)
+        snapshot = state.snapshot()
+        observed = snapshot.observation
+        text = FACTS_UNKNOWN
+        if observed.level is ProviderEvidenceLevel.OBSERVED:
+            assert snapshot.observed_at is not None
+            stamp = datetime.fromtimestamp(snapshot.observed_at, UTC).isoformat(timespec="seconds")
+            text = (
+                f"최근 관측: 이 앱이 {identity.endpoint}에서 {stamp}에 모델 목록 응답을 "
+                "받았습니다 · 인증·실행 보장 아님"
+            )
+            if observed.selected_model_listed is False:
+                text += " · 선택한 모델이 목록에 없었습니다 · 기능 미지원 판정 아님"
+        elif observed.reason == "EXPIRED":
+            text = "관측 만료 · 이 버전은 제공업체에 확인 요청을 보내지 않습니다"
+        control.fact_observation.setText(text)
+        note = SERVER_TRUST if identity.provider_id == "ollama" else ""
+        if identity.provider_id in {"openai", "anthropic", "gemini"} and control.endpoint.text():
+            standard = default_endpoint(identity.provider_id, kind, identity.model)
+            if standard is None or identity.endpoint != parse_endpoint(standard).url:
+                note = SERVER_TRUST_GENERAL
+        if (
+            note
+            and identity.provider_id == "ollama"
+            and self._attestation is not None
+            and self._attestation.endpoint == identity.endpoint
+            and self._attestation.model == identity.model
+            and self._attestation.expires_at_monotonic > time.monotonic()
+        ):
+            note += " 앱 소유 서버 증명과 모델 실행 조건은 별도 확인합니다."
+        control.server_trust.setText(note)
+        form = control.layout()
+        assert isinstance(form, QFormLayout)
+        form.setRowVisible(control.server_trust, bool(note))
+        if note != self._fact_notice[kind]:
+            self._fact_notice[kind] = note
+            if note:
+                a11y.qt_announce(control.server_trust, note, a11y.POLITE)
 
     def focus_blocked_action(self, kind: str, action_id: str) -> None:
         """Navigation only: no grant, vault read, cost reservation or execution."""
@@ -353,8 +479,10 @@ class PrivacyPanel(QWidget):
         self._selection_pending = False
         for kind, control in self.controls.items():
             if changed:
+                self.provider_facts[kind].invalidate()
                 control.scope.setCurrentIndex(0)
             self._show_scope(kind)
+            self.refresh_provider_facts(kind)
 
     def selection_pending(self) -> None:
         """A list rebuild may briefly have no row; never authorize that gap."""
@@ -373,6 +501,7 @@ class PrivacyPanel(QWidget):
 
     def closeEvent(self, event: Any) -> None:
         self._scope_retry.stop()
+        self._facts_timer.stop()
         super().closeEvent(event)
 
     def _selected_scope(self, kind: str, session_id: str | None = None) -> ConsentScope:
@@ -490,6 +619,8 @@ class PrivacyPanel(QWidget):
         return provider + "_" + hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
 
     def _changed(self, kind: str) -> None:
+        self._fact_epochs[kind] += 1
+        self.refresh_provider_facts(kind)
         try:
             for provider, target, data_type, scope, version in self._granted[kind]:
                 self.consents.revoke(
@@ -925,6 +1056,9 @@ class PrivacyPanel(QWidget):
 
     def _action(self, kind: str, action: str) -> None:
         control = self._controls(kind)
+        if action in {"grant", "revoke", "save", "delete"}:
+            self._fact_epochs[kind] += 1
+            self.refresh_provider_facts(kind)
         try:
             if action == "reset_clock":
                 if not a11y.confirm(

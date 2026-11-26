@@ -569,6 +569,7 @@ class ModelPanel(QWidget):
             self.plan = parse_spec(read_json(Path(filename), limit=1024 * 1024))
         except (OSError, ValueError, TypeError):
             self.plan = None
+            self.preview.clear()
             self.status.setText("manifest 형식·라이선스·경로·체크섬을 확인하세요.")
             return
         # The reviewed spec is this model's external reference for the current run
