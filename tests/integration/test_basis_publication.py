@@ -247,6 +247,8 @@ def _run_p(world: tuple[Library, ContentStore, AIService], row: tuple[Any, ...])
     gate = _Gate(provider, SOURCE_REFS[source], complete)
     if order == "normal":
         gate.release.set()
+    status = library.verify_deletion_history(fresh=True)
+    assert status == {"status": "READY", "code": ""}, status
     job_id = service.summarize(
         session, gate, config_key="g12-p", resource_request=SUMMARY, template=template
     )
@@ -386,6 +388,8 @@ def candidate_world(
     old = content.create_transcript(session, list(SEGMENTS))
     current = content.create_transcript(session, list(SEGMENTS), expected_active=old)
     content.request_summary_settings(session, "K")
+    status = library.verify_deletion_history(fresh=True)
+    assert status == {"status": "READY", "code": ""}, status
     base = publish(content, jobs, session, current, key="K", select=True, text="selected")
     other = publish(content, jobs, session, current, key="K", text="other")
     source, key, complete = {
@@ -527,6 +531,8 @@ def test_t_selection_rollback_and_partial_job(
     transcript = content.create_transcript(session, list(SEGMENTS))
     gate = _Gate("transcript", ("a",), complete=False)
     gate.release.set()
+    status = library.verify_deletion_history(fresh=True)
+    assert status == {"status": "READY", "code": ""}, status
     job = _finished(
         service, service.summarize(session, gate, config_key="t25", resource_request=SUMMARY)
     )

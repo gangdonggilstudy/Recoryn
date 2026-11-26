@@ -76,6 +76,7 @@ from .chunks import (
     verify_bundle,
 )
 from .deletion_history import (
+    LIFETIME_NS,
     DeletionHistoryIndex,
     HistoryClockSample,
     HistoryEntry,
@@ -1501,6 +1502,7 @@ class Library:
         exclusive: bool = True,
         admission: str | None = None,
         expected_version: int | None = None,
+        history_binding: tuple[str, int] | None = None,
     ) -> Iterator[None]:
         """Serialize one session without holding the capture writer's root mutex."""
         identifier(session_id)
@@ -1510,6 +1512,11 @@ class Library:
         # operations on the same thread retain the original claim.
         with lock:
             with self._mutex:
+                if history_binding is not None and history_binding != (
+                    self._authority.instance,
+                    self._authority.epoch,
+                ):
+                    raise ValidationError(_HISTORY_UNAVAILABLE)
                 nested = session_id in self._claims
                 admitted = admission is None or self._admit_session(
                     session_id, admission, expected_version
@@ -2734,13 +2741,69 @@ class Library:
             return manifest
 
     def finalize_session(
-        self, session_id: str, *, capture_control: CaptureControlContext | None = None
+        self,
+        session_id: str,
+        *,
+        capture_control: CaptureControlContext | None = None,
+        history_binding: tuple[str, int] | None = None,
     ) -> dict[str, Any]:
+        if history_binding is not None:
+            self._require_finalization_binding(history_binding)
         with self._capture_scope(session_id, capture_control):
-            return self._finalize_session(session_id)
+            if history_binding is None:
+                return self._finalize_session(session_id)
+            return self._finalize_session(session_id, history_binding=history_binding)
 
-    def _finalize_session(self, session_id: str) -> dict[str, Any]:
-        with self._session_operation(session_id, admission="seal"):
+    def _require_finalization_binding(self, history_binding: tuple[str, int]) -> None:
+        """A binding restricts seal entry; it never grants management or capture rights."""
+        with self._mutex:
+            if history_binding != (self._authority.instance, self._authority.epoch):
+                raise ValidationError(_HISTORY_UNAVAILABLE)
+
+    def _refresh_finalization_history(self) -> tuple[str, int] | None:
+        """Revalidate a coherently expired receipt before continuing management work."""
+        if getattr(self._capture_scopes, "current", None) is not None:
+            return None
+        with self._mutex:
+            state = self._authority
+            receipt = state.receipt
+            if receipt is None or state.needs_fresh or receipt.instance != state.instance:
+                return None
+            try:
+                now = state.clock()
+            except (ValueError, OSError, OverflowError):
+                return None
+            elapsed = max(
+                now.monotonic_ns - receipt.started.monotonic_ns + now.span_ns,
+                now.utc_ns - receipt.started.utc_ns,
+            )
+            # Use the existing clock continuity comparison, only to classify the expired
+            # sample. A newly published ordinary receipt still has its normal lifetime.
+            if elapsed < LIFETIME_NS or not now.within(receipt.started, elapsed + 1):
+                return None
+            observed = state.instance, state.epoch
+
+        def can_publish() -> bool:
+            current = self._authority
+            return (current.instance, current.epoch) == observed and not current.needs_fresh
+
+        if self.verify_deletion_history(can_publish=can_publish)["status"] != "READY":
+            raise ValidationError(_HISTORY_UNAVAILABLE)
+        return observed
+
+    def _finalize_session(
+        self, session_id: str, *, history_binding: tuple[str, int] | None = None
+    ) -> dict[str, Any]:
+        if history_binding is not None:
+            self._require_finalization_binding(history_binding)
+        operation = (
+            self._session_operation(session_id, admission="seal")
+            if history_binding is None
+            else self._session_operation(
+                session_id, admission="seal", history_binding=history_binding
+            )
+        )
+        with operation:
             with self._mutex:
                 if self._is_live(session_id):
                     raise StateConflict("Writer has not drained")
@@ -2761,7 +2824,18 @@ class Library:
                     raise StateConflict("HEALTH_RECOVERY_PENDING")
             manifest = self._manifest(session_id)
             encoded = canonical(manifest["chunks"]).decode("utf-8")
+            observed = self._refresh_finalization_history()
             with self._mutex:
+                if history_binding is not None and history_binding != (
+                    self._authority.instance,
+                    self._authority.epoch,
+                ):
+                    raise ValidationError(_HISTORY_UNAVAILABLE)
+                if observed is not None and observed != (
+                    self._authority.instance,
+                    self._authority.epoch,
+                ):
+                    raise ValidationError(_HISTORY_UNAVAILABLE)
                 self._require_management_or_capture(session_id)
                 self._manifest_current(manifest)
                 if self._is_live(session_id):
@@ -3226,10 +3300,20 @@ class Library:
                     "recovery": recovery,
                     "previous_state": previous_state,
                 }
-            session = self.get_session(session_id)
-            if session.state != SessionState.FINALIZING:
-                self.transition(session_id, SessionState.FINALIZING, session.state_version)
-            sealed = self.finalize_session(session_id)
+            observed = self._refresh_finalization_history()
+            with self._mutex:
+                if observed is not None and observed != (
+                    self._authority.instance,
+                    self._authority.epoch,
+                ):
+                    raise ValidationError(_HISTORY_UNAVAILABLE)
+                session = self.get_session(session_id)
+                if session.state != SessionState.FINALIZING:
+                    self.transition(session_id, SessionState.FINALIZING, session.state_version)
+            if observed is None:
+                sealed = self.finalize_session(session_id)
+            else:
+                sealed = self.finalize_session(session_id, history_binding=observed)
             return {
                 "session_id": session_id,
                 "state": SessionState.FINALIZED.value,

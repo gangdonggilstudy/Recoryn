@@ -2,6 +2,22 @@
 
 현재 단계: 사용자 지시에 따라 설계 v1.0의 구현 완료까지 개발한다. 아래 D/P 배정은 완료 이력이며 B 배정이 현재 활성 범위다. 배정 없는 신규 세션은 온보딩 후 대기한다. 오케스트레이터만 이 표를 수정한다. pane ID는 조회 시점의 식별자이며 재접속 후 재조회한다.
 
+## GS11a CI 회복 / 494342a
+
+실패 원인을 수정한 이 복구만 X00이 통합한다. 정확한 제품·시험 입력과 로컬 검증은 gs11 case/review에 고정한다. 후속 공개는 복구본 원격 CI 성공 뒤다.
+
+| 배정 | 역할 | 소유 파일 | 수락 기준 | 상태 |
+| --- | --- | --- | --- | --- |
+| GS11A-X00-R1 | X00 독립 검토·통합 검증 | 동결 제출본과 GS04a 공개판 합성 TEMP 사본, 독립 리뷰 | 작성자 b77cc10+26에서 29,046 PASS·coverage 7묶음·wheel PASS. 공개 기준 `b30b3a7`+26에서 29,348 PASS·GS04-L-003 1 FAIL. 타이머 fixture 포함 공개 기준27에서 독립 권위 검사5 PASS | PUSHED / CI_FAIL — `494342a`·tree `62350c0` 공개 완료. [45810798432](https://github.com/gangdonggilstudy/Recoryn/actions/runs/45810798432) 3.13 91 FAIL·29,258 PASS, 3.11 88 FAIL·29,261 PASS(G12 87, G04 확정1). optional 통과. 의존 공개 보류 |
+| GS11A-CI-G12-D96 | w5:pA Codex, X00 독립 대조 | `tests/integration/test_basis_publication.py` 한 파일·TEMP/`build/gs11a-g12-ci-fix-d96/` | 기존 394855ca…의 4줄 보존, 공용 D/T 후보의 `candidate_world`에서 fault/경쟁 전 양성 준비에만 공개 fresh+정확 READY. 실31초 D-01 원/후, P288/D96/T2·기존 44 단언/ID·F3/GS05 비혼입 | LOCAL_VERIFIED — LFdad7ac1c…bb07, 모듈386·실제31초 D 원후·기존44단언/ID 보존. pB 독립 검토·직접2변이 인수. 최종 F3 정확3 전체 검증은 별도 진행 중 |
+| GS11A-CI-G12-D96-R1 | w5:pB Codex 독립 검토 | build/gs11a-x00-review/g12-d96-review.md·작은 TEMP 증거 | publication LFdad7ac1c…의 세 준비 경계·기존44단언·D96 실제31초 대조·ID/변이/선택 및 삭제 의도 뒤 갱신0 | REVIEW_ACCEPTED — LF00979966bc12cd5ddff243e34cc9d1d536532a8fe55f6119b03fdfe814c41912, OPEN0·독립8 PASS·준비 뒤 fresh0. D 직접변이 보강/최종 F3 합성 별도 |
+| GS11A-CI-G12-D96-MUT | w5:pB Codex | build/gs11a-x00-review/g12-d96-review.md 끝 절·TEMP만 | 동일 publication dad7ac1c…에서 D 준비 pair 제거와 READY 단언 제거의 정상 대조→각 단일 목표 assertion 실패 및 실제 전달/쓰기 수 감사 | VERIFIED — LF5e9aa9f42a276d2c206e8f7f27816f332dcf137929cb852600faf1e0af6f6695, D 정상2 PASS·단일변이2 목표FAIL·유효batch INVALID0, 최초harness INVALID1 별도보존 |
+| GS11A-CI-F3-ATOMIC14 | w5:pA Codex 구현, w5:pB 독립 검토·X00 통합 | 기존 R3 두 소유 파일·TEMP/build/gs11a-f3-r3/ | 마지막 검사와 seal admission 사이 peer 새READY 경합을 AUTH14로 추가. binding 검사를 _admit_session/claim과 동일 root 구간에서 수행. 기존13/10 성공은 이전해시로 보존, 새14·목표변이·관련/전체29,363·coverage/wheel 재고정 | LOCAL_VERIFIED — 최종3 manifest LF8c433d98…ff1cb, library9f1e625c/test9c9747d5/publication dad7. 전체29363 PASS·error/skip0·전체 ID각1, AUTH14·원7·관련771·변이10 목표FAIL·INVALID0·정적/coverage7/wheel PASS. pB R4 OPEN0. 정확6 통합후보/문서 대조와 commit/push/원격 게이트 대기 |
+| GS11A-CI-F3-R3-REVIEW | w5:p8 Codex, 변경 작성자 pA/X00와 별도 | build/gs11a-x00-review/f3-r3-cross-review.md·작은 TEMP만 | 494342a+구13 후보 library ca0d0529…·test c31dc261…·publication dad7ac1c…의 독립 검토. 마지막 검사 뒤 실제 peer 새READY 반례를 원입력/관측과 함께 기록 | REVIEW_RECEIVED — LF5a77b15d2699d1c8d1d3ffddb9b4132bcbcf37ab979235e64c124f3590662e26. 구ca0d0529 입장 경합 S2 직접 재현 이력 보존. 최종14 종결은 별도 pB R4, 보고 전송 승인 UI는 조작하지 않음 |
+| GS11A-CI-F3-R4-REVIEW | w5:pB Codex 독립 최종 검토 | build/gs11a-x00-review/f3-r4-cross-review.md·작은 TEMP | pA의 AUTH14 최종manifest 동결 후 실제 admission/claim과 같은 root 안 binding 대조, 최종 게시·기존epoch/clock/API/capture/source·14행/변이 검토. 13행 반례의 새 양성/음성 포함 | REVIEW_ACCEPTED — LF0606aaf9299ed1a2269581de8dbaae3479c72e3ae866a3b2aeab5fbbe40696b5, 제품 OPEN0. 구13 실제입장/claim/manifest 각1→최종14 각0, 독립14·M09·capture/API 확인. 전체/원격 별도 |
+| GS11A-CI-RECOVERY-DOC | w5:pB Codex 독립 문서 검토 | build/gs11a-x00-review/recovery-doc-review.md 및 작은 읽기 증거만 | X00이 갱신한 gs11 case 끝 절·공식 gs11 review 끝 절·H03 복구 배정 및 checklist의 최종14/10·입력해시·독립성·남은 게이트·기존 push 권한과 실패 회복 절차 일치. 제품/시험/Git/공유 문서 쓰기0·시험 실행 불필요 | REVIEW_ACCEPTED — LF6497d0255887844d3389792700cf25b9ef3c11d4e74dfae6600111eba5c7ec6f, OPEN0. 최종14/10/29363·정확3·작성/검토 분리·기존 실패 복구 공개 절차 확인. 전체/coverage/wheel·원격 게이트는 별도 |
+| GS11A-CI-RECOVERY-FINAL | X00 통합, w5:pB Codex 최종 문서/후보 독립 대조 | build/gs11a-x00-review/recovery-final-review.md·TEMP 읽기 증거만(pB); 제품/시험3·gs11 case/review·복구 배정만의 assignments 총6파일(X00) | 494342a에 최종3 runtime이 정확히 같고 기타 제품/시험은 전부 기준 그대로인지 확인. 작성자29363/XML/coverage/wheel 증거·기존 독립OPEN0·최신 문서·후속CI 게이트·부모/ref·메시지/trailer0 확인 | ASSIGNED — 후보와 검증을 결속, 전체 시험 재실행0·공유제품/시험/Git쓰기0(pB). X00만 검증 후 commit/push, GS05/G09 공개는 복구 원격3job 성공 뒤 |
+
 ## 2026-11-26 H02: 오케스트레이터 임시 이관
 
 사용자 지시로 오케스트레이터를 w5:p9 Codex(X00)에 임시 이관하고 작업은 Codex 세션만 한다. C00(w5:p6)과 w5:p7 Claude는 읽기 전용으로 대기하고 Claude 하위 에이전트는 쓰지 않는다. 절차·체크포인트·진행 중 단위는 [H02 인계서](orchestrator-handoff-h02.md)에 있다. X00의 ORCHESTRATOR_ACCEPTED 뒤에는 X00만 이 표를 수정한다.

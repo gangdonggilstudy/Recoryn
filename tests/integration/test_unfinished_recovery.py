@@ -21,6 +21,7 @@ import time
 import traceback
 import wave
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -30,13 +31,14 @@ from recoryn.app.ai import AIService
 from recoryn.app.recording import RecordingError, RecordingService
 from recoryn.cli import _export, main
 from recoryn.content import ContentStore
-from recoryn.domain import AudioFormat, PCMBlock, SessionState, StateConflict
+from recoryn.domain import AudioFormat, PCMBlock, SessionState, StateConflict, ValidationError
 from recoryn.providers import ProviderCapabilities, STTResult, TranscriptSegment
 from recoryn.storage import ChunkWriter, Library
 from recoryn.storage import _coordination as coordination_module
 from recoryn.storage import chunks as chunk_module
 from recoryn.storage import library as library_module
 from recoryn.storage.chunks import has_active_writer
+from recoryn.storage.deletion_history import HistoryClockSample
 from tests.resource_fakes import STT
 from tests.unit.test_unfinished_sessions import ClaimRecorder
 
@@ -1348,3 +1350,259 @@ def test_another_owner_cannot_hide_a_real_recording_service(tmp_path: Path, phas
             except (StateConflict, RecordingError):
                 pass
             assert not service.worker_alive
+
+
+@pytest.mark.parametrize(
+    ("cut", "state", "audits", "scans"),
+    (
+        ("normal", "FINALIZED", (), 0),
+        ("admission", "INTERRUPTED", (), 0),
+        ("recovery", "FINALIZED", ("READY",), 1),
+        ("manifest", "FINALIZED", ("READY",), 1),
+        ("damaged", "FINALIZING", ("UNAVAILABLE",), 1),
+        ("invalidated", "FINALIZING", (), 0),
+        ("audit-entry", "FINALIZING", ("UNAVAILABLE",), 0),
+        ("audit-read", "FINALIZING", ("UNAVAILABLE",), 1),
+        ("rollback-clock", "FINALIZING", (), 0),
+        ("skew-clock", "FINALIZING", (), 0),
+        ("new-epoch", "FINALIZING", ("READY",), 2),
+        ("recovery-audit-new-epoch", "INTERRUPTED", ("READY",), 2),
+        ("recovery-seal-new-epoch", "FINALIZING", ("READY",), 2),
+        ("seal-entry-gap", "FINALIZING", ("READY",), 2),
+    ),
+    ids=(
+        "G04-F3-AUTH-01",
+        "G04-F3-AUTH-02",
+        "G04-F3-AUTH-03",
+        "G04-F3-AUTH-04",
+        "G04-F3-AUTH-05",
+        "G04-F3-AUTH-06",
+        "G04-F3-AUTH-07",
+        "G04-F3-AUTH-08",
+        "G04-F3-AUTH-09",
+        "G04-F3-AUTH-10",
+        "G04-F3-AUTH-11",
+        "G04-F3-AUTH-12",
+        "G04-F3-AUTH-13",
+        "G04-F3-AUTH-14",
+    ),
+)
+def test_f3_finalization_refresh_requires_current_coherent_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cut: str,
+    state: str,
+    audits: tuple[str, ...],
+    scans: int,
+) -> None:
+    clock = [100_000_000_000, 100_000_000_000]
+    payload = b"\x10\x00" * 480
+    with Library(tmp_path / "library", history_clock=lambda: HistoryClockSample(*clock)) as library:
+        library.create_session("old")
+        library.transition("old", SessionState.RECORDING, 0)
+        block = PCMBlock(
+            "old",
+            "mic",
+            "e1",
+            0,
+            FMT,
+            480,
+            payload,
+            1_000_000,
+            1_000_000,
+            device_frame_position=0,
+        )
+        writer = ChunkWriter(library.root, block)
+        writer.append(block)
+        descriptor = writer.seal()
+        library.register_chunk(descriptor)
+        library.transition("old", SessionState.INTERRUPTED, 1)
+        assert library.verify_deletion_history(fresh=True) == {"status": "READY", "code": ""}
+        media = library.root / descriptor.relative_path / "audio.pcm"
+        assert media.read_bytes() == payload
+
+        observed: list[str] = []
+        scan_start = library._authority.observation
+        reached = False
+        damaged = library.root / "deletion-journal" / "broken.json"
+        original_audit = library.verify_deletion_history
+
+        def audit(**kwargs: Any) -> dict[str, str]:
+            assert not library._mutex._is_owned()
+            assert not library._db.in_transaction
+            if cut == "audit-entry":
+                library.invalidate_deletion_history()
+            result = original_audit(**kwargs)
+            observed.append(result["status"])
+            if cut in {"new-epoch", "recovery-audit-new-epoch"}:
+                library.invalidate_deletion_history()
+                assert original_audit(fresh=True) == {"status": "READY", "code": ""}
+            return result
+
+        monkeypatch.setattr(library, "verify_deletion_history", audit)
+
+        def expire() -> None:
+            nonlocal reached
+            reached = True
+            clock[:] = [131_000_000_000, 131_000_000_000]
+
+        if cut == "admission":
+            expire()
+        elif cut in {
+            "recovery",
+            "recovery-audit-new-epoch",
+            "recovery-seal-new-epoch",
+            "seal-entry-gap",
+        }:
+            original_recover = library._recover_session
+
+            def recover(session_id: str) -> dict[str, Any]:
+                result = original_recover(session_id)
+                expire()
+                return result
+
+            monkeypatch.setattr(library, "_recover_session", recover)
+        elif cut != "normal":
+            original_manifest = library._manifest
+
+            def manifest(session_id: str) -> dict[str, Any]:
+                result = original_manifest(session_id)
+                if not reached and result["state"] == "FINALIZING":
+                    expire()
+                    if cut == "rollback-clock":
+                        clock[:] = [101_000_000_000, 99_000_000_000]
+                    elif cut == "skew-clock":
+                        clock[:] = [101_000_000_000, 131_000_000_000]
+                    elif cut == "damaged":
+                        damaged.write_bytes(b"{")
+                    elif cut == "invalidated":
+                        library.invalidate_deletion_history()
+                return result
+
+            monkeypatch.setattr(library, "_manifest", manifest)
+
+        seal_entry = {"admission": 0, "claim": 0, "manifest": 0}
+        peer_thread: threading.Thread | None = None
+        peer_enter, peer_done = threading.Event(), threading.Event()
+        peer_errors: list[str] = []
+        entry_checks = 0
+        if cut in {"recovery-seal-new-epoch", "seal-entry-gap"}:
+            original_finalize = library.finalize_session
+            original_admit = library._admit_session
+            original_manifest = library._manifest
+            stale_seal = False
+
+            class Claims(dict[str, int]):
+                def __setitem__(self, session_id: str, owner: int) -> None:
+                    if stale_seal:
+                        seal_entry["claim"] += 1
+                    super().__setitem__(session_id, owner)
+
+            def admit(session_id: str, operation: str, *args: Any, **kwargs: Any) -> bool:
+                if stale_seal and operation == "seal":
+                    seal_entry["admission"] += 1
+                return original_admit(session_id, operation, *args, **kwargs)
+
+            def manifest_at_entry(session_id: str) -> dict[str, Any]:
+                if stale_seal:
+                    seal_entry["manifest"] += 1
+                return original_manifest(session_id)
+
+            def finalize(session_id: str, **kwargs: Any) -> dict[str, Any]:
+                nonlocal stale_seal
+                if cut == "recovery-seal-new-epoch":
+                    library.invalidate_deletion_history()
+                    assert original_audit(fresh=True) == {"status": "READY", "code": ""}
+                    stale_seal = True
+                try:
+                    return original_finalize(session_id, **kwargs)
+                finally:
+                    stale_seal = False
+
+            monkeypatch.setattr(library, "_claims", Claims(library._claims))
+            monkeypatch.setattr(library, "_admit_session", admit)
+            monkeypatch.setattr(library, "_manifest", manifest_at_entry)
+            monkeypatch.setattr(library, "finalize_session", finalize)
+
+            if cut == "seal-entry-gap":
+                original_check = library._require_finalization_binding
+
+                def peer() -> None:
+                    try:
+                        assert peer_enter.wait(5)
+                        library.invalidate_deletion_history()
+                        assert original_audit(fresh=True) == {"status": "READY", "code": ""}
+                    except BaseException as error:
+                        peer_errors.append(repr(error))
+                    finally:
+                        peer_done.set()
+
+                def check(binding: tuple[str, int]) -> None:
+                    nonlocal entry_checks, stale_seal
+                    original_check(binding)
+                    entry_checks += 1
+                    if entry_checks == 2:
+                        assert not library._mutex._is_owned()
+                        assert not library._db.in_transaction
+                        peer_enter.set()
+                        assert peer_done.wait(5)
+                        assert peer_errors == []
+                        stale_seal = True
+
+                monkeypatch.setattr(library, "_require_finalization_binding", check)
+                peer_thread = threading.Thread(target=peer, name="f3-entry-peer")
+                peer_thread.start()
+
+        if cut == "audit-read":
+            original_read = library._read_journal
+
+            def read_journal() -> dict[str, int]:
+                library.invalidate_deletion_history()
+                return original_read()
+
+            monkeypatch.setattr(library, "_read_journal", read_journal)
+
+        try:
+            if state == "FINALIZED":
+                try:
+                    result = library.finalize_unfinished("old")
+                except ValidationError as error:
+                    pytest.fail(f"Expected FINALIZED: {error}")
+                assert result["state"] == "FINALIZED"
+                assert (result["chunk_count"], result["frame_count"]) == (1, 480)
+            else:
+                with pytest.raises(ValidationError, match=r"^DELETION_HISTORY_UNAVAILABLE$"):
+                    library.finalize_unfinished("old")
+        finally:
+            if peer_thread is not None:
+                peer_enter.set()
+                peer_thread.join(5)
+                assert not peer_thread.is_alive()
+
+        if cut == "seal-entry-gap":
+            assert entry_checks == 2
+            assert peer_errors == []
+        if cut in {"recovery-seal-new-epoch", "seal-entry-gap"}:
+            assert seal_entry == {"admission": 0, "claim": 0, "manifest": 0}
+        assert reached == (cut != "normal")
+        assert tuple(observed) == audits
+        assert library._authority.observation - scan_start == scans
+        assert library.get_session("old").state.value == state
+        with closing(sqlite3.connect(library.db_path)) as connection:
+            (published,) = connection.execute(
+                "SELECT count(*) FROM storage_events WHERE session_id='old' AND kind='FINALIZED'"
+            ).fetchone()
+        assert published == (1 if state == "FINALIZED" else 0)
+        assert media.read_bytes() == payload
+        assert [item.chunk_id for item in library.chunks("old")] == [descriptor.chunk_id]
+        if cut == "damaged":
+            assert damaged.read_bytes() == b"{"
+        if cut in {"audit-entry", "audit-read"}:
+            assert library._authority.receipt is None
+        if cut in {
+            "new-epoch",
+            "recovery-audit-new-epoch",
+            "recovery-seal-new-epoch",
+            "seal-entry-gap",
+        }:
+            assert library._authority.valid()

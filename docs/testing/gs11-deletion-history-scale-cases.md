@@ -937,3 +937,71 @@ all: line=93.89%/85% branch=88.50%/80% PASS
 - 별도1천 건 프로파일은 journal parser/open_file 비용이 지배적이었다. `_media_present` 주원인 추정은 정정했다. 큰 이력의 정본 전체 검사/30초 운영 한계는 GS11c 압축/후속 구조로 인계하며 L을 자동 완화하지 않는다.
 - 실제 장치·실음성·모델/weights·외부 서비스·유료 호출·vault 쓰기·다운로드·설치는 실행하지 않았다. Python3.11/원격CI는 이 작업자가 재실행하지 않았고 X00의 후속 게이트다.
 - 원본/삭제 권위/세대/GC-P02 구조/0.5초/claim·seal oracle는 승인된 적응 외에 약화하지 않았다. 첫 실패·준비 오류·중단과 정상 결과를 분리해 보존했다.
+
+## §GS11a CI 회복 — 공개 494342a 기준
+
+원격 실행45810798432는 Python3.13에서 G12 출판91 FAIL·29,258 PASS, Python3.11에서 G12 출판87과 G04-F3-PERF-finalize-900 한 행의88 FAIL·29,261 PASS였다. optional-runtime은 통과했다. 로컬 이전 정확 tree의 성공과 원격 실패를 각각 보존한다. 원격 실패 로그는 build/gs11a-x00-review/에 있다.
+
+### 수명과 제품 경계
+
+G12 publication 모듈의 공용 Library는 실제30초 뒤 정상 Job claim을 거부한다. 정상 준비 P·T·D 세 지점에만 공개 fresh와 정확 READY를 확인한다. 기존44개 단언 및386 ID(P288/D96/T2), 선택 snapshot·의도된 취소/삭제·compete 순서를 보존한다. 이 변경은 새 의미 ID를 추가하지 않는다.
+
+확정900묶음의 38.33초 작업은 마지막 일반 권위 검사에서 기간 만료로 거부됐다. 관리 finalize 작업의 두 경계(복구 반환 뒤와 최종 manifest 검증 뒤)에서 기존 권위가 두 clock 연속성을 만족한 채 L30에 도달한 경우만 root·DB transaction 밖의 실제 전역 검사를 수행한다. 새로운 scan의 시작 시각과 일반 L30을 그대로 적용한다. 최초 일반 입장의 만료·명시 무효화·clock 역행/불일치·fresh 필요는 자동 회복하지 않는다. 감사 자체가 권한을 발급하지 못하면 확정을 보류하고 정본을 보존한다.
+
+첫 자동 재감사의 instance/epoch binding은 동일 확정 작업의 seal 입장과 최종 commit까지 보존한다. 감사 시작/게시의 can_publish 및 마지막 root 안 binding·현재 권위·I1·generation/version·live 검사를 유지한다. 다른 epoch에 별도 새 READY가 생겨도 옛 작업의 binding을 대체하지 않는다. 자기 capture 종료는 기존 실제 owner/run/ACK 문맥으로 동작한다.
+
+### 입력 공간·독립 손 oracle
+
+실제 1묶음·480 mono s16 frame·literal payload와 독립 clock sample을 사용한다. 아래 named trace13이 입력 공간이며 제외0이다. 원 F3 PERF3·capture 종료4 및 GS11 기존510행을 그대로 회귀한다. 신규13은 tests/integration/test_unfinished_recovery.py의 전용 primary로 각1회 소유한다. 기존 파일의 원 시험과 단언을 보존한다.
+
+| ID (G04-F3-AUTH-) | 입력 | 손 oracle |
+| --- | --- | --- |
+| 01 | 기간 내 정상 확정 | FINALIZED·1묶음/480frame·추가 감사0 |
+| 02 | 최초 입장 전31초 만료 | 정확 DELETION_HISTORY_UNAVAILABLE·INTERRUPTED·감사0 |
+| 03 | 실제 복구 반환 뒤31초 | root 밖 실제 READY1·FINALIZED |
+| 04 | 마지막 manifest 검증 뒤31초 | root 밖 실제 READY1·FINALIZED |
+| 05 | 04와 손상된 canonical 파일 | UNAVAILABLE1·정확 오류·FINALIZING·손상 bytes 보존 |
+| 06 | 마지막 manifest 뒤 명시 무효화 | 정확 오류·FINALIZING·감사0 |
+| 07 | guard 뒤 감사 본체 입장 전 invalidate | UNAVAILABLE1·실제 scan0·새 receipt0·정확 오류·FINALIZING |
+| 08 | 실제 scan 시작 뒤 읽기 전 invalidate | UNAVAILABLE1·scan1·새 receipt0·정확 오류·FINALIZING |
+| 09 | mono101s/UTC99s, 시작100s/100s | 정확 오류·FINALIZING·감사0 |
+| 10 | mono101s/UTC131s, 시작100s/100s | 정확 오류·FINALIZING·감사0 |
+| 11 | 마지막 감사 READY 뒤 invalidate 및 별도 fresh READY | 옛 감사READY1·현재 새receipt 유효·정확 오류·FINALIZING |
+| 12 | 복구 뒤 첫 감사 반환 직전 invalidate 및 별도 fresh READY | 정확 오류·INTERRUPTED·현재 새receipt 유효 |
+| 13 | 첫 helper 반환 뒤 공개 seal 호출 진입 직전 같은 사건 | 정확 오류·FINALIZING·현재 새receipt 유효 |
+
+거부 행은 FINALIZED event0, 성공 행은 event1이다. 모든 행은 실제 PCM bytes와 chunk identity를 보존한다. 12는 FINALIZING 전이 전,13은 전이 뒤의 서로 다른 단계를 관측한다. fake clock 기능과 실제900묶음 wall을 각각 보고한다. 손 oracle를 제품의 분류 결과로 생성하지 않는다.
+
+### 변이·검증·쓰기
+
+원 변이7은 두 helper 호출, L30 도달 조건, clock 연속성, can_publish binding, 마지막 epoch, 마지막 기존 권위 검사 각각의 단일 결함이다. 첫 binding 전달·최종 첫 binding 대조·전이 전 대조의 후보3을 더하되 실제 위치가 같거나 다른 방어로 가려지는지 감사한다. 정상본 PASS 뒤 정확한 목표 call assertion FAIL만 검출이다. import/수집/권한/미도달/timeout/teardown 오류는 별도다.
+
+제품·시험의 정확 범위는 src/recoryn/storage/library.py, tests/integration/test_unfinished_recovery.py, tests/integration/test_basis_publication.py다. 작성은 pA, 제품/시험의 독립 검토는 pB 및 X00이며 X00 작성 후보에는 pB 검토가 필요하다. 공유 GS05는 제외한다. 고정 공개 archive+최종 세 파일로 부모/실spawn 출처·분모/선택 실행·새13·기존386·F3/capture/저장 회귀·전체 core flags·coverage7·offline wheel을 검증한다. 기대 전체는29,362로 실제 collection과XML을 대조한다. 검토·통합·원격 회복 성공은 각각 별도로 기록한다. 현재 이 절은 실행 결과를 추가하지 않는다.
+
+### R3 독립 입장 경합 보강
+
+w5:p8의 별도 TEMP 반례 `recoryn-f3-r3-review-d8qwxyci/entry-gap-observation.json`에서 마지막 독립 binding 검사 뒤 root를 놓은 간격에 다른 스레드가 invalidate+명시 fresh READY를 실행했다. 최종 FINALIZED는0이었지만 stale seal admission·claim·manifest가 각각1회 실행됐다. binding 대조는 해당 admission·claim과 동일 root critical section에서 수행한다.
+
+`G04-F3-AUTH-14`를 추가한다. 첫 helper의 binding 이후, 마지막 entry 검사와 실제 seal admission 사이에 위 사건을 강제한다. 새 receipt는 실제 유효해야 한다. 정확 ValidationError·FINALIZING·FINALIZED event0·seal admission0·claim쓰기0·manifest읽기0·PCM bytes 보존을 손 oracle로 고정한다. 장벽은 root 밖에 두고, 생산 함수의 검증을 대신하지 않는다. 신규 입력은 named14·제외0, 기존13 ID는 그대로 유지한다. 기대 전체 수집은29,363이다. 원자 입장 결속을 제거하면14의 입장0 assertion이 실패하는 단일 변이를 확인한다. 이전13/10 성공을 이 변경 후의 검증으로 소급하지 않는다.
+
+### 최종14 입력과 변이 대응 확정
+
+공개494342a에 아래 세 파일만 적용한다. 작성 pA, 독립 검토 pB, 통합 X00이다. 위13행 설계와 이전 후보는 이력이고 현재 수락 분모는 AUTH14·제외0, 기존29349+14=29363이다.
+
+| 파일 | 최종 LF SHA-256 |
+| --- | --- |
+| src/recoryn/storage/library.py | `9f1e625c073afb9ef619e0f2d36af3f0c7b8ad6c396ebf3086ea28c4b3f8c939` |
+| tests/integration/test_unfinished_recovery.py | `9c9747d5bfe950e427d9b10b21deac3e27353b3f9bb488f6ae9e4470deeb7f3b` |
+| tests/integration/test_basis_publication.py | `dad7ac1c18d461267df4e92986bf5a58264b5165ec850c3471062012b5e4bb07` |
+
+M01~M07은 위 기존7 결함을 유지한다. M08은 첫 binding의 seal 인자 전달 제거→AUTH13, M09는 `_session_operation`의 같은 root 안 입장 binding 검사 제거→AUTH14의 실제 admission/claim/manifest0, M10은 FINALIZING 전 첫 binding 검사 제거→AUTH12의 INTERRUPTED다. 이전 후보의 최종 첫 binding 검사만 제거하는 변이는 새 입장 차단에 가려져 독립 검출로 세지 않는다. 현재 총10개의 서로 다른 단일 결함이며 각 사본의 목표 assertion 실패만 검출로 센다.
+
+X00은 최종 공유3파일과 실행 사본의 해시 일치, AUTH14 PASS·원 PERF/캡처7 PASS·관련771 PASS 및 최종10변이 목표 FAIL(error/skip0)을 대조했다. pB 독립 검토 `build/gs11a-x00-review/f3-r4-cross-review.md`(LF `0606aaf9299ed1a2269581de8dbaae3479c72e3ae866a3b2aeab5fbbe40696b5`)는 새 제품 OPEN0이다. 검토자는 구13 반례의 실제 입장/claim/manifest 각1→최종14 각0, 최종14 직접 실행, M09 직접 검출과 capture/API 경계를 독립 확인했다. D96 준비의 독립 검토와 직접2변이도 별도 유지한다. 전체 core·coverage7·wheel·원격 성공은 이 기록에서 아직 완료로 세지 않는다.
+
+### 최종14의 로컬 검증 완료
+
+위 정확3파일의 공개494342a 격리 사본에서 전체 **29,363 PASS**, 실패·오류·skip0을 확인했다. 원29349 ID 제거0·신규AUTH14만 추가, 전체 JUnit 다중집합과 수집 ID가 일치하고 각각1회였다. AUTH14·원 F3 PERF/캡처7·관련771 및 publication386도 최종 전체 결과에 포함된다. process wall2340.344초이며 fake-clock 경계 시험과 실제 관리900묶음의 측정을 구분한다.
+
+원7+재매핑3의 단일10변이는 최종 정상본 뒤 각각 목표 call assertion에서 실패했고 INVALID/생존0이다. Ruff·format·mypy, 원 core.yml flags의 coverage85와 `scripts/check_coverage.py` 7묶음, offline wheel을 모두 통과했다. Storage line95.20%/branch90.16%, 전체 line94.14%/branch88.79%다. wheel SHA-256은 `62c3c2174aca0881bf29c38f3f13143bc3b8fd63c17002a5961e655e89ba9d17`이며 package Python85개와 모든 package member가 검사한 source bytes와 일치한다. 부모/실제spawn9모듈 출처는 사본 src이고 archive 비소유426파일 raw bytes와 공유 GS05 원32는 불변이다.
+
+작성자 증거는 `build/gs11a-f3-r3/report.md` LF `af93c570595b93aba7a67e0672a83e93afe553b9e5349e9ba2f0062a5051193c`, `evidence.json` LF `adf4905d1f02c4ad0db006867504276b05bbbd6787f431d9205dc71cae5c5cda`다. X00은 실제 XML/수집/선택·변이·제품 해시·wheel을 읽어 `build/gs11a-x00-review/recovery-final-acceptance.json`에 인수 결과를 남겼다. 이는 로컬 완료이며 정확 commit tree·정상 push·복구본 원격3job 성공은 별도 게이트다. Python3.11 로컬, 실장비·실음성·모델·vault·실서비스·전원 장애 검증은 하지 않았다.
