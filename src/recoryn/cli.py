@@ -406,6 +406,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         with Library(args.root) as library:
+            # Library's initial deep verification belongs to this command lane.
+            # The local synthetic recorder keeps its independent capture fence.
+            if args.command != "simulate":
+                library.check_management_history()
             if args.command == "simulate":
                 result: object = _simulate(library, args.seconds)
             elif args.command == "list" and args.unfinished:

@@ -1105,7 +1105,7 @@ def close_run(library, value, version):
 
 
 @pytest.mark.parametrize("row", R, ids=[f"G08-R-{i:03}" for i in range(1, 225)])
-def test_recovery_authority_and_idempotence(row, tmp_path):
+def test_recovery_authority_and_idempotence(row, tmp_path, request):
     health, deletion, live, repeat, tracks = row
     with Library(tmp_path) as library:
         if health in {"LEGACY", "MISSING"}:
@@ -1172,6 +1172,7 @@ def test_recovery_authority_and_idempotence(row, tmp_path):
             )
             library._db.commit()
         elif deletion == "journal":
+            library.close()
             (tmp_path / "deletion-journal" / "s.json").write_text(
                 json.dumps(
                     {
@@ -1183,6 +1184,10 @@ def test_recovery_authority_and_idempotence(row, tmp_path):
                 ),
                 encoding="utf-8",
             )
+            library = Library(tmp_path)
+            request.addfinalizer(library.close)
+            if live:
+                library.register_live_owner("s", owner)
         before = rows(library)
         if live and deletion == "none":
             with pytest.raises(StateConflict, match="SESSION_LIVE"):

@@ -48,6 +48,7 @@ from recoryn.app.device_policy import (
     PolicyView,
 )
 from recoryn.app.device_policy import label as policy_label
+from recoryn.app.history import HistoryAuditCoordinator, HistoryAuditRequest
 from recoryn.app.power import PowerCoordinator
 from recoryn.app.recovery import (
     directory_only_lines,
@@ -166,6 +167,11 @@ class MainWindow(QMainWindow):
         self._inventory_generation = 0
         self._inventory_requested: int | None = None
         self._inventory_loading = False
+        self._history_needs_refresh = library.deletion_history_status()["status"] != "READY"
+        self.history = HistoryAuditCoordinator(
+            library, initially_verified=not self._history_needs_refresh
+        )
+        self._history_tasks: set[Task] = set()
         self._review_details: tuple[str, int, str] | None = None
         # G-P16: its own serial worker; never the GUI or the recording control pool.
         self._policy_pool = QThreadPool(self)
@@ -202,6 +208,7 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self._tick)
         self.timer.start(250)
         self.policy.start()  # restores asynchronously; recording never waits for it
+        self._request_history()
         from recoryn.ui.power import WindowsPowerFilter
 
         self._power_filter = WindowsPowerFilter(
@@ -223,6 +230,13 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(container)
         self.indicator = QLabel("대기 · 로컬 전용")
         self.indicator.setAccessibleName("녹음 및 저장 상태")
+        self.history_status = QLabel("삭제 이력 확인 중")
+        if not self._history_needs_refresh:
+            self.history_status.setText(
+                "삭제 이력 검증됨 · 검증 시작 후 30초 이내만 관리 작업 허용"
+            )
+        self.history_status.setAccessibleName("삭제 이력 검증 상태")
+        layout.addWidget(self.history_status)
         self.indicator.setStyleSheet("font-size:22px;font-weight:600;padding:10px")
         layout.addWidget(self.indicator)
         device_bar = QHBoxLayout()
@@ -297,7 +311,7 @@ class MainWindow(QMainWindow):
         self.finalize_button.setAccessibleName("선택한 미확정 세션을 확정")
         self.finalize_button.clicked.connect(self.finalize_selected)
         for text, callback in (
-            ("새로고침", self.refresh_sessions),
+            ("새로고침", lambda: self.refresh_sessions(fresh_history=True)),
             ("복구 검토", self.recover_selected),
             ("트랙 건강 상세", self.show_track_health_details),
             ("건강 상세 다음 페이지", self.next_track_health_page),
@@ -405,6 +419,15 @@ class MainWindow(QMainWindow):
     def _power_event(self, kind: str) -> None:
         if self._closing_requested:
             return
+        if kind in {"suspend", "resume"}:
+            self.history.set_suspended(True)
+            self.library.invalidate_deletion_history()
+            self._history_needs_refresh = True
+            self._inventory_generation += 1
+            self.history_status.setText("삭제 이력 확인 보류 · 절전 알림")
+            if kind == "resume":
+                self.history.set_suspended(False)
+                self._request_history(force=True)
         if kind == "suspend":
             self._pending_suspend = True
             self.live_stt.setChecked(False)
@@ -574,9 +597,15 @@ class MainWindow(QMainWindow):
         self._show_capture_status()
         self.operation(self.recorder.stop, done)
 
-    def refresh_sessions(self) -> None:
+    def refresh_sessions(self, *, fresh_history: bool = False) -> None:
         """Refresh cheap catalog rows now; inspect folders off the GUI thread."""
         if self._closing_requested:
+            return
+        if fresh_history:
+            self._history_needs_refresh = True
+            self._inventory_loading = True
+            self.library.invalidate_deletion_history()
+            self._request_history(fresh=True)
             return
         self._inventory_generation += 1
         self._inventory_requested = self._inventory_generation
@@ -585,6 +614,43 @@ class MainWindow(QMainWindow):
         self._render_sessions(list(self._inventory.values()))
         self._start_inventory()
         self._refresh_pending()
+
+    def _request_history(self, *, fresh: bool = False, force: bool = False) -> None:
+        request = self.history.request(fresh=fresh, force=force)
+        if request is not None:
+            self._start_history(request)
+
+    def _start_history(self, request: HistoryAuditRequest) -> None:
+        # Reuse the existing serial inventory executor, Task and actual ACK.
+        # This controller owns no second pool, parser or session read model.
+        self.history_status.setText("삭제 이력 확인 중")
+        task = Task(lambda: self.history.execute(request))
+        self._history_tasks.add(task)
+
+        def complete(result: Any, *, failed: bool = False) -> None:
+            self._history_tasks.discard(task)
+            current = self.history.is_current(request)
+            following = self.history.completed(request)
+            if current and not self._closing_requested:
+                ready = not failed and result.get("status") == "READY"
+                self.history_status.setText(
+                    "삭제 이력 검증됨 · 검증 시작 후 30초 이내만 관리 작업 허용"
+                    if ready
+                    else "삭제 이력 확인 불가 · ‘새로고침’으로 명시 재검사하세요"
+                )
+                if ready and self._history_needs_refresh:
+                    self._history_needs_refresh = False
+                    self.refresh_sessions()
+                elif not ready:
+                    self._inventory_loading = False
+            if following is not None:
+                self._start_history(following)
+
+        task.signals.finished.connect(complete, Qt.ConnectionType.QueuedConnection)
+        task.signals.failed.connect(
+            lambda code: complete({}, failed=True), Qt.ConnectionType.QueuedConnection
+        )
+        self._inventory_pool.start(task)
 
     def _start_inventory(self) -> None:
         if self._inventory_tasks or self._inventory_requested is None or self._closing_requested:
@@ -702,10 +768,19 @@ class MainWindow(QMainWindow):
             self.ai_bridge.panel.setEnabled(False)
             self.details.setPlainText("\n".join(directory_only_lines(entry)))
             return
-        session = self.library.get_session(session_id)
-        chunks = self.library.chunks(session_id)
+        try:
+            session = self.library.get_session(session_id)
+            chunks = self.library.chunks(session_id)
+            self.ai_bridge.selection(session_id)
+        except (KeyError, ValueError, OSError):
+            # Selection is an observation, never permission to resurrect a row
+            # deleted between the catalog page and panel load.
+            self.ai_bridge.panel.setEnabled(False)
+            self.details.setPlainText(
+                "세션 상태 확인 필요 · 삭제 중이거나 목록이 바뀌었습니다. 새로고침하세요."
+            )
+            return
         self.ai_bridge.panel.setEnabled(True)
-        self.ai_bridge.selection(session_id)
         if self._review_details is not None and self._review_details[:2] == (
             session_id,
             session.state_version,
@@ -1334,6 +1409,7 @@ class MainWindow(QMainWindow):
         self.indicator.setText(text)
 
     def _tick(self) -> None:
+        self._request_history()
         if self._closing_requested:
             return
         if self._started_at is not None:
@@ -1391,6 +1467,7 @@ class MainWindow(QMainWindow):
             return
 
         self._closing_requested = True
+        self.history.close()
         self.policy.close()  # a late load/save answer is ignored from now on
         self._inventory_generation += 1
         self._inventory_requested = None
@@ -1426,7 +1503,7 @@ def run(root: str | None = None) -> int:
     data = (
         Path(root) if root else Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Recoryn"
     )
-    with Library(data) as library:
+    with Library(data, defer_history=True) as library:
         window = user_window(library)
         window.show()
         return application.exec()

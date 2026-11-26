@@ -24,6 +24,7 @@ from recoryn.domain.capture_health import (
     transition_track,
 )
 from recoryn.storage import ChunkWriter, Library
+from recoryn.storage.library import CaptureControlContext
 
 # Full chunks waiting for the sealer (about 8 s of audio at the default size).
 # When it is full the consumer waits; the capture queue records any drops.
@@ -111,6 +112,10 @@ class RecordingService:
         library.create_session(self.session_id)
         # Recovery and finalization refuse a session this service may still write.
         library.register_live_owner(self.session_id, self)
+        self._control_root = library.root
+        self._control_instance = library.deletion_history_instance
+        self._control_session = self.session_id
+        self._control_registration = library.register_capture_controller(self.session_id, self)
 
     def is_live(self) -> bool:
         """Accepting input, or a consumer or sealer still holds unregistered chunks.
@@ -119,6 +124,31 @@ class RecordingService:
         the capture gate (whose holders may wait for that mutex).
         """
         return self._accepting or self.worker_alive
+
+    def capture_control_state(self) -> tuple[str, bool, bool, bool]:
+        """Observe real termination ACKs without a gate, wait or filesystem I/O.
+
+        Library calls this under its root mutex and separately verifies the
+        registered controller, session fence and absence of active storage work.
+        Control methods are caller-serialized; every resumed run has a new ID.
+        """
+        return (
+            self._capture_run_id,
+            self._sources_ack and not self._accepting,
+            self._thread is None or not self._thread.is_alive(),
+            self._sealer is None or not self._sealer.is_alive(),
+        )
+
+    def _capture_control(self) -> CaptureControlContext:
+        """Mint a local stop proof only after this instance's real drain ACK."""
+        if (
+            self.library.root != self._control_root
+            or self.library.deletion_history_instance != self._control_instance
+            or self.session_id != self._control_session
+            or not all(self.capture_control_state()[1:])
+        ):
+            raise StateConflict("SESSION_LIVE")
+        return self.library.capture_control(self.session_id, self, self._control_registration)
 
     @property
     def epochs(self) -> dict[str, str]:
@@ -836,12 +866,15 @@ class RecordingService:
     ) -> dict[str, Any]:
         state = self.library.get_session(self.session_id).state
         if state == SessionState.FINALIZED:
-            return self.library.finalize_session(self.session_id)
+            return self.library.finalize_session(
+                self.session_id, capture_control=self._capture_control()
+            )
         if state not in {SessionState.CREATED, SessionState.RECORDING, SessionState.PAUSED}:
             raise RecordingError("STOP_REQUIRES_ACTIVE_SESSION")
         if state == SessionState.RECORDING:
             self._control_reason = "STOP"
             self._drain(timeout)
+        capture_control = self._capture_control()
         if health_extra is not None:
             try:
                 health = self.library.capture_health(self.session_id)
@@ -859,7 +892,9 @@ class RecordingService:
             if self.library.get_session(self.session_id).state == SessionState.RECORDING:
                 self._transition(SessionState.PAUSED)
             try:
-                recovery = self.library.recover_session(self.session_id)
+                recovery = self.library.recover_session(
+                    self.session_id, capture_control=capture_control
+                )
             except Exception:
                 recovery = {
                     "health_recovery": {"status": "DEFERRED", "code": "HEALTH_RECOVERY_PENDING"}
@@ -881,7 +916,7 @@ class RecordingService:
                 self._deferred_health_runs.clear()
                 self._pending_health_markers.clear()
         self._transition(SessionState.FINALIZING)
-        return self.library.finalize_session(self.session_id)
+        return self.library.finalize_session(self.session_id, capture_control=capture_control)
 
     def join_writer(self) -> None:
         """Retain the Library lock until a timed-out writer has actually stopped."""

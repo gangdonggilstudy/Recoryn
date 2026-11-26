@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from itertools import count, product
 from pathlib import Path
 from types import SimpleNamespace
@@ -632,6 +633,13 @@ def _selectable_world(env: SimpleNamespace) -> tuple[str, str]:
     return session, target
 
 
+def _prepare_fixture_history(env: SimpleNamespace) -> None:
+    """Prepare positive fixture authority before any fault or race is injected."""
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="g12-history-prepare") as worker:
+        status = worker.submit(env.library.verify_deletion_history, fresh=True).result(timeout=10)
+    assert status == {"status": "READY", "code": ""}, status
+
+
 def publish(
     env: SimpleNamespace,
     session: str,
@@ -642,6 +650,7 @@ def publish(
     text: str = "candidate",
 ) -> str:
     """An unselected candidate through the real G-P03 publication path."""
+    _prepare_fixture_history(env)
     jobs = env.jobs
     job = jobs.create("summarization", f"g12-ui-{next(_serial)}")
     jobs.bind_session(job.job_id, session)
@@ -1101,6 +1110,7 @@ def test_z_no_claims_partial_and_legacy_never_read_as_verified(
         if claims == "new_empty"
         else [Claim("legacy claim", ("a",) if transcript == "nonempty" else ())]
     )
+    _prepare_fixture_history(env)
     jobs = env.jobs
     job = jobs.create("summarization", f"g12-z-{next(_serial)}")
     jobs.bind_session(job.job_id, session)
@@ -2210,6 +2220,7 @@ def _y_denied(
         errors: list[str] = []
         monkeypatch.setattr(sys, "excepthook", lambda *args: errors.append(str(args[1])))
         if error == "intent":
+            _prepare_fixture_history(env)
             job = env.jobs.create("summarization", f"y-reader-{next(_serial)}")
             env.jobs.bind_session(job.job_id, session)
             held = env.jobs.claim(job.job_id, "reader")

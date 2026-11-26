@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -11,8 +12,10 @@ import time
 import uuid
 import weakref
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Set as AbstractSet
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
+from hashlib import sha256 as _history_digest
 from pathlib import Path
 from time import monotonic as _registration_clock
 from time import sleep as _registration_wait
@@ -39,6 +42,7 @@ from recoryn.domain.capture_health import (
     encoded as health_encoded,
 )
 
+from . import _safe as _safe_io
 from ._coordination import (
     register_intent_check,
     retry_sealed_read,
@@ -70,6 +74,12 @@ from .chunks import (
     issued_descriptor,
     scan_prefix,
     verify_bundle,
+)
+from .deletion_history import (
+    DeletionHistoryIndex,
+    HistoryClockSample,
+    HistoryEntry,
+    read_format_one,
 )
 
 
@@ -158,6 +168,24 @@ class LiveOwner(Protocol):
     def is_live(self) -> bool: ...
 
 
+@dataclass(frozen=True)
+class CaptureControlContext:
+    """Issued to one registered capture controller after real source/worker ACKs.
+
+    This is an in-process capability, not a caller's statement about global
+    deletion history, and not an OS liveness proof for arbitrary processes.
+    """
+
+    root: Path
+    instance: str
+    session_id: str
+    owner: weakref.ref[LiveOwner]
+    registration: object
+    run_id: str
+    thread_id: int
+    issuer: object
+
+
 def _detail(
     kind: str,
     source: str | None,
@@ -194,11 +222,36 @@ class Library:
     # Library connection/OS lock or a copied journal/coordination implementation.
     _job_authorities: weakref.WeakValueDictionary[Path, Library] = weakref.WeakValueDictionary()
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        history_clock: Callable[[], HistoryClockSample] | None = None,
+        defer_history: bool = False,
+    ) -> None:
         self.root = root_path(root)
         self._mutex = root_mutex(self.root)
         self._lock_file: BinaryIO | None = None
         self._connection: sqlite3.Connection | None = None
+        self._authority = DeletionHistoryIndex(
+            self.root, clock=history_clock or HistoryClockSample.now
+        )
+        self._history_reader = threading.local()
+        self._authority_leases = threading.local()
+        self._capture_scopes = threading.local()
+        self._capture_issuer = object()
+        self._capture_owners: dict[int, tuple[object, weakref.ref[LiveOwner], str]] = {}
+        self._authority_stamp: tuple[int, int, int] | None = None
+        self._authority_seen_stamp: tuple[int, int, int] | None = None
+        self._visibility_ready = False
+        self._intent_publication_locks: dict[str, Any] = {}
+        self._reserved_intents: dict[str, int] = {}
+        # Exact process-local ownership, never a PID/name-only exemption. The
+        # optional identity is filled only after this actor opens its file xb.
+        self._staged_files: dict[Path, tuple[str, str, object, tuple[int, int] | None]] = {}
+        self._staged_lifetimes: set[object] = set()
+        self._stage_epoch = 0
+        self._history_conflict: str | None = None
         self._live_owners: dict[str, dict[int, weakref.ref[LiveOwner]]] = {}
         self._session_locks: dict[str, Any] = {}
         self._claims: dict[str, int] = {}
@@ -214,7 +267,7 @@ class Library:
         # intent; any other change to the directory forces a full re-validation.
         self._intent_journal: dict[str, int] | None = None
         self._intent_stamp: tuple[int, int, int] | None = None
-        self._intent_names: frozenset[str] = frozenset()  # entry names the index implies
+        self._intent_names: set[str] | frozenset[str] = set()  # entry names the index implies
         self._intent_settled = False  # a settled listing at _intent_stamp matched them
         # Capture-path listing (stamp, names, unfinished, settled) while the index is
         # not current. It never opens an entry.
@@ -260,6 +313,41 @@ class Library:
                     session_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
                     status TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS storage_visible_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS storage_pending_deletions (
+                    session_id TEXT PRIMARY KEY
+                );
+                CREATE TABLE IF NOT EXISTS storage_catalog_meta (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL
+                );
+                INSERT OR IGNORE INTO storage_catalog_meta VALUES(1,0);
+                CREATE TRIGGER IF NOT EXISTS storage_catalog_insert AFTER INSERT ON sessions
+                BEGIN
+                    UPDATE storage_catalog_meta SET version=version+1 WHERE singleton=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS storage_catalog_change
+                AFTER UPDATE OF state,state_version,generation ON sessions
+                WHEN OLD.state!=NEW.state OR OLD.state_version!=NEW.state_version OR OLD.generation!=NEW.generation
+                BEGIN
+                    UPDATE storage_catalog_meta SET version=version+1 WHERE singleton=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS storage_catalog_delete AFTER DELETE ON sessions
+                BEGIN
+                    UPDATE storage_catalog_meta SET version=version+1 WHERE singleton=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS storage_visible_insert AFTER INSERT ON sessions
+                WHEN NOT EXISTS(SELECT 1 FROM deleted_sessions WHERE session_id=NEW.session_id)
+                BEGIN
+                    INSERT OR IGNORE INTO storage_visible_sessions VALUES(NEW.session_id);
+                END;
+                CREATE TRIGGER IF NOT EXISTS storage_visible_delete AFTER INSERT ON deleted_sessions
+                BEGIN
+                    DELETE FROM storage_visible_sessions WHERE session_id=NEW.session_id;
+                    INSERT OR IGNORE INTO storage_pending_deletions VALUES(NEW.session_id);
+                END;
                 CREATE TABLE IF NOT EXISTS capture_health_runs (
                     session_id TEXT NOT NULL, capture_run_id TEXT NOT NULL,
                     schema_version INTEGER NOT NULL, health_version INTEGER NOT NULL,
@@ -292,14 +380,289 @@ class Library:
         except BaseException:
             self.close()
             raise
-        with self._mutex:
-            try:
-                self._refresh_intent_index()  # once at open; no other thread waits yet
-            except (ValueError, OSError):
-                self._intent_journal = None  # every intent query fails closed until valid
+        try:
+            if not defer_history:
+                self.verify_deletion_history(fresh=True)
+        except BaseException:
+            self.close()
+            raise
         register_intent_check(self.root, self._append_check, self._append_generation)
         with self._mutex:
             self._job_authorities[self.db_path] = self
+
+    @property
+    def deletion_history_instance(self) -> str:
+        return self._authority.instance
+
+    def deletion_history_status(self) -> dict[str, str]:
+        with self._mutex:
+            ready = self._connection is not None and self._authority.valid()
+        return {
+            "status": "READY" if ready else "UNAVAILABLE",
+            "code": "" if ready else _HISTORY_UNAVAILABLE,
+        }
+
+    def invalidate_deletion_history(self) -> None:
+        with self._mutex:
+            self._authority.invalidate()
+
+    def verify_deletion_history(
+        self, *, fresh: bool = False, can_publish: Callable[[], bool] | None = None
+    ) -> dict[str, str]:
+        """Full, read-only audit on the worker/control lane; no shared DB I/O off root.
+
+        The dedicated read connection has its own snapshot and is always closed.
+        Publication is O(1), and retired maps are released after leaving root.
+        Capture's directory-name fence is separate from permission for management.
+        can_publish is a pure observation gate: no locks, I/O or waiting under root.
+        """
+        if getattr(self._mutex, "_is_owned", lambda: False)():
+            raise StateConflict(_HISTORY_UNAVAILABLE)
+        try:
+            with self._mutex:
+                if self._connection is None:
+                    return {"status": "UNAVAILABLE", "code": _HISTORY_UNAVAILABLE}
+                if can_publish is not None and can_publish() is not True:
+                    return {"status": "UNAVAILABLE", "code": _HISTORY_UNAVAILABLE}
+                if self._authority.needs_fresh and not fresh:
+                    return {"status": "UNAVAILABLE", "code": _HISTORY_UNAVAILABLE}
+                self._observe_history_stamp(self._journal_stamp())
+                scan = self._authority.begin_scan(fresh=fresh)
+                version = self._history_version
+        except (ValueError, OSError, OverflowError):
+            with self._mutex:
+                self._authority.invalidate()
+            return {"status": "UNAVAILABLE", "code": _HISTORY_UNAVAILABLE}
+        stamp = None
+        names: frozenset[str] = frozenset()
+        started = time.time_ns()
+        retired: tuple[object, ...] = ()
+        capture_retired: tuple[object, ...] = ()
+        unfinished = False
+        try:
+            if self._missing_deletion_history:
+                raise ValidationError(_HISTORY_UNAVAILABLE)
+            self._inspect_staged_intents()
+            stamp = self._journal_stamp()
+            started = time.time_ns()  # G15R-05: before any listing or body read
+            names, _ = self._list_journal(stamp)
+            unfinished = any(name.startswith(".tmp-") for name in names)
+            mutable_names = set(names)
+            self._history_reader.value = None
+            generations = self._read_journal()
+            parsed = self._history_reader.value
+            if parsed is None or names != parsed.names:
+                raise OSError("Deletion history observation changed")
+            records = dict(parsed.records)
+            database = safe_path(self.root, "library.sqlite")
+            uri = database.as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=0)) as connection:
+                connection.execute("BEGIN")
+                if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
+                    raise ValidationError(_HISTORY_UNAVAILABLE)
+                for sid, generation, status in connection.execute(
+                    "SELECT session_id,generation,status FROM deleted_sessions"
+                ):
+                    identifier(sid)
+                    integer(generation, minimum=1)
+                    entry = HistoryEntry(db_generation=generation, db_status=status)
+                    previous = records.get(sid)
+                    records[sid] = (
+                        HistoryEntry(
+                            previous.journal_generation,
+                            previous.journal_digest,
+                            generation,
+                            status,
+                        )
+                        if previous is not None
+                        else entry
+                    )
+                session_rows = list(
+                    connection.execute("SELECT session_id,generation FROM sessions")
+                )
+                for sid, generation in session_rows:
+                    identifier(sid)
+                    integer(generation)
+                    if sid in records and generation > records[sid].generation:
+                        with self._mutex:
+                            if self._authority.current_scan(scan):
+                                self._history_conflict = sid
+                        raise ValidationError(_HISTORY_UNAVAILABLE)
+                visible_ids = (
+                    [
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT session_id FROM storage_visible_sessions"
+                        )
+                    ]
+                    if not self._visibility_ready
+                    else []
+                )
+                previous_pending = [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT session_id FROM storage_pending_deletions"
+                    )
+                ]
+                connection.rollback()
+            with self._mutex:
+                cut = self._authority.cut()
+            prepared = self._authority.prepare(scan, records, cut)
+            sessions_directory = safe_path(self.root, "sessions")
+            media_names = (
+                {entry.name for entry in sessions_directory.iterdir()}
+                if sessions_directory.is_dir()
+                else set()
+            )
+            catalog_ids = {sid for sid, _ in session_rows}
+            pending_ids = {
+                sid
+                for sid, entry in prepared.base.items()
+                if not (
+                    entry.db_status == "DELETED_LOCAL"
+                    and entry.db_generation == entry.journal_generation
+                    and sid not in catalog_ids
+                    and sid not in media_names
+                    and not self._media_present(sid)
+                )
+            }
+            pending_changes = sorted(pending_ids ^ set(previous_pending))
+            for start in range(0, len(pending_changes), 128):
+                with self._mutex:
+                    if not self._authority.current_scan(scan):
+                        raise OSError("Deletion history observation changed")
+                    connection = self._db
+                    connection.execute("PRAGMA busy_timeout=0")
+                    try:
+                        with self._transaction():
+                            for sid in pending_changes[start : start + 128]:
+                                if self._authority.known(sid) not in {None, prepared.base.get(sid)}:
+                                    continue  # a newer trusted actor owns this exact key
+                                if sid in pending_ids:
+                                    connection.execute(
+                                        "INSERT OR IGNORE INTO storage_pending_deletions VALUES(?)",
+                                        (sid,),
+                                    )
+                                else:
+                                    connection.execute(
+                                        "DELETE FROM storage_pending_deletions WHERE session_id=?",
+                                        (sid,),
+                                    )
+                    finally:
+                        connection.execute("PRAGMA busy_timeout=5000")
+            if not self._visibility_ready:
+                # Rebuildable projection only. Never adopt it as deletion authority.
+                # Prepare O(S+H) outside root and commit at most 128 exact keys at once.
+                wanted_visible = {sid for sid, _ in session_rows if sid not in prepared.base}
+                identities = sorted(wanted_visible ^ set(visible_ids))
+                for start in range(0, len(identities), 128):
+                    with self._mutex:
+                        if not self._authority.current_scan(scan):
+                            raise OSError("Deletion history observation changed")
+                        connection = self._db
+                        connection.execute("PRAGMA busy_timeout=0")
+                        try:
+                            with self._transaction():
+                                for sid in identities[start : start + 128]:
+                                    hidden = (
+                                        sid in prepared.base
+                                        or self._authority.known(sid) is not None
+                                    )
+                                    connection.execute(
+                                        "DELETE FROM storage_visible_sessions WHERE session_id=?",
+                                        (sid,),
+                                    )
+                                    if not hidden:
+                                        connection.execute(
+                                            "INSERT OR IGNORE INTO storage_visible_sessions "
+                                            "SELECT session_id FROM sessions WHERE session_id=? "
+                                            "AND NOT EXISTS(SELECT 1 FROM deleted_sessions WHERE session_id=?)",
+                                            (sid, sid),
+                                        )
+                        finally:
+                            connection.execute("PRAGMA busy_timeout=5000")
+            stage_stamp, stage_epoch = self._inspect_staged_intents()
+            with self._mutex:
+                if can_publish is not None and can_publish() is not True:
+                    return {"status": "UNAVAILABLE", "code": _HISTORY_UNAVAILABLE}
+                if stage_epoch != self._stage_epoch or stage_stamp != self._stage_root_stamp():
+                    raise OSError("Deletion staging observation changed")
+                current_stamp = self._journal_stamp()
+                if stamp != current_stamp and version == self._history_version:
+                    raise OSError("Deletion history observation changed")
+                # Only a stable cut may prime the old capture-name index. No H-copy
+                # or name enumeration happens here; all containers were built above.
+                if (
+                    self._authority.current_scan(scan)
+                    and version == self._history_version
+                    and stamp == current_stamp
+                ):
+                    capture_retired += (
+                        self._intent_journal,
+                        self._intent_names,
+                        self._intent_failure,
+                    )
+                    self._observation_epoch += 1
+                    self._published_observation = self._observation_epoch
+                    self._intent_failure = None
+                    self._intent_journal = generations
+                    self._intent_names = mutable_names
+                    self._intent_stamp = stamp
+                    self._intent_settled = started - stamp[2] > _STAMP_SETTLE_NS
+                retired = self._authority.publish(prepared)
+                if self._authority.published == scan.observation:
+                    self._visibility_ready = True
+                    self._history_conflict = None
+                if (
+                    self._authority.receipt is not None
+                    and self._authority.receipt.observation == scan.observation
+                    and version == self._history_version
+                ):
+                    self._authority_stamp = current_stamp
+                ready = self._connection is not None and self._authority.valid()
+            return {
+                "status": "READY" if ready else "UNAVAILABLE",
+                "code": "" if ready else _HISTORY_UNAVAILABLE,
+            }
+        except (ValueError, OSError, sqlite3.Error, MemoryError) as error:
+            retryable_sql = isinstance(error, sqlite3.Error) and (
+                getattr(error, "sqlite_errorcode", -1) & 0xFF
+            ) in {
+                sqlite3.SQLITE_BUSY,
+                sqlite3.SQLITE_LOCKED,
+                sqlite3.SQLITE_IOERR,
+                sqlite3.SQLITE_CANTOPEN,
+                sqlite3.SQLITE_INTERRUPT,
+            }
+            with self._mutex:
+                self._authority.failed(
+                    scan, io_error=isinstance(error, (OSError, MemoryError)) or retryable_sql
+                )
+                try:
+                    stable = (
+                        stamp is not None
+                        and stamp == self._journal_stamp()
+                        and version == self._history_version
+                    )
+                except (ValueError, OSError):
+                    stable = False
+                if stable:
+                    assert stamp is not None
+                    # A body failure is not permission to open other bodies on the
+                    # capture path. Preserve the independently observed names only.
+                    capture_retired += (self._journal_listing,)
+                    self._journal_listing = (
+                        stamp,
+                        names,
+                        unfinished,
+                        started - stamp[2] > _STAMP_SETTLE_NS,
+                    )
+            return {"status": "UNAVAILABLE", "code": _HISTORY_UNAVAILABLE}
+        finally:
+            self._history_reader.value = None
+            # Keep references out of the root section through this point.
+            del retired
+            del capture_retired
 
     @staticmethod
     @contextmanager
@@ -308,10 +671,9 @@ class Library:
 
         VALID, DB_ONLY, JOURNAL_ONLY, BOTH, TOMBSTONE, MISSING or
         HISTORY_UNAVAILABLE. Call outside JobStore transactions/locks and outside
-        the GUI lane. Full journal validation uses the existing G-P15 parser off
-        root_mutex; the validated G-P15 index and one session's DB facts are then
-        held stable through the caller's short transaction. No media/DB writes,
-        new Library, private journal parser or additional root lock are created.
+        the GUI lane. A current full-audit receipt and one session's exact facts
+        are held through the caller's short transaction. Metadata hints are read
+        outside root; no body, enumeration, full row scan or map copy is done.
         """
         identifier(session_id)
         owner = Library._job_authorities.get(db_path.absolute())
@@ -319,7 +681,13 @@ class Library:
             yield "HISTORY_UNAVAILABLE"
             return
         for _ in range(3):
-            observation = owner._journal_prefetch()
+            with owner._mutex:
+                version = owner._history_version
+            try:
+                stamp = owner._journal_stamp()
+            except (ValueError, OSError):
+                yield "HISTORY_UNAVAILABLE"
+                return
             with owner._mutex:
                 state = "HISTORY_UNAVAILABLE"
                 try:
@@ -327,22 +695,44 @@ class Library:
                         state = "HISTORY_UNAVAILABLE"
                     else:
                         owner._check_version()
-                        if not owner._accept_observation(
-                            observation
-                        ) and not owner._newer_observation_current(observation):
+                        if version != owner._history_version:
                             continue
-                        if owner._intent_journal is not None:
+                        owner._observe_history_stamp(stamp)
+                        if stamp == owner._authority_stamp and owner._authority.valid():
                             state = owner._job_authority_state(session_id)
                 except (ValueError, OSError, sqlite3.Error):
                     state = "HISTORY_UNAVAILABLE"
-                yield state
+                previous = getattr(owner._authority_leases, "current", None)
+                owner._authority_leases.current = (session_id, state)
+                try:
+                    yield state
+                finally:
+                    owner._authority_leases.current = previous
                 return
         yield "HISTORY_UNAVAILABLE"  # concurrent intent changes never become absence
 
+    @staticmethod
+    def assert_job_authority_current(db_path: Path, session_id: str) -> None:
+        """Pure expiry fence immediately before a protected Job commit.
+
+        The active job_authority context already owns root. Never reacquire it
+        behind a Job lock, or start an audit from a transaction.
+        """
+        owner = Library._job_authorities.get(db_path.absolute())
+        if (
+            owner is None
+            or owner._connection is None
+            or getattr(owner._authority_leases, "current", None) != (session_id, "VALID")
+            or not owner._authority.valid()
+        ):
+            raise StateConflict(_HISTORY_UNAVAILABLE)
+
     def _job_authority_state(self, session_id: str) -> str:
         """Root mutex held through the caller's existing short Job transaction."""
-        assert self._intent_journal is not None
-        published = self._intent_journal.get(session_id)
+        if session_id in self._reserved_intents:
+            return "HISTORY_UNAVAILABLE"
+        known = self._authority.known(session_id)
+        published = known.journal_generation if known is not None else None
         row = self._db.execute(
             "SELECT generation,status FROM deleted_sessions WHERE session_id=?", (session_id,)
         ).fetchone()
@@ -355,14 +745,17 @@ class Library:
                 raise ValidationError(_HISTORY_UNAVAILABLE)
         if session is not None:
             integer(session[0])
-        generation = max(row[0] if row else 0, published or 0)
+        generation = max(row[0] if row else 0, known.generation if known else 0)
         if session is not None and generation and session[0] > generation:
             raise ValidationError(_HISTORY_UNAVAILABLE)
-        if row is not None and row[1] == "DELETED_LOCAL":
+        if (row is not None and row[1] == "DELETED_LOCAL") or (
+            known is not None and known.db_status == "DELETED_LOCAL"
+        ):
             return "TOMBSTONE"
-        if row is not None and published is not None:
+        has_db = row is not None or known is not None and known.db_generation is not None
+        if has_db and published is not None:
             return "BOTH"
-        if row is not None:
+        if has_db:
             return "DB_ONLY"
         if published is not None:
             return "JOURNAL_ONLY"
@@ -417,25 +810,9 @@ class Library:
 
     def _read_journal(self) -> dict[str, int]:
         """One validated journal level: session ID -> generation. Never repairs."""
-        journal = safe_path(self.root, "deletion-journal")
-        if not journal.is_dir():
-            raise ValidationError(_HISTORY_UNAVAILABLE)
-        entries: dict[str, int] = {}
-        for path in journal.iterdir():
-            check_path(path)
-            if path.name.startswith(".tmp-"):
-                # An uncommitted intent cannot safely be interpreted as absence.
-                raise ValidationError("Incomplete deletion history")
-            if not path.is_file() or path.suffix != ".json":
-                raise ValidationError("Unrecognized deletion history")
-            value = read_json(path)
-            schema(value)
-            sid = identifier(value.get("session_id"))
-            generation = integer(value.get("generation"), minimum=1)
-            if path.name != sid + ".json" or value.get("state") != "DELETE_REQUESTED":
-                raise ValidationError("Invalid deletion intent")
-            entries[sid] = generation
-        return entries
+        parsed = read_format_one(self.root, reader=read_json)
+        self._history_reader.value = parsed
+        return {sid: entry.generation for sid, entry in parsed.records.items()}
 
     def _journal_prefetch(self, *, fresh: bool = False) -> _JournalObservation:
         """Successful reads stay fresh; only content failures may be memoized."""
@@ -640,10 +1017,20 @@ class Library:
                 if self._missing_deletion_history:
                     raise ValidationError(_HISTORY_UNAVAILABLE)
                 self._check_version()
+                if (
+                    session_id in self._reserved_intents
+                    or self._authority.known(session_id) is not None
+                ):
+                    return True
                 names = self._writer_names()
                 row = connection.execute(
-                    "SELECT 1 FROM deleted_sessions WHERE session_id=?", (session_id,)
+                    "SELECT generation,status FROM deleted_sessions WHERE session_id=?",
+                    (session_id,),
                 ).fetchone()
+                if row is not None:
+                    integer(row[0], minimum=1)
+                    if row[1] not in _DELETION_STATUSES:
+                        raise ValidationError(_HISTORY_UNAVAILABLE)
             except ValidationError as exc:
                 if exc.args == ("Incomplete deletion intent",):
                     raise
@@ -652,7 +1039,7 @@ class Library:
                 raise ValidationError("Cannot verify writer deletion intent") from None
             return f"{session_id}.json" in names or row is not None
 
-    def _writer_names(self) -> frozenset[str]:
+    def _writer_names(self) -> AbstractSet[str]:
         """Root mutex held: journal entry names for the capture path."""
         if self._index_current():
             return self._intent_names
@@ -722,9 +1109,16 @@ class Library:
             raise ValidationError(_HISTORY_UNAVAILABLE) from None
         return rows, journal
 
-    def _deletion_intents(self, prefetched: _JournalObservation | None = None) -> set[str]:
-        rows, journal = self._deletion_history(prefetched)
-        return set(rows) | set(journal)
+    def _deletion_intents(
+        self, prefetched: _JournalObservation | None = None
+    ) -> DeletionHistoryIndex:
+        """Exact pinned membership, never a copied H-set or implicit full audit."""
+        context = getattr(self._capture_scopes, "current", None)
+        if context is not None:
+            self._validate_capture_control(context.session_id, context)
+        else:
+            self._require_history()
+        return self._authority
 
     def _live(self, session_id: str) -> None:
         """Root mutex held: refuse a session with a deletion intent, in O(1).
@@ -736,8 +1130,9 @@ class Library:
         identifier(session_id)
         self._db  # noqa: B018 - a closed Library reports itself, not a history error
         try:
-            intent = session_id in self._indexed_journal() or self._db_intent(session_id)
+            intent = self._writer_intent(session_id)
         except (ValueError, OSError, sqlite3.Error):
+            self._authority.invalidate()
             raise ValidationError(_HISTORY_UNAVAILABLE) from None
         if intent:
             raise StateConflict("Session has a deletion intent")
@@ -749,6 +1144,110 @@ class Library:
             raise ValidationError("Live owner must provide is_live")
         with self._mutex:
             self._live_owners.setdefault(session_id, {})[id(owner)] = weakref.ref(owner)
+
+    def register_capture_controller(self, session_id: str, owner: LiveOwner) -> object:
+        """Control registration is distinct from merely observing a live owner."""
+        identifier(session_id)
+        if not callable(getattr(owner, "capture_control_state", None)):
+            raise StateConflict("SESSION_LIVE")
+        with self._mutex:
+            self.get_session(session_id)
+            self.register_live_owner(session_id, owner)
+            registration = object()
+            self._capture_owners[id(owner)] = (registration, weakref.ref(owner), session_id)
+            return registration
+
+    @staticmethod
+    def _capture_ack_state(owner: LiveOwner) -> str:
+        # Registered implementations must answer by observation only, without
+        # taking a capture gate, waiting, doing I/O or calling a source.
+        inspect = getattr(owner, "capture_control_state", None)
+        state = inspect() if callable(inspect) else None
+        if (
+            type(state) is not tuple
+            or len(state) != 4
+            or type(state[0]) is not str
+            or any(type(ack) is not bool or ack is not True for ack in state[1:])
+        ):
+            raise StateConflict("SESSION_LIVE")
+        return state[0]
+
+    def capture_control(
+        self, session_id: str, owner: LiveOwner, registration: object
+    ) -> CaptureControlContext:
+        """Issue only for this controller, library instance, run and ACK state."""
+        with self._mutex:
+            known = self._capture_owners.get(id(owner))
+            if (
+                known is None
+                or known[0] is not registration
+                or known[1]() is not owner
+                or known[2] != session_id
+            ):
+                raise StateConflict("SESSION_LIVE")
+            self.get_session(session_id)
+            run = self._capture_ack_state(owner)
+            if self._is_live(session_id):
+                raise StateConflict("SESSION_LIVE")
+            return CaptureControlContext(
+                self.root,
+                self._authority.instance,
+                session_id,
+                weakref.ref(owner),
+                registration,
+                run,
+                threading.get_ident(),
+                self._capture_issuer,
+            )
+
+    def _validate_capture_control(self, session_id: str, context: CaptureControlContext) -> None:
+        """Root held; revalidate every use, never infer permission from an owner."""
+        if (
+            type(context) is not CaptureControlContext
+            or context.issuer is not self._capture_issuer
+            or context.root != self.root
+            or context.instance != self._authority.instance
+            or context.session_id != session_id
+            or context.thread_id != threading.get_ident()
+            or self._connection is None
+        ):
+            raise StateConflict("SESSION_LIVE")
+        owner = context.owner()
+        known = self._capture_owners.get(id(owner))
+        if (
+            owner is None
+            or known is None
+            or known[0] is not context.registration
+            or known[1]() is not owner
+            or known[2] != session_id
+            or self._live_owners.get(session_id, {}).get(id(owner), lambda: None)() is not owner
+            or self._capture_ack_state(owner) != context.run_id
+            or self._is_live(session_id)
+        ):
+            raise StateConflict("SESSION_LIVE")
+        self._live(session_id)
+
+    @contextmanager
+    def _capture_scope(
+        self, session_id: str, context: CaptureControlContext | None
+    ) -> Iterator[None]:
+        with self._mutex:
+            if context is not None:
+                self._validate_capture_control(session_id, context)
+            previous = getattr(self._capture_scopes, "current", None)
+            self._capture_scopes.current = context
+        try:
+            yield
+        finally:
+            self._capture_scopes.current = previous
+
+    def _require_management_or_capture(self, session_id: str) -> bool:
+        context = getattr(self._capture_scopes, "current", None)
+        if context is not None:
+            self._validate_capture_control(session_id, context)
+            return True
+        self._require_history()
+        return False
 
     def _is_live(self, session_id: str) -> bool:
         # Called under the root mutex; owners must answer without taking their own locks.
@@ -791,18 +1290,140 @@ class Library:
                 raise KeyError(session_id)
             return Session(session_id, SessionState(row[0]), row[1])
 
-    def list_sessions(self) -> list[Session]:
-        # Full journal validation on every call, read outside the root mutex.
-        prefetched = self._journal_prefetch(fresh=True)
+    def check_local_catalog(self) -> None:
+        """Construction/cleanup check, not permission for management or publication."""
         with self._mutex:
-            deleted = self._deletion_intents(prefetched)
-            return [
-                Session(row[0], SessionState(row[1]), row[2])
-                for row in self._db.execute(
-                    "SELECT session_id,state,state_version FROM sessions ORDER BY session_id"
+            self._check_version()
+
+    def check_management_history(self) -> None:
+        """Control-lane preflight, with no implicit deep scan or permission fallback."""
+        try:
+            with self._mutex:
+                self._check_version()
+                self._require_history()
+        except (ValueError, OSError, sqlite3.Error):
+            raise ValidationError(_HISTORY_UNAVAILABLE) from None
+
+    def authority_view(self, session_id: str) -> dict[str, Any]:
+        """Exact public observation; callers must acquire a lease for an actual Job."""
+        with self.job_authority(self.db_path, session_id) as state:
+            if self._connection is None or self._job_authorities.get(self.db_path) is not self:
+                raise ValidationError(_HISTORY_UNAVAILABLE)
+            entry = self._authority.known(session_id)
+            return {
+                "session_id": session_id,
+                "authority": state,
+                "generation": entry.generation if entry else None,
+            }
+
+    def _observe_history_stamp(self, stamp: tuple[int, int, int]) -> None:
+        """Root held: one invalidation per observed change, never per denied peek.
+
+        A caller observing no permission must not cancel an in-flight initial or
+        repair audit. This hint creates no receipt and never extends its lifetime.
+        """
+        previous = self._authority_seen_stamp
+        self._authority_seen_stamp = stamp
+        if previous is not None and previous != stamp:
+            self._authority.invalidate()
+
+    def _require_history(self) -> None:
+        """Root held: positive authority is short-lived; negative floors are not."""
+        try:
+            stamp = self._journal_stamp()
+        except (ValueError, OSError):
+            self._authority.invalidate()
+            raise ValidationError(_HISTORY_UNAVAILABLE) from None
+        self._observe_history_stamp(stamp)
+        if (
+            stamp != self._authority_stamp
+            or not self._authority.valid()
+            or not self._visibility_ready
+        ):
+            raise ValidationError(_HISTORY_UNAVAILABLE)
+
+    def sessions_page(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 128,
+        expected_catalog_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Exact keyset page. No OFFSET, H-row filtering or journal I/O."""
+        if type(limit) is not int or not 1 <= limit <= 128:
+            raise ValidationError("Invalid session page limit")
+        position = None
+        if cursor is not None:
+            if type(cursor) is not str:
+                raise ValidationError("Invalid session page cursor")
+            position = strict_json(cursor.encode("utf-8"), limit=1024)
+            if set(position) != {"schema_version", "instance", "version", "after"}:
+                raise ValidationError("Invalid session page cursor")
+            schema(position)
+            integer(position["version"])
+            identifier(position["after"])
+        if expected_catalog_version is not None:
+            integer(expected_catalog_version)
+        with self._mutex:
+            self._check_version()
+            self._require_history()
+            row = self._db.execute(
+                "SELECT version FROM storage_catalog_meta WHERE singleton=1"
+            ).fetchone()
+            if row is None:
+                raise ValidationError(_HISTORY_UNAVAILABLE)
+            version = integer(row[0]) + self._history_version
+            if (
+                (
+                    position is not None
+                    and (
+                        position["instance"] != self._authority.instance
+                        or position["version"] != version
+                    )
                 )
-                if row[0] not in deleted
+                or expected_catalog_version is not None
+                and expected_catalog_version != version
+            ):
+                raise StateConflict("STALE_SESSION_VERSION")
+            after = position["after"] if position else ""
+            rows = self._db.execute(
+                "SELECT s.session_id,s.state,s.state_version FROM storage_visible_sessions v "
+                "JOIN sessions s ON s.session_id=v.session_id "
+                "WHERE v.session_id>? ORDER BY v.session_id LIMIT ?",
+                (after, limit),
+            ).fetchall()
+            result = [
+                Session(row[0], SessionState(row[1]), row[2])
+                for row in rows
+                if self._authority.known(row[0]) is None
+                and row[0] not in self._reserved_intents
+                and not self._db_intent(row[0])
             ]
+            self._require_history()
+            following = (
+                canonical(
+                    {
+                        "schema_version": 1,
+                        "instance": self._authority.instance,
+                        "version": version,
+                        "after": rows[-1][0],
+                    }
+                ).decode("utf-8")
+                if len(rows) == limit
+                else None
+            )
+            return {"sessions": result, "next": following, "catalog_version": version}
+
+    def list_sessions(self) -> list[Session]:
+        """Compatibility O(S) list. History size H never enters this hot path."""
+        result: list[Session] = []
+        cursor = None
+        while True:
+            page = self.sessions_page(cursor=cursor)
+            result.extend(page["sessions"])
+            cursor = page["next"]
+            if cursor is None:
+                return result
 
     @staticmethod
     def _event(connection: sqlite3.Connection, session_id: str, kind: str, version: int) -> None:
@@ -830,7 +1451,8 @@ class Library:
         """Root mutex held: decide every refusal before publishing any claim."""
         if expected_version is not None:
             integer(expected_version)
-        if session_id in self._deletion_intents(prefetched):
+        self._require_management_or_capture(session_id)
+        if self._writer_intent(session_id):
             if operation == "recover":
                 return False  # Preserve recover's read-only DELETE_PENDING result.
             raise StateConflict("DELETE_PENDING")
@@ -887,12 +1509,10 @@ class Library:
         # Waiting is deliberately outside root_mutex. Nested recovery/manifest
         # operations on the same thread retain the original claim.
         with lock:
-            # Admission validates the whole journal, read outside the root mutex.
-            prefetched = self._journal_prefetch(fresh=True) if admission is not None else None
             with self._mutex:
                 nested = session_id in self._claims
                 admitted = admission is None or self._admit_session(
-                    session_id, admission, expected_version, prefetched
+                    session_id, admission, expected_version
                 )
                 self._check_claim(session_id)
                 if admitted:
@@ -903,7 +1523,7 @@ class Library:
                 yield
             except StateConflict:
                 with self._mutex:
-                    deleted = session_id in self._deletion_intents()
+                    deleted = self._writer_intent(session_id)
                 if deleted:
                     raise StateConflict("DELETE_PENDING") from None
                 raise
@@ -1233,6 +1853,12 @@ class Library:
     @contextmanager
     def _health_authority(self, session_id: str, *, capture: bool = False) -> Iterator[str]:
         if not capture:
+            with self._mutex:
+                context = getattr(self._capture_scopes, "current", None)
+                if context is not None:
+                    self._validate_capture_control(session_id, context)
+                    capture = True
+        if not capture:
             with self.job_authority(self.db_path, session_id) as state:
                 yield state
             return
@@ -1243,8 +1869,25 @@ class Library:
                 version = self._history_version
             try:
                 stamp = self._journal_stamp()
-                names, _ = self._list_journal(stamp)
-                incomplete = any(name.startswith(".tmp-") for name in names)
+                with self._mutex:
+                    if (
+                        self._intent_journal is not None
+                        and self._intent_stamp == stamp
+                        and self._intent_settled
+                    ):
+                        names: AbstractSet[str] | None = self._intent_names
+                        incomplete = False
+                    elif (
+                        self._journal_listing is not None
+                        and self._journal_listing[0] == stamp
+                        and self._journal_listing[3]
+                    ):
+                        _, names, incomplete, _ = self._journal_listing
+                    else:
+                        names = None
+                if names is None:
+                    names, _ = self._list_journal(stamp)
+                    incomplete = any(name.startswith(".tmp-") for name in names)
             except (ValueError, OSError):
                 yield "HISTORY_UNAVAILABLE"
                 return
@@ -1254,7 +1897,12 @@ class Library:
                 self._check_version()
                 if self._missing_deletion_history or incomplete:
                     state = "HISTORY_UNAVAILABLE"
-                elif f"{session_id}.json" in names or self._db_intent(session_id):
+                elif (
+                    session_id in self._reserved_intents
+                    or self._authority.known(session_id) is not None
+                    or f"{session_id}.json" in names
+                    or self._db_intent(session_id)
+                ):
                     state = "DELETED"
                 elif self._db.execute(
                     "SELECT 1 FROM sessions WHERE session_id=?", (session_id,)
@@ -2085,7 +2733,13 @@ class Library:
                     )
             return manifest
 
-    def finalize_session(self, session_id: str) -> dict[str, Any]:
+    def finalize_session(
+        self, session_id: str, *, capture_control: CaptureControlContext | None = None
+    ) -> dict[str, Any]:
+        with self._capture_scope(session_id, capture_control):
+            return self._finalize_session(session_id)
+
+    def _finalize_session(self, session_id: str) -> dict[str, Any]:
         with self._session_operation(session_id, admission="seal"):
             with self._mutex:
                 if self._is_live(session_id):
@@ -2108,6 +2762,7 @@ class Library:
             manifest = self._manifest(session_id)
             encoded = canonical(manifest["chunks"]).decode("utf-8")
             with self._mutex:
+                self._require_management_or_capture(session_id)
                 self._manifest_current(manifest)
                 if self._is_live(session_id):
                     raise StateConflict("SESSION_LIVE")
@@ -2233,13 +2888,18 @@ class Library:
             "staging", staging.name, "CANDIDATE_NOT_ADOPTED", None, prefix.frame_count, tail
         )
 
-    def recover_session(self, session_id: str) -> dict[str, Any]:
+    def recover_session(
+        self, session_id: str, *, capture_control: CaptureControlContext | None = None
+    ) -> dict[str, Any]:
+        with self._capture_scope(session_id, capture_control):
+            return self._recover_session(session_id)
+
+    def _recover_session(self, session_id: str) -> dict[str, Any]:
         with self._session_operation(session_id, admission="recover"):
-            prefetched = self._journal_prefetch(fresh=True)
             with self._mutex:
                 identifier(session_id)
-                intents = self._deletion_intents(prefetched)
-                if session_id in intents:
+                self._require_management_or_capture(session_id)
+                if self._writer_intent(session_id):
                     return {
                         "session_id": session_id,
                         "adopted": 0,
@@ -2439,15 +3099,18 @@ class Library:
             raise StateConflict(entry["inspection_error"])
 
     def _inventory(self) -> tuple[list[dict[str, Any]], int]:
-        prefetched = self._journal_prefetch(fresh=True)
         with self._mutex:
-            deleted = self._deletion_intents(prefetched)
+            deleted = self._deletion_intents()
             rows = self._db.execute(
                 "SELECT session_id,state,state_version FROM sessions ORDER BY session_id"
             ).fetchall()
             snapshots: list[tuple[str, str, int, set[str], bool]] = []
             for session_id, state, version in rows:
-                if session_id in deleted or SessionState(state) not in _UNFINISHED:
+                if (
+                    session_id in deleted
+                    or self._db_intent(session_id)
+                    or SessionState(state) not in _UNFINISHED
+                ):
                     continue
                 catalog = {
                     row[0]
@@ -2509,12 +3172,12 @@ class Library:
         with self._session_operation(
             session_id, admission="finalize", expected_version=expected_version
         ):
-            prefetched = self._journal_prefetch(fresh=True)
             with self._mutex:
                 identifier(session_id)
                 if expected_version is not None:
                     integer(expected_version)
-                if session_id in self._deletion_intents(prefetched):
+                self._require_management_or_capture(session_id)
+                if self._writer_intent(session_id):
                     raise StateConflict("DELETE_PENDING")
                 if self._is_live(session_id):
                     raise StateConflict("SESSION_LIVE")
@@ -2606,12 +3269,31 @@ class Library:
     def deletion_generation(self, session_id: str) -> int | None:
         """Read only: the current deletion-intent generation (pending or completed)."""
         identifier(session_id)
-        prefetched = self._journal_prefetch(fresh=True)
         with self._mutex:
-            rows, journal = self._deletion_history(prefetched)
-            if session_id not in rows and session_id not in journal:
-                return None
-            return max(rows.get(session_id, (0, ""))[0], journal.get(session_id, 0))
+            self._require_history()
+            current, published = self._deletion_record(session_id)
+            return max(current[0] if current else 0, published or 0) or None
+
+    def _deletion_record(self, session_id: str) -> tuple[tuple[int, str] | None, int | None]:
+        """One exact DB key and pinned journal floor; root mutex held."""
+        known = self._authority.known(session_id)
+        row = self._db.execute(
+            "SELECT generation,status FROM deleted_sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        current = (row[0], row[1]) if row is not None else None
+        if current is not None:
+            integer(current[0], minimum=1)
+            if current[1] not in _DELETION_STATUSES:
+                raise ValidationError(_HISTORY_UNAVAILABLE)
+        if known is not None and known.db_generation is not None:
+            if (
+                current is None
+                or current[0] < known.db_generation
+                or (known.db_status == "DELETED_LOCAL" and current[1] != "DELETED_LOCAL")
+            ):
+                self._authority.invalidate()
+                raise ValidationError(_HISTORY_UNAVAILABLE)
+        return current, known.journal_generation if known is not None else None
 
     def pending_deletions(self) -> list[dict[str, Any]]:
         """Read-only inventory of durable deletion intents requiring completion or repair.
@@ -2622,38 +3304,44 @@ class Library:
         corruption raises ValidationError and a newer catalog generation raises
         StateConflict DELETE_HISTORY_CONFLICT; neither becomes an empty list.
         """
-        prefetched = self._journal_prefetch(fresh=True)
         observed: list[dict[str, Any]] = []
-        with self._mutex:
-            self._check_version()
-            rows, journal = self._deletion_history(prefetched)
-            identities = sorted(set(rows) | set(journal))
-            connection = self._db
-            catalog: dict[str, int] = {}
-            for start in range(0, len(identities), 500):
-                part = identities[start : start + 500]
-                marks = ",".join("?" * len(part))
-                catalog.update(
-                    connection.execute(
-                        f"SELECT session_id,generation FROM sessions WHERE session_id IN ({marks})",  # noqa: S608
-                        part,
-                    ).fetchall()
-                )
-            for session_id in identities:
-                current = rows.get(session_id)
-                published = journal.get(session_id)
-                generation = max(current[0] if current else 0, published or 0)
-                if catalog.get(session_id, 0) > generation:
+        after = ""
+        while True:
+            with self._mutex:
+                self._check_version()
+                if self._history_conflict:
                     raise StateConflict("DELETE_HISTORY_CONFLICT")
-                observed.append(
-                    {
-                        "session_id": session_id,
-                        "generation": generation,
-                        "current": current,
-                        "published": published,
-                        "session_generation": catalog.get(session_id),
-                    }
-                )
+                self._require_history()
+                identities = [
+                    row[0]
+                    for row in self._db.execute(
+                        "SELECT session_id FROM storage_pending_deletions "
+                        "WHERE session_id>? ORDER BY session_id LIMIT 128",
+                        (after,),
+                    )
+                ]
+                for session_id in identities:
+                    current, published = self._deletion_record(session_id)
+                    row = self._db.execute(
+                        "SELECT generation FROM sessions WHERE session_id=?", (session_id,)
+                    ).fetchone()
+                    generation = max(current[0] if current else 0, published or 0)
+                    if generation == 0:
+                        raise ValidationError(_HISTORY_UNAVAILABLE)
+                    if row is not None and row[0] > generation:
+                        raise StateConflict("DELETE_HISTORY_CONFLICT")
+                    observed.append(
+                        {
+                            "session_id": session_id,
+                            "generation": generation,
+                            "current": current,
+                            "published": published,
+                            "session_generation": row[0] if row else None,
+                        }
+                    )
+            if len(identities) < 128:
+                break
+            after = identities[-1]
         for start in range(0, len(observed), 64):
             with self._mutex:
                 connection = self._db
@@ -2737,40 +3425,203 @@ class Library:
             return "SESSION_OPERATION_IN_PROGRESS"
         return None
 
-    def _publish_intent(self, session_id: str, generation: int) -> None:
-        """Root mutex held: atomically publish the minimal journal intent at generation.
+    @staticmethod
+    def _intent_value(session_id: str, generation: int) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "session_id": session_id,
+            "generation": generation,
+            "state": "DELETE_REQUESTED",
+        }
 
-        The journal index is updated in this same root_mutex section, so no append,
-        seal or registration can pass its deletion check between the published
-        intent and the index (I1). The index is invalid while the file is written;
-        a failed write leaves it invalid and the next query re-validates in full.
+    def _stage_root_stamp(self) -> tuple[int, int, int]:
+        status = os.stat(self.root)
+        return status.st_dev, status.st_ino, status.st_mtime_ns
+
+    def _inspect_staged_intents(self) -> tuple[tuple[int, int, int], int]:
+        """Control lane only: preserve/quarantine incomplete protocol files in place.
+
+        A verified provisional body can add a negative self fence, never positive
+        authority. No cleanup, adoption or journal enumeration happens here.
+        """
+        with self._mutex:
+            active, epoch = dict(self._staged_files), self._stage_epoch
+            lifetimes = frozenset(self._staged_lifetimes)
+        stamp = self._stage_root_stamp()
+        incomplete = False
+        for path in self.root.iterdir():
+            match = re.fullmatch(
+                r"\.deletion-(?:stage|atomic)-([0-9a-f]{32})\.json|\.tmp-([0-9a-f]{32})",
+                path.name,
+                flags=re.IGNORECASE | re.ASCII,
+            )
+            if match is None:
+                continue
+            registered = active.get(path)
+            if (
+                registered is not None
+                and registered[0] == self._authority.instance
+                and registered[1] == match.group(1)
+                and registered[2] in lifetimes
+            ):
+                if registered[3] is None:
+                    raise OSError("Deletion staging ownership pending")
+                check_path(path)
+                state = path.stat()
+                if (state.st_dev, state.st_ino) == registered[3]:
+                    continue
+            incomplete = True
+            try:
+                value = read_json(path)
+                schema(value)
+                sid = identifier(value.get("session_id"))
+                generation = integer(value.get("generation"), minimum=1)
+                if value.get("state") != "DELETE_REQUESTED":
+                    continue
+            except (ValueError, OSError):
+                continue  # unknown target; do not invent an identity or remove bytes
+            with self._mutex:
+                if generation > self._reserved_intents.get(sid, 0):
+                    self._reserved_intents[sid] = generation
+                    self._history_version += 1
+        if incomplete:
+            raise ValidationError("Incomplete deletion history")
+        if stamp != self._stage_root_stamp():
+            raise OSError("Deletion staging observation changed")
+        with self._mutex:
+            if epoch != self._stage_epoch:
+                raise OSError("Deletion staging ownership changed")
+        return stamp, epoch
+
+    def _prepare_intent(self, staged: Path, temporary: Path, value: dict[str, Any]) -> None:
+        """Owned atomic write with a known nonce; fsync and cleanup stay off root."""
+        opened = False
+        identity: tuple[int, int] | None = None
+        try:
+            with open_file(temporary, "xb") as stream:
+                opened = True
+                state = os.fstat(stream.fileno())
+                identity = state.st_dev, state.st_ino
+                with self._mutex:
+                    registration = self._staged_files[temporary]
+                    self._staged_files[temporary] = (
+                        *registration[:3],
+                        (state.st_dev, state.st_ino),
+                    )
+                    self._stage_epoch += 1
+                _safe_io.write_all(stream, canonical(value) + b"\n")
+                _safe_io.sync(stream)
+            check_path(staged)
+            if staged.exists():
+                raise FileExistsError("Deletion stage already exists")
+            os.replace(temporary, staged)
+            with self._mutex:
+                self._staged_files[staged] = self._staged_files[temporary]
+                del self._staged_files[temporary]
+                self._stage_epoch += 1
+        finally:
+            # This call still owns the exact xb file and registration. A killed
+            # actor does not execute this; later inspectors never clean its orphan.
+            if opened and temporary.exists():
+                check_path(temporary)
+                state = temporary.stat()
+                if identity == (state.st_dev, state.st_ino):
+                    temporary.unlink()
+
+    def _publish_intent(
+        self, session_id: str, generation: int, *, prepared_path: Path | None = None
+    ) -> None:
+        """Root held: publish one exact key, never copy the full authority map.
+
+        Public deletion stages and fsyncs first, outside root. The optional direct
+        form remains the low-level format-1 fault-injection seam used by existing
+        storage tests; public deletion never performs that form under root.
         """
         self._history_version += 1
         try:
-            current = self._index_current()
+            stamp = self._journal_stamp()
         except (ValueError, OSError):
-            current = False
-        snapshot = dict(self._intent_journal) if current and self._intent_journal else {}
-        self._intent_journal = None
+            stamp = None
+        current = (
+            stamp is not None and self._intent_stamp == stamp and self._intent_journal is not None
+        )
+        if stamp is None:
+            self._authority.invalidate()
+        else:
+            self._observe_history_stamp(stamp)
         self._intent_failure = None
         self._observation_epoch += 1
         self._published_observation = self._observation_epoch
-        atomic_json(
-            safe_path(self.root, f"deletion-journal/{session_id}.json"),
-            {
-                "schema_version": 1,
-                "session_id": session_id,
-                "generation": generation,
-                "state": "DELETE_REQUESTED",
-            },
+        intent = self._intent_value(session_id, generation)
+        target = safe_path(self.root, f"deletion-journal/{session_id}.json")
+        try:
+            if prepared_path is None:
+                atomic_json(target, intent)
+            else:
+                check_path(prepared_path)
+                check_path(target)
+                os.replace(prepared_path, target)
+        except BaseException:
+            self._intent_stamp = None
+            self._authority.invalidate()
+            raise
+        self._authority.trusted_delta(
+            session_id, HistoryEntry(generation, _history_digest(canonical(intent)).hexdigest())
         )
-        if current:
-            snapshot[session_id] = generation
+        self._authority_stamp = self._journal_stamp()
+        self._authority_seen_stamp = self._authority_stamp
+        if current and self._intent_journal is not None:
+            self._intent_journal[session_id] = generation
+            if not isinstance(self._intent_names, set):
+                # Legacy test observations use frozen names; normal audits already
+                # build this mutable capture-only name map outside root.
+                self._intent_names = set(self._intent_names)
+            self._intent_names.add(session_id + ".json")
+            self._intent_stamp = self._authority_stamp
+            self._intent_settled = False
+        else:
+            self._intent_stamp = None
+        self._reserved_intents.pop(session_id, None)
+
+    def _stage_intent(self, session_id: str, generation: int) -> None:
+        """Caller owns this ID's publication lock; reserve before all media I/O."""
+        nonce, token = uuid.uuid4().hex, object()
+        staged = safe_path(self.root, ".deletion-stage-" + nonce + ".json")
+        temporary = safe_path(self.root, ".deletion-atomic-" + nonce + ".json")
+        with self._mutex:
+            self._history_version += 1
+            self._reserved_intents[session_id] = generation
+            registration = (self._authority.instance, nonce, token, None)
+            self._staged_files[staged] = self._staged_files[temporary] = registration
+            self._staged_lifetimes.add(token)
+            self._stage_epoch += 1
+        try:
+            self._prepare_intent(staged, temporary, self._intent_value(session_id, generation))
+            with self._mutex:
+                row = self._db.execute(
+                    "SELECT generation FROM sessions WHERE session_id=?", (session_id,)
+                ).fetchone()
+                if row is not None and row[0] > generation:
+                    raise StateConflict("DELETE_HISTORY_CONFLICT")
+                self._publish_intent(session_id, generation, prepared_path=staged)
+        finally:
             try:
-                # Not settled: the next query lists the entry names once more.
-                self._set_index(snapshot, self._journal_stamp())
-            except OSError:
-                pass  # stays invalid; the next query re-validates
+                with self._mutex:
+                    owned = self._staged_files.get(staged)
+                if owned is not None and owned[2] is token and owned[3] is not None:
+                    if staged.exists():
+                        check_path(staged)
+                        state = staged.stat()
+                        if (state.st_dev, state.st_ino) == owned[3]:
+                            staged.unlink()
+            finally:
+                with self._mutex:
+                    for path in (staged, temporary):
+                        owned = self._staged_files.get(path)
+                        if owned is not None and owned[2] is token:
+                            del self._staged_files[path]
+                    self._staged_lifetimes.discard(token)
+                    self._stage_epoch += 1
 
     def _deletion_complete(self, session_id: str, generation: int) -> bool:
         """Root mutex held: tombstone at generation, no catalog row and no folder."""
@@ -2841,6 +3692,34 @@ class Library:
             connection.execute(
                 "UPDATE sessions SET generation=? WHERE session_id=?", (generation, session_id)
             )
+        state = self._db.execute(
+            "SELECT generation,status FROM deleted_sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        assert state is not None
+        self._authority.trusted_delta(
+            session_id, HistoryEntry(db_generation=state[0], db_status=state[1])
+        )
+
+    def _project_intent_retry(self, session_id: str, generation: int) -> None:
+        deadline = _registration_clock() + 5.0
+        while True:
+            with self._mutex:
+                connection = self._db
+                connection.execute("PRAGMA busy_timeout=0")
+                try:
+                    self._project_intent(session_id, generation)
+                    return
+                except sqlite3.OperationalError as error:
+                    code = getattr(error, "sqlite_errorcode", None)
+                    if (
+                        type(code) is not int
+                        or code & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                        or _registration_clock() >= deadline
+                    ):
+                        raise
+                finally:
+                    connection.execute("PRAGMA busy_timeout=5000")
+            _registration_wait(0.01)
 
     def _progress_deletion(
         self,
@@ -2857,53 +3736,55 @@ class Library:
         another session's capture writer is never blocked by it.
         """
         identifier(session_id)
-        prefetched = self._journal_prefetch(fresh=True)
         with self._mutex:
-            self._check_version()
-            rows, journal = self._deletion_history(prefetched)
-            row = self._db.execute(
-                "SELECT generation FROM sessions WHERE session_id=?", (session_id,)
-            ).fetchone()
-            current = rows.get(session_id)
-            published = journal.get(session_id)
-            if current is None and published is None:
-                if not create:
-                    return {"session_id": session_id, "state": "NOT_PENDING", "deleted": False}
-                if row is None:
-                    return {"session_id": session_id, "state": "NOT_FOUND", "deleted": False}
-                generation = integer(row[0] + 1, minimum=1)
-                self._publish_intent(session_id, generation)
-                self._project_intent(session_id, generation)
-            else:
-                # Existing intent: keep the maximum valid generation, never a new one.
-                generation = max(current[0] if current else 0, published or 0)
-                if row is not None and row[0] > generation:
+            publication = self._intent_publication_locks.setdefault(session_id, threading.RLock())
+        # Never wait for another intent writer or fsync while holding root.
+        with publication:
+            with self._mutex:
+                self._check_version()
+                if self._history_conflict == session_id:
                     raise StateConflict("DELETE_HISTORY_CONFLICT")
-                if expected_generation is not None and expected_generation != generation:
-                    raise StateConflict("STALE_DELETE_GENERATION")
-                if (
-                    current == (generation, "DELETED_LOCAL")
-                    and published == generation
-                    and row is None
-                    and not self._media_present(session_id)
-                ):
-                    return self._completed_result(session_id, generation, True, strict)
-                # Both minimal intents and the catalog fence reach g before removal.
-                if published != generation:
-                    self._metadata_write(
-                        strict, lambda: self._publish_intent(session_id, generation)
-                    )
-                if (
+                self._require_history()
+                current, published = self._deletion_record(session_id)
+                row = self._db.execute(
+                    "SELECT generation FROM sessions WHERE session_id=?", (session_id,)
+                ).fetchone()
+                if current is None and published is None:
+                    if not create:
+                        return {"session_id": session_id, "state": "NOT_PENDING", "deleted": False}
+                    if row is None:
+                        return {"session_id": session_id, "state": "NOT_FOUND", "deleted": False}
+                    generation = integer(row[0] + 1, minimum=1)
+                else:
+                    generation = max(current[0] if current else 0, published or 0)
+                    if row is not None and row[0] > generation:
+                        raise StateConflict("DELETE_HISTORY_CONFLICT")
+                    if expected_generation is not None and expected_generation != generation:
+                        raise StateConflict("STALE_DELETE_GENERATION")
+                    if (
+                        current == (generation, "DELETED_LOCAL")
+                        and published == generation
+                        and row is None
+                        and not self._media_present(session_id)
+                    ):
+                        return self._completed_result(session_id, generation, True, strict)
+                needs_journal = published != generation
+                needs_db = (
                     current is None
                     or current[0] != generation
-                    or (row is not None and row[0] != generation)
-                ):
-                    self._metadata_write(
-                        strict, lambda: self._project_intent(session_id, generation)
-                    )
-            blocker = self._deletion_blocker(session_id)
-            if blocker is not None:
-                return self._pending_result(session_id, blocker, generation, strict)
+                    or row is not None
+                    and row[0] != generation
+                )
+            if needs_journal:
+                self._metadata_write(strict, lambda: self._stage_intent(session_id, generation))
+            if needs_db:
+                self._metadata_write(
+                    strict, lambda: self._project_intent_retry(session_id, generation)
+                )
+            with self._mutex:
+                blocker = self._deletion_blocker(session_id)
+                if blocker is not None:
+                    return self._pending_result(session_id, blocker, generation, strict)
         stale = False
         with self._session_operation(session_id):
             with self._mutex:
@@ -2932,13 +3813,13 @@ class Library:
         except (OSError, ValueError):
             # Partial removal stays partial; nothing is restored or reported complete.
             return self._pending_result(session_id, "MEDIA_REMOVAL_FAILED", generation, strict)
+        try:
+            published = self._journal_generation(session_id)
+        except (ValueError, OSError):
+            if strict:
+                raise ValidationError(_HISTORY_UNAVAILABLE) from None
+            raise
         with self._mutex:
-            try:
-                published = self._journal_generation(session_id)
-            except (ValueError, OSError):
-                if strict:
-                    raise ValidationError(_HISTORY_UNAVAILABLE) from None
-                raise
             if published != generation:
                 # Completion requires a valid minimal journal at g.
                 return self._pending_result(
@@ -2959,8 +3840,14 @@ class Library:
                         "WHERE session_id=?",
                         (generation, session_id),
                     )
+                    connection.execute(
+                        "DELETE FROM storage_pending_deletions WHERE session_id=?", (session_id,)
+                    )
 
             self._metadata_write(strict, cleanup)
+            self._authority.trusted_delta(
+                session_id, HistoryEntry(db_generation=generation, db_status="DELETED_LOCAL")
+            )
         return self._completed_result(session_id, generation, False, strict)
 
     def _active_jobs(
@@ -3026,6 +3913,8 @@ class Library:
         # Writers fall back to the durable check once this Library is gone.
         unregister_intent_check(self.root, self._append_check)
         with self._mutex:
+            retired = (self._intent_failure, self._intent_journal, self._journal_listing)
+            self._authority.close()
             self._intent_failure = None
             self._intent_journal = None
             self._observation_epoch += 1
@@ -3051,6 +3940,7 @@ class Library:
                             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
                     finally:
                         stream.close()
+        del retired  # Large index containers are released after root_mutex.
 
     def __enter__(self) -> Library:
         return self

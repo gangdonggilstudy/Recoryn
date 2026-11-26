@@ -181,6 +181,14 @@ def opened(template: Path, tmp_path: Path) -> Iterator[tuple[Library, Path]]:
         library.close()
 
 
+def reopen_seeded(library: Library, root: Path, request: pytest.FixtureRequest) -> Library:
+    """External fixture input precedes this actor's first authority observation."""
+    library.close()
+    replacement = Library(root)
+    request.addfinalizer(replacement.close)
+    return replacement
+
+
 # --- INV: DB 3 x journal 4 x session row 2 x folder 3 = 72 ------------------------------
 
 INV_DIMENSIONS = list(
@@ -260,6 +268,7 @@ def inv_world(library: Library, root: Path, db: str, journal: str, session: bool
 @pytest.mark.parametrize(("db", "journal", "session", "folder"), INV_CASES)
 def test_inventory_reconciliation_is_read_only(
     opened: tuple[Library, Path],
+    request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
     db: str,
     journal: str,
@@ -268,6 +277,7 @@ def test_inventory_reconciliation_is_read_only(
 ) -> None:
     library, root = opened
     inv_world(library, root, db, journal, session, folder)
+    library = reopen_seeded(library, root, request)
     remover = Remover(monkeypatch)
     before = snapshot(library, root)
     expected = expected_inventory(db, journal, session, folder)
@@ -318,6 +328,7 @@ GEN_REPAIR = {"same": False, "journal_newer": True, "db_newer": True, "max": Fal
 @pytest.mark.parametrize(("status", "shape", "folder"), GEN_CASES)
 def test_generation_is_the_maximum_and_never_decreases(
     opened: tuple[Library, Path],
+    request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
     status: str,
     shape: str,
@@ -332,6 +343,7 @@ def test_generation_is_the_maximum_and_never_decreases(
         shutil.rmtree(root / "sessions" / SID)
     elif folder == "partial":
         (root / "sessions" / SID / "tracks" / "mic" / "e1" / "c2" / "blocks.jsonl").unlink()
+    library = reopen_seeded(library, root, request)
     remover = Remover(monkeypatch)
     before = snapshot(library, root)
     if g is None:
@@ -479,13 +491,18 @@ def corrupt(library: Library, root: Path, name: str, monkeypatch: pytest.MonkeyP
 
 @pytest.mark.parametrize("name", HISTORY_CASES)
 def test_damaged_history_is_never_an_empty_or_completed_list(
-    opened: tuple[Library, Path], monkeypatch: pytest.MonkeyPatch, name: str
+    opened: tuple[Library, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    request: pytest.FixtureRequest,
 ) -> None:
     library, root = opened
     generation = pending_intent(library, root)
+    library = reopen_seeded(library, root, request)
     remover = Remover(monkeypatch)
     with monkeypatch.context() as patch:
         corrupt(library, root, name, patch)
+        library.verify_deletion_history(fresh=True)
         before = snapshot(library, root)
         with pytest.raises(ValidationError) as listed:
             library.pending_deletions()
@@ -524,10 +541,15 @@ TYPE_CASES = [
 
 @pytest.mark.parametrize(("session_id", "expected"), TYPE_CASES)
 def test_invalid_retry_arguments_change_nothing(
-    opened: tuple[Library, Path], monkeypatch: pytest.MonkeyPatch, session_id: Any, expected: Any
+    opened: tuple[Library, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    session_id: Any,
+    expected: Any,
+    request: pytest.FixtureRequest,
 ) -> None:
     library, root = opened
     pending_intent(library, root)
+    library = reopen_seeded(library, root, request)
     remover = Remover(monkeypatch)
     before = snapshot(library, root)
     with pytest.raises(ValidationError):
@@ -542,13 +564,17 @@ def test_invalid_retry_arguments_change_nothing(
 
 @pytest.mark.parametrize("action", ("retry", "delete"), ids=["G05-FIX1-0000", "G05-FIX1-0001"])
 def test_a_completed_tombstone_is_never_demoted_while_repairing(
-    opened: tuple[Library, Path], monkeypatch: pytest.MonkeyPatch, action: str
+    opened: tuple[Library, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    request: pytest.FixtureRequest,
 ) -> None:
     """Section 2.2 table row 6 / 2.3-3: DELETED_LOCAL + newer journal + leftover media."""
     library, root = opened
     raw(library, "UPDATE sessions SET generation=2 WHERE session_id=?", SID)
     raw(library, "INSERT INTO deleted_sessions VALUES(?,2,'DELETED_LOCAL')", SID)
     write_journal(root, intent(3))  # the newer side wins: g=3
+    library = reopen_seeded(library, root, request)
     remover = Remover(monkeypatch)
     remover.locked = True
     before = media(root)
@@ -596,6 +622,7 @@ def test_an_uninspectable_session_path_is_never_reported_completed(
         return original(base, *parts)
 
     monkeypatch.setattr(library_module, "safe_path", refused)
+    assert library.verify_deletion_history(fresh=True)["status"] == "READY"
     remover = Remover(monkeypatch)
     [row] = library.pending_deletions()
     assert (row["media_present"], row["reason"], row["db_status"]) == (
@@ -632,6 +659,7 @@ def test_a_junction_at_a_completed_session_path_is_not_completed_or_followed(
     _winapi.CreateJunction(str(outside), str(link))
     try:
         assert getattr(link.lstat(), "st_file_attributes", 0) & 0x400
+        assert library.verify_deletion_history(fresh=True)["status"] == "READY"
         [row] = library.pending_deletions()
         assert (row["media_present"], row["reason"]) == (True, "RETRY_REQUIRED")
         result = library.retry_deletion(SID, expected_generation=generation)

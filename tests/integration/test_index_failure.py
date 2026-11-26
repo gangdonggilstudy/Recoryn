@@ -151,9 +151,11 @@ def test_authority_interleavings_never_publish_an_older_result(
                 library._db.commit()
         elif event == "repair":
             repair(library)
+            assert library.verify_deletion_history(fresh=True)["status"] == "READY"
             assert [s.session_id for s in library.list_sessions()] == ["s"]
         else:
             fault(library, monkeypatch, "json")
+            assert library.verify_deletion_history(fresh=True)["status"] == "UNAVAILABLE"
             with pytest.raises(ValidationError, match="DELETION_HISTORY_UNAVAILABLE"):
                 library.list_sessions()
 
@@ -200,6 +202,8 @@ def test_authority_interleavings_never_publish_an_older_result(
                     writer.append(pcm("mic", 1))
                 assert (writer.staging_path / "audio.pcm").read_bytes() == before
         elif store is not None:
+            # Explicit management discovery, not an implicit read in claim().
+            library.verify_deletion_history(fresh=True)
             if allowed:
                 assert store.claim(job.job_id, "worker").attempt_no == 1
             else:
@@ -258,7 +262,7 @@ from recoryn.storage import Library
 from recoryn.domain import ValidationError
 with Library(Path(sys.argv[1])) as lib:
     try:
-        lib.get_session('s');result='VALID'
+        lib.check_management_history();lib.get_session('s');result='VALID'
     except ValidationError as error:
         assert error.args==('DELETION_HISTORY_UNAVAILABLE',);result='HISTORY_UNAVAILABLE'
     print(json.dumps({'state':result,'origin':recoryn.__file__}))
@@ -282,6 +286,7 @@ with Library(Path(sys.argv[1])) as lib:
         assert saved.read_bytes() == pcm("mic", 0).payload
     with Library(root) as reopened:
         repair(reopened)
+        assert reopened.verify_deletion_history(fresh=True)["status"] == "READY"
         assert [s.session_id for s in reopened.list_sessions()] == ["s"]
         assert reopened._intent_failure is None
 
@@ -346,8 +351,7 @@ def test_one_sharing_denial_cannot_latch_recording_creation_or_stop(
             if where == "refresh":
                 os.utime(path.parent, ns=(past + 1000, past + 1000))
                 armed[0] = True
-                with pytest.raises(ValidationError, match="DELETION_HISTORY_UNAVAILABLE"):
-                    service.stop(timeout=30)
+                assert library.verify_deletion_history(fresh=True)["status"] == "UNAVAILABLE"
                 assert service.health_snapshot()["accepting"]
             assert library._intent_failure is None
             result = service.stop(timeout=30)
@@ -383,6 +387,10 @@ def test_external_corruption_is_read_once_during_unsettled_recording(
         )
         library._db.commit()
     stamp(library)
+    # This is pre-existing fixture history, not an unsupported live external delta.
+    root = library.root
+    library.close()
+    library = Library(root)
     service = RecordingService(
         library, {t: AudioFormat(48000, 1) for t in ("mic", "system")[:tracks]}, session_id="rec"
     )
@@ -399,9 +407,11 @@ def test_external_corruption_is_read_once_during_unsettled_recording(
         assert corrupted.wait(10)
         while not quit_tick.is_set():
             try:
+                # Explicit control observation still exercises the GS02 memo.
+                assert consume(library, "read") == "HISTORY_UNAVAILABLE"
+                replies.append(("DELETION_HISTORY_UNAVAILABLE",))
+                # Healthy local capture lookup is independent of that global failure.
                 library.chunks("rec")
-            except ValidationError as error:
-                replies.append(error.args)
             except BaseException as error:
                 errors.append(error)
                 return
@@ -436,6 +446,7 @@ def test_external_corruption_is_read_once_during_unsettled_recording(
         assert len(replies) >= 2 and set(replies) == {("DELETION_HISTORY_UNAVAILABLE",)}
         assert len(reads) == 1  # Later unsettled ticks enumerate names, never reparse bodies.
         repair(library)
+        assert library.verify_deletion_history(fresh=True)["status"] == "READY"
         library.list_sessions()  # Explicit content repair before finalization.
         service.stop(timeout=30)
         chunks = library.chunks("rec")
@@ -467,3 +478,4 @@ def test_external_corruption_is_read_once_during_unsettled_recording(
         if thread.is_alive():
             thread.join(30)
         service.join_writer()
+        library.close()

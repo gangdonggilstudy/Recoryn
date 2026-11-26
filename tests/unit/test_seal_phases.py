@@ -397,7 +397,9 @@ def fc_same_tick_name_change(root: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         os.utime(journal, ns=(before.st_atime_ns, before.st_mtime_ns))
         after = os.stat(journal)
         assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
-        assert history_unavailable(lambda: library.get_session("s"))
+        assert library.verify_deletion_history(fresh=True)["status"] == "UNAVAILABLE"
+        assert history_unavailable(library.list_sessions)
+        assert library.get_session("s").session_id == "s"  # local self fence, not permission
 
 
 def fc_changed_while_reading(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -415,8 +417,11 @@ def fc_changed_while_reading(root: Path, monkeypatch: pytest.MonkeyPatch) -> Non
             return original(path, **kwargs)
 
         monkeypatch.setattr(library_module, "read_json", racing)
-        assert history_unavailable(lambda: library.get_session("s"))
+        assert library.verify_deletion_history(fresh=True)["status"] == "UNAVAILABLE"
+        assert history_unavailable(library.list_sessions)
+        assert library.get_session("s").session_id == "s"
         monkeypatch.undo()
+        assert library.verify_deletion_history(fresh=True)["status"] == "UNAVAILABLE"
         assert library.get_session("s").session_id == "s"
 
 
@@ -554,10 +559,12 @@ def _deleted_while(root: Path, monkeypatch: pytest.MonkeyPatch, inject: str) -> 
         original_stamp = Library._journal_stamp
         original_atomic = library_module.atomic_json
 
-        def publish(self: Library, session_id: str, generation: int) -> None:
+        def publish(
+            self: Library, session_id: str, generation: int, *, prepared_path: Path | None = None
+        ) -> None:
             state["armed"] = inject == "index"
             try:
-                original_publish(self, session_id, generation)
+                original_publish(self, session_id, generation, prepared_path=prepared_path)
             finally:
                 state["armed"] = False
 

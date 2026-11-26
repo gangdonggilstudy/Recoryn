@@ -240,6 +240,8 @@ class JobStore:
                 raise StateConflict(code)
             with transaction(valid) as valid:
                 yield valid
+                if not acknowledgement:
+                    Library.assert_job_authority_current(self._db_path, session_id)
 
     def _get(self, job_id: str) -> JobRecord:
         row = self._db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -612,7 +614,17 @@ class JobStore:
         _text(attempt_id, "attempt_id", 128)
         _fence(fence)
         _text(result_ref, "result_ref")
-        with self._transaction():
+        with self._lock:
+            self._ensure_open()
+            job = self._get(job_id)
+            if (
+                job.state == JobState.SUCCEEDED
+                and job.attempt_id == attempt_id
+                and job.fence == fence
+                and job.result_ref == result_ref
+            ):
+                return job
+        with self._session_transaction(job_id):
             job = self._get(job_id)
             if (
                 job.state == JobState.SUCCEEDED
@@ -677,6 +689,9 @@ class JobStore:
             "chunks",
             "storage_events",
             "deleted_sessions",
+            "storage_visible_sessions",
+            "storage_pending_deletions",
+            "storage_catalog_meta",
         }
         if (
             action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE)
@@ -701,7 +716,18 @@ class JobStore:
         _fence(fence)
         if not callable(publisher) or type(complete) is not bool:
             raise ValidationError("Invalid Job publisher")
-        with self._transaction():
+        with self._lock:
+            self._ensure_open()
+            job = self._get(job_id)
+            if (
+                complete
+                and job.state == JobState.SUCCEEDED
+                and job.attempt_id == attempt_id
+                and job.fence == fence
+                and job.result_ref is not None
+            ):
+                return job, job.result_ref
+        with self._session_transaction(job_id):
             job = self._get(job_id)
             if (
                 complete

@@ -1029,17 +1029,18 @@ def test_idx_scale_queries_stay_short_as_tombstones_grow(
 
 
 FAIL_TABLE: dict[str, tuple[Any, Any, Any, Any]] = {
-    # state: (get_session a, b, j; list_sessions), written by hand from section 11.4.
+    # GS11: independent local reads immediately after the change; management
+    # list is observed after an explicit full audit, never a hot body scan.
     "normal": ("OK", "OK", "INTENT", {"a", "b"}),
-    "tmp_added": (UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, UNAVAILABLE),
-    "unknown_added": (UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, UNAVAILABLE),
-    "corrupt_added": (UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, UNAVAILABLE),
-    "intent_removed": ("OK", "OK", "OK", {"a", "b", "j"}),
-    "journal_removed": (UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, UNAVAILABLE),
-    "db_only": ("OK", "INTENT", "INTENT", {"a"}),
+    "tmp_added": (UNAVAILABLE, UNAVAILABLE, "INTENT", UNAVAILABLE),
+    "unknown_added": ("OK", "OK", "INTENT", UNAVAILABLE),
+    "corrupt_added": ("OK", "OK", "INTENT", UNAVAILABLE),
+    "intent_removed": ("OK", "OK", "INTENT", UNAVAILABLE),
+    "journal_removed": (UNAVAILABLE, UNAVAILABLE, "INTENT", UNAVAILABLE),
+    "db_only": ("OK", "INTENT", "INTENT", UNAVAILABLE),
     # Accepted difference (section 11.6): an in-place rewrite of an existing entry keeps
     # its name and the directory stamp, so _live keeps the validated index and still
-    # blocks j; the management list validates contents in full and fails closed.
+    # blocks j; an explicit management audit validates contents and fails closed.
     "inplace_rewrite": ("OK", "OK", "INTENT", UNAVAILABLE),
 }
 IDX_FAIL = [
@@ -1059,6 +1060,7 @@ def test_idx_fail_outside_changes_are_revalidated(tmp_path: Path, state: str, qu
     (journal / "j.json").write_text(json.dumps(intent_body("j")), encoding="utf-8")
     with Library(root) as library:
         assert classify(lambda: library.get_session("j")) == "INTENT"  # indexed at open
+        before_stamp = journal.stat()
         # The change follows at once, usually inside the same directory mtime tick.
         if state == "tmp_added":
             (journal / ".tmp-abandoned").write_bytes(b'{"schema_version":1')
@@ -1075,6 +1077,13 @@ def test_idx_fail_outside_changes_are_revalidated(tmp_path: Path, state: str, qu
             library._db.commit()
         elif state == "inplace_rewrite":
             (journal / "j.json").write_bytes(b'{"schema_version":1,,}')
+            os.utime(journal, ns=(before_stamp.st_atime_ns, before_stamp.st_mtime_ns))
+            after_stamp = journal.stat()
+            assert (after_stamp.st_dev, after_stamp.st_ino, after_stamp.st_mtime_ns) == (
+                before_stamp.st_dev,
+                before_stamp.st_ino,
+                before_stamp.st_mtime_ns,
+            )
         expected = FAIL_TABLE[state]
         if query == "get":
             observed = tuple(
@@ -1082,8 +1091,11 @@ def test_idx_fail_outside_changes_are_revalidated(tmp_path: Path, state: str, qu
                 for session in ("a", "b", "j")
             )
             assert observed == expected[:3]
-        else:
-            assert classify(lambda: {s.session_id for s in library.list_sessions()}) == expected[3]
+        # Local reads above must not borrow a subsequent audit's observations.
+        audit = library.verify_deletion_history(fresh=True)
+        assert audit["status"] == ("READY" if state == "normal" else "UNAVAILABLE")
+        assert classify(lambda: {s.session_id for s in library.list_sessions()}) == expected[3]
+        assert classify(lambda: library.get_session("j")) == "INTENT"
 
 
 IDX_HB = [
@@ -1124,13 +1136,23 @@ def test_idx_open_validates_once_and_fails_closed(tmp_path: Path, state: str) ->
             assert library.get_session("a").session_id == "a"
             for session in deleted:
                 assert classify(lambda s=session: library.create_session(s)) == "INTENT"
-        else:
+        elif state == "tmp-present":
             for call in (
                 lambda: library.get_session("a"),
                 lambda: library.create_session("new"),
                 library.list_sessions,
             ):
                 assert classify(call) == UNAVAILABLE
+        else:
+            damaged = journal / "t0000.json"
+            before = damaged.read_bytes()
+            assert library.deletion_history_status()["status"] == "UNAVAILABLE"
+            assert library.get_session("a").session_id == "a"
+            assert library.create_session("new").session_id == "new"
+            assert classify(library.list_sessions) == UNAVAILABLE
+            for session in deleted:
+                assert classify(lambda s=session: library.create_session(s)) == "INTENT"
+            assert damaged.read_bytes() == before
 
 
 IDX_UI = [
@@ -1220,6 +1242,8 @@ def test_idx_io_journal_errors_never_stop_another_recording(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     """G05R-04: a journal read error stops management only, never another recording."""
+    from recoryn.app.recording import RecordingError
+
     root = tmp_path / "library"
     armed = {"read": False, "own": False}
     denied: list[str] = []
@@ -1251,15 +1275,14 @@ def test_idx_io_journal_errors_never_stop_another_recording(
             library.create_session("a")
         armed["read"] = True
         with Library(root) as library:  # opening succeeds
-            for call in (
-                lambda: library.get_session("a"),
-                lambda: library.create_session("new"),
-                library.list_sessions,
-            ):
-                assert classify(call) == UNAVAILABLE
-            armed["read"] = False
-            assert {s.session_id for s in library.list_sessions()} == {"a"}
+            assert library.deletion_history_status()["status"] == "UNAVAILABLE"
+            assert library.get_session("a").session_id == "a"
             assert library.create_session("new").session_id == "new"
+            assert classify(library.list_sessions) == UNAVAILABLE
+            armed["read"] = False
+            assert library.verify_deletion_history(fresh=True)["status"] == "READY"
+            assert {s.session_id for s in library.list_sessions()} == {"a", "new"}
+            assert library.get_session("new").session_id == "new"
             for session in deleted:
                 assert classify(lambda s=session: library.get_session(s)) == "INTENT"
         return
@@ -1285,6 +1308,7 @@ def test_idx_io_journal_errors_never_stop_another_recording(
                         )
                         armed["read"] = True
                 if index == 250 and case in ("IO2", "IO4"):
+                    assert library.verify_deletion_history(fresh=True)["status"] == "UNAVAILABLE"
                     assert classify(library.list_sessions) == UNAVAILABLE  # management only
                 rejected += not service.submit(block("rec", "mic", epoch, index, frames=480))
                 delay = started + (index + 1) * 0.01 - time.perf_counter()
@@ -1292,12 +1316,18 @@ def test_idx_io_journal_errors_never_stop_another_recording(
                     time.sleep(delay)
             if case == "IO3":
                 wait_for(lambda: service.health_snapshot()["storage_failed"])
+                service.join_writer()  # keep the fault armed until both real worker ACKs
             failed = service.health_snapshot()["storage_failed"]
             still_armed = armed["read"]
             armed["read"] = armed["own"] = False
             if case == "IO3":
-                service.join_writer()
+                with pytest.raises(
+                    RecordingError, match="^STORAGE_FAILED_PARTIAL_MEDIA_PRESERVED$"
+                ):
+                    service.stop(timeout=60)
             else:
+                if case == "IO2":
+                    assert library.verify_deletion_history(fresh=True)["status"] == "READY"
                 result = service.stop(timeout=60)
         finally:
             service.join_writer()
@@ -1326,7 +1356,10 @@ def test_idx_io_journal_errors_never_stop_another_recording(
             assert classify(lambda: library.get_session("other")) == "INTENT"
             assert classify(lambda: library.create_session("other")) == "INTENT"
         else:
-            assert {s.session_id for s in library.list_sessions()} == {"other", "rec"}
+            assert library.verify_deletion_history(fresh=True)["status"] == "UNAVAILABLE"
+            library.close()  # unknown external input is first observed by a new actor
+            with Library(root) as restarted:
+                assert {s.session_id for s in restarted.list_sessions()} == {"other", "rec"}
 
 
 START = [

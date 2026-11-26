@@ -184,6 +184,11 @@ def test_retry_completes_only_after_confirmed_removal(
     library = Library(root)
     try:
         generation = make_intent(library, root, source, monkeypatch)
+        # External seed precedes the first audit. The separate mode=reopen below
+        # still tests one additional restart after an already validated actor.
+        if source != "both":
+            library.close()
+            library = Library(root)
         if outcome == "other_actor":
             assert library.retry_deletion(SID, expected_generation=generation) == completed(
                 generation, False
@@ -313,27 +318,28 @@ def install(library, checkpoint, reach):
         undo.append(lambda: setattr(owner, name, old))
 
     session_dir = os.path.abspath(os.path.join(str(library.root), "sessions", "s"))
-    if checkpoint in ("C0", "C2"):
-        original_atomic = _library_module.atomic_json
+    if checkpoint == "C0":
+        original_atomic = type(library)._prepare_intent
 
-        def atomic(path, value):
-            journal = path.parent.name == "deletion-journal"
-            if journal and checkpoint == "C0":
+        def atomic(self, path, temporary, value):
+            staged = path.parent == library.root and path.name.startswith(".deletion-stage-")
+            if staged:
                 reach()
-            original_atomic(path, value)
-            if journal and checkpoint == "C2":
-                reach()
+            original_atomic(self, path, temporary, value)
 
-        patch(_library_module, "atomic_json", atomic)
-    elif checkpoint == "C1":
+        patch(type(library), "_prepare_intent", atomic)
+    elif checkpoint in ("C1", "C2"):
         original_replace = os.replace
 
         def replace(source, target, *args, **kwargs):
-            if pathlib.Path(target).parent.name == "deletion-journal" and pathlib.Path(
-                source
-            ).name.startswith(".tmp-"):
+            publication = (pathlib.Path(target).parent.name == "deletion-journal"
+                           and pathlib.Path(source).name.startswith(".deletion-stage-"))
+            if publication and checkpoint == "C1":
                 reach()
-            return original_replace(source, target, *args, **kwargs)
+            result = original_replace(source, target, *args, **kwargs)
+            if publication and checkpoint == "C2":
+                reach()
+            return result
 
         patch(os, "replace", replace)
     elif checkpoint in ("C3", "C5"):
@@ -406,8 +412,8 @@ CRASH_CASES = [
 AFTER_CRASH: dict[tuple[str, str], Any] = {
     ("C0", "unwind"): "NO_INTENT",
     ("C0", "kill"): "NO_INTENT",
-    ("C1", "unwind"): "NO_INTENT",  # atomic_json's finally removes its own tmp
-    ("C1", "kill"): "HISTORY_UNAVAILABLE",  # the killed tmp stays and is never guessed away
+    ("C1", "unwind"): "NO_INTENT",  # the live actor unwinds its own registered stage
+    ("C1", "kill"): "HISTORY_UNAVAILABLE",  # killed root stage stays, never guessed away
     **{
         (checkpoint, mode): value
         for mode in ("unwind", "kill")
@@ -542,8 +548,11 @@ def test_interrupted_deletion_is_rediscovered_never_resurrected(
             assert [item.session_id for item in library.list_sessions()] == [SID]
             return
         if expected == "HISTORY_UNAVAILABLE":
-            leftovers = [path.name for path in (root / "deletion-journal").iterdir()]
-            assert len(leftovers) == 1 and leftovers[0].startswith(".tmp-")
+            assert not list((root / "deletion-journal").iterdir())
+            leftovers = list(root.glob(".deletion-stage-*.json"))
+            assert len(leftovers) == 1
+            staged_bytes = leftovers[0].read_bytes()
+            assert json.loads(staged_bytes) == journal_intent(generation)
             before = snapshot(library, root)
             for call in (
                 library.pending_deletions,
@@ -553,6 +562,7 @@ def test_interrupted_deletion_is_rediscovered_never_resurrected(
                 with pytest.raises(ValidationError):
                     call()
             assert remover.calls == 0 and snapshot(library, root) == before
+            assert leftovers[0].read_bytes() == staged_bytes
             assert media(root) == baseline
             return
         if expected == "COMPLETE":
@@ -705,6 +715,11 @@ def test_live_owner_and_reader_keep_deletion_pending_until_end(
             )
         else:
             write_journal(root, journal_intent(generation))
+        if source != "both":
+            library.close()
+            library = Library(root)
+            if owner is not None:
+                library.register_live_owner(SID, owner)
         assert media(root) == baseline
         [row] = library.pending_deletions()
         assert (row["live"], row["active_reader_or_writer"]) == (live, active)
@@ -1092,7 +1107,7 @@ PERF_CASES = [
 
 @pytest.mark.parametrize("action", PERF_CASES)
 def test_pending_management_never_blocks_another_recording(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str, request: pytest.FixtureRequest
 ) -> None:
     """관리 작업 완료까지 측정한다(상한 300초). writer seal 지연은 G-P15 후속이다."""
     root = tmp_path / "library"
@@ -1112,10 +1127,15 @@ def test_pending_management_never_blocks_another_recording(
                 bundle.mkdir(parents=True)
                 for name in ("audio.pcm", "blocks.jsonl", "descriptor.json"):
                     (bundle / name).write_bytes(b"x")
+            assert library.verify_deletion_history(fresh=True)["status"] == "READY"
             with monkeypatch.context() as patch:
                 locked = Remover(patch)
                 locked.locked = True
                 assert library.delete_session(SID)["reason"] == "MEDIA_REMOVAL_FAILED"
+        if action == "inventory":
+            library.close()
+            library = Library(root)
+            request.addfinalizer(library.close)
         generation = deleted_row(library)[0] if action == "retry" else 1
         meter = RootHoldMeter(library._mutex)
         monkeypatch.setattr(library, "_mutex", meter)
@@ -1123,7 +1143,46 @@ def test_pending_management_never_blocks_another_recording(
         real_iterdir = Path.iterdir
         real_scandir = os.scandir
         real_listdir = os.listdir
+        real_stat = os.stat
         real_remove_tree = library_module.remove_tree
+        real_remove_and_seal = library._remove_and_seal
+        real_media_present = library._media_present
+        completion_scope = threading.local()
+        stat_targets = {
+            root / "sessions" / sid for sid in (sessions if action == "inventory" else [SID])
+        }
+        point_calls = {
+            "stat_inside": 0,
+            "stat_outside": 0,
+            "completion_stat_inside": 0,
+            "completion_calls": 0,
+            "remove_outside": 0,
+        }
+
+        def measured_remove_and_seal(*args: Any, **kwargs: Any) -> Any:
+            completion_scope.removing = True
+            try:
+                return real_remove_and_seal(*args, **kwargs)
+            finally:
+                completion_scope.removing = False
+
+        def measured_media_present(session_id: str) -> bool:
+            completion = (
+                action == "retry"
+                and session_id == SID
+                and threading.current_thread().name == "g05-management"
+                and meter.holding()
+                and getattr(completion_scope, "removing", False)
+                and point_calls["completion_calls"] == 0
+            )
+            if completion:
+                point_calls["completion_calls"] += 1
+                completion_scope.confirming = True
+            try:
+                return real_media_present(session_id)
+            finally:
+                if completion:
+                    completion_scope.confirming = False
 
         def counted_iterdir(path: Path) -> Iterator[Path]:
             meter.note_fs("iterdir")
@@ -1139,13 +1198,32 @@ def test_pending_management_never_blocks_another_recording(
 
         def counted_remove_tree(*args: Any, **kwargs: Any) -> Any:
             meter.note_fs("remove_tree")
+            if threading.current_thread().name == "g05-management" and not meter.holding():
+                point_calls["remove_outside"] += 1
             return real_remove_tree(*args, **kwargs)
+
+        def counted_stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+            # Lexical comparison only: never resolve/stat while classifying a call.
+            if (
+                threading.current_thread().name == "g05-management"
+                and isinstance(path, (str, Path))
+                and Path(path) in stat_targets
+            ):
+                if meter.holding() and getattr(completion_scope, "confirming", False):
+                    point_calls["completion_stat_inside"] += 1
+                else:
+                    meter.note_fs("session_stat")
+                    point_calls["stat_inside" if meter.holding() else "stat_outside"] += 1
+            return real_stat(path, *args, **kwargs)
 
         # A walk rewritten with os.scandir or os.listdir must still be seen (G05R-09).
         monkeypatch.setattr(Path, "iterdir", counted_iterdir)
         monkeypatch.setattr(os, "scandir", counted_scandir)
         monkeypatch.setattr(os, "listdir", counted_listdir)
+        monkeypatch.setattr(os, "stat", counted_stat)
         monkeypatch.setattr(library_module, "remove_tree", counted_remove_tree)
+        monkeypatch.setattr(library, "_remove_and_seal", measured_remove_and_seal)
+        monkeypatch.setattr(library, "_media_present", measured_media_present)
         service = RecordingService(library, {"mic": FMT}, session_id="rec")
         service.start()
         result: dict[str, Any] = {}
@@ -1218,6 +1296,13 @@ def test_pending_management_never_blocks_another_recording(
             ],
             "management_fs_under_mutex": len(meter.management_fs_under_mutex),
             "management_fs_outside": meter.management_fs_outside,
+            "management_target_stat_inside": point_calls["stat_inside"]
+            + point_calls["completion_stat_inside"],
+            "management_other_target_stat_inside": point_calls["stat_inside"],
+            "management_completion_stat_inside": point_calls["completion_stat_inside"],
+            "management_completion_calls": point_calls["completion_calls"],
+            "management_target_stat_outside": point_calls["stat_outside"],
+            "management_remove_outside": point_calls["remove_outside"],
             "rejected": rejected,
             "dropped_frames": health["dropped_frames"],
             "submitted_frames": index * 480,
@@ -1230,6 +1315,13 @@ def test_pending_management_never_blocks_another_recording(
         # Structural check first: it does not depend on runner speed (GC-P02). The
         # positive control proves the counters see this action's folder work at all.
         assert meter.management_fs_outside > 0, measurement
+        if action == "inventory":
+            assert point_calls["stat_outside"] > 0, measurement
+        else:
+            assert point_calls["remove_outside"] > 0, measurement
+            assert point_calls["completion_calls"] == 1, measurement
+            assert point_calls["completion_stat_inside"] > 0, measurement
+        assert point_calls["stat_inside"] == 0, measurement
         assert meter.management_fs_under_mutex == [], measurement
         assert max(meter.management_holds) < MANAGEMENT_HOLD_LIMIT_SECONDS, measurement
         assert measurement["management_long_holds"] == [], measurement

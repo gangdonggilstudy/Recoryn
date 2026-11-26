@@ -301,6 +301,7 @@ def test_management_never_blocks_another_recording(
                 )
             with library._mutex, library._transaction() as connection:
                 connection.executemany("INSERT INTO chunks VALUES(?,?,?,?)", rows)
+        assert library.verify_deletion_history(fresh=True)["status"] == "READY"
         library.transition("old", SessionState.INTERRUPTED, 1)
         meter = RootHoldMeter(library._mutex)
         monkeypatch.setattr(library, "_mutex", meter)
@@ -680,7 +681,7 @@ elif phase in ("stop_finalizing", "finalized_before_manifest"):
     for i in range(3):
         assert service.submit(block(i, service.epochs["mic"]))
     if phase == "stop_finalizing":
-        library.finalize_session = lambda session_id: pause()
+        library.finalize_session = lambda session_id, *, capture_control: pause()
     else:
         library.write_manifest = lambda session_id: pause()
     service.stop()

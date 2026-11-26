@@ -573,11 +573,21 @@ def test_p11_open_delete_barrier(
                 deletion_future = pool.submit(deletion)
                 assert deleting.wait(5) and not deletion_future.done()
                 proceed.set()
+                append_refused = False
                 try:
                     future.result(timeout=5)
                 except StateConflict as error:
                     assert str(error) == "Writer session has a deletion intent"
-                assert deletion_future.result(timeout=5)["state"] == "DELETE_PENDING"
+                    append_refused = True
+                result = deletion_future.result(timeout=5)
+                if result["state"] == "DELETED_LOCAL":
+                    assert append_refused
+                    from recoryn.storage.chunks import has_active_writer
+
+                    assert not has_active_writer(tmp_path, "s")
+                    assert not writer.path.exists() and not writer.staging_path.exists()
+                else:
+                    assert result["state"] == "DELETE_PENDING"
                 with pytest.raises(StateConflict):
                     writer.seal()
                 writer.abort()
@@ -791,7 +801,9 @@ def test_strict_bundle_boundary_errors(tmp_path: Path, corruption: str) -> None:
 @pytest.mark.parametrize(
     "entry", ["missing", "temporary", "directory", "wrong_name", "db_only", "journal_only"]
 )
-def test_deletion_history_and_single_intent_priority(tmp_path: Path, entry: str) -> None:
+def test_deletion_history_and_single_intent_priority(
+    tmp_path: Path, entry: str, request: pytest.FixtureRequest
+) -> None:
     with Library(tmp_path) as lib:
         lib.create_session("s")
         lib.register_chunk(bundle(tmp_path))
@@ -828,6 +840,9 @@ def test_deletion_history_and_single_intent_priority(tmp_path: Path, entry: str)
                 )
             )
         if entry.endswith("only"):
+            lib.close()
+            lib = Library(tmp_path)
+            request.addfinalizer(lib.close)
             assert lib.recover_session("s")["adopted"] == 0 and lib.list_sessions() == []
             assert lib.delete_session("s")["deleted"]
         else:

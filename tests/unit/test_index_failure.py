@@ -72,16 +72,27 @@ def env(tmp_path, monkeypatch):
         clock = SimpleNamespace(now=BASE + 10 * T)
         monkeypatch.setattr(module, "time", SimpleNamespace(time_ns=lambda: clock.now))
         stamp(library)
+        assert library.verify_deletion_history(fresh=True)["status"] == "READY"
         yield library, clock
 
 
 def consume(library, kind):
+    """Exercise the legacy failure-cache component on the control lane first.
+
+    GS11 hot Job tests call JobStore directly. These GS02 rows retain their
+    parser/memo oracle, then explicitly validate before the separate Job lease;
+    neither get_session/chunks nor job_authority implicitly scans anymore.
+    """
     try:
-        if kind == "job":
-            with Library.job_authority(library.db_path, "s") as state:
-                return state
         if kind == "writer":
             return "DELETED" if library._writer_intent("s") else "VALID"
+        observed = library._journal_prefetch()
+        with library._mutex:
+            library._deletion_history(observed)
+        if kind == "job":
+            library.verify_deletion_history(fresh=True)
+            with Library.job_authority(library.db_path, "s") as state:
+                return state
         if kind == "chunks":
             library.chunks("s")
         else:
@@ -93,6 +104,10 @@ def consume(library, kind):
         return "HISTORY_UNAVAILABLE"
     except StateConflict:
         return "DELETED"
+    except ValueError as error:
+        if error.args == ("Library is closed",):
+            return "HISTORY_UNAVAILABLE"
+        raise
 
 
 def prepare(library, clock, state):
@@ -214,14 +229,7 @@ def test_failed_observation_does_not_settle_using_its_completion_time(env, monke
 )
 def test_authority_never_catches_the_callers_transaction_error(env, monkeypatch, error):
     library, clock = env
-    read = library._journal_prefetch
-
-    def close_after_read():
-        observed = read()
-        library.close()
-        return observed
-
-    monkeypatch.setattr(library, "_journal_prefetch", close_after_read)
+    library.close()  # A hot authority lease no longer performs a preflight read.
     original = error("caller transaction failed")
     with pytest.raises(error) as caught, Library.job_authority(library.db_path, "s") as state:
         assert state == "HISTORY_UNAVAILABLE"
@@ -315,14 +323,22 @@ def test_invalidation_repair_and_reverse_publication(env, event, state, kind):
         if event == "same_tick" and state == "failed_settled":
             assert result == "HISTORY_UNAVAILABLE"
         else:
-            assert result == ("JOURNAL_ONLY" if kind == "job" else "DELETED")
+            assert result == (
+                "JOURNAL_ONLY"
+                if kind == "job" and event == "version"
+                else "HISTORY_UNAVAILABLE"
+                if kind == "job"
+                else "DELETED"
+            )  # External valid JSON is not a trusted process-local delta.
     elif event == "repair":
         if state == "valid":
             (library.root / "deletion-journal/ext.json").write_text(CANARY, encoding="utf-8")
             stamp(library)
+            assert library.verify_deletion_history(fresh=True)["status"] == "UNAVAILABLE"
             with pytest.raises(ValidationError, match="DELETION_HISTORY_UNAVAILABLE"):
                 library.list_sessions()
         repair(library)
+        assert library.verify_deletion_history(fresh=True)["status"] == "READY"
         assert [s.session_id for s in library.list_sessions()] == ["s"]
         assert library._intent_failure is None
         assert consume(library, kind) == "VALID"
@@ -339,6 +355,7 @@ def test_invalidation_repair_and_reverse_publication(env, event, state, kind):
     else:
         old = library._journal_prefetch(fresh=True)
         repair(library)
+        assert library.verify_deletion_history(fresh=True)["status"] == "READY"
         assert [s.session_id for s in library.list_sessions()] == ["s"]
         with library._mutex:
             assert library._accept_observation(old) is False
@@ -414,25 +431,18 @@ def test_root_filesystem_exception_is_names_of_exact_journal_only(
     result = consume(library, kind)
     if kind == "writer":
         assert result == ("HISTORY_UNAVAILABLE" if entry == "tmp" else "VALID")
+    elif kind == "job":
+        assert (
+            result == "HISTORY_UNAVAILABLE"
+        )  # unexpected external record needs repair, not adoption
     else:
         assert result == ("VALID" if entry == "normal" else "HISTORY_UNAVAILABLE")
     if kind == "job":
         assert meter.events == []  # Job never borrows _live's names-only mutex exception.
-    cold = kind in ("get_session", "chunks") and age == "changed"
-    if not cold:
-        assert all(
-            operation in {"iterdir", "scandir", "listdir"}
-            and path == library.root / "deletion-journal"
-            for operation, path in meter.events
-        )
-    else:
-        assert any(operation == "iterdir" for operation, path in meter.events)
-        assert all(
-            path == library.root / "deletion-journal"
-            if operation in {"iterdir", "scandir", "listdir"}
-            else path.parent == library.root / "deletion-journal"
-            for operation, path in meter.events
-        )
+    assert all(
+        operation in {"iterdir", "scandir", "listdir"} and path == library.root / "deletion-journal"
+        for operation, path in meter.events
+    )  # capture's names-only exception remains; the old cold body exception is gone
     # Independent negative control: an unrelated path cannot inherit the exception.
     with library._mutex:
         list((library.root / "sessions").iterdir())
@@ -461,7 +471,7 @@ def test_transient_read_error_recovers_on_next_call_without_management_refresh(
     assert consume(library, kind) == "HISTORY_UNAVAILABLE"
     assert library._intent_failure is None
     assert consume(library, kind) == "VALID"
-    assert len(reads) == 2
+    assert len(reads) == (3 if kind == "job" else 2)  # explicit full audit precedes the hot lease
     assert library.get_session("s").session_id == "s"
 
 
@@ -497,7 +507,10 @@ def test_unsettled_content_failure_requires_the_same_names_but_never_reuses_futu
         stamp(library, BASE + 1000)
     expected = "VALID" if event == "remove" else "HISTORY_UNAVAILABLE"
     assert consume(library, kind) == expected
-    assert len(reads) == (0 if event == "same" and age != -1 else 1)
+    expected_reads = 0 if event == "same" and age != -1 else 1
+    if kind == "job" and event == "remove":
+        expected_reads += 1  # repaired component + explicit full-audit receipt
+    assert len(reads) == expected_reads
 
 
 AUTH = list(product(("success", "content", "io"), ("same", "stamp", "version", "closed")))
@@ -510,7 +523,7 @@ def test_job_uses_newer_completed_observation_only_for_the_same_live_snapshot(
     library, clock = env
     original, reads, older = library._journal_prefetch, [], []
 
-    def superseded():
+    def superseded(*, fresh=False):
         reads.append(1)
         observed = original(fresh=True)
         if older:

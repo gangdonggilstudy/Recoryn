@@ -9,7 +9,6 @@ import pytest
 import recoryn.storage.library as storage_library
 from recoryn.domain import AudioFormat, PCMBlock, SessionState
 from recoryn.storage import ChunkWriter, Library, verify_bundle
-from recoryn.storage._safe import atomic_json
 
 pytestmark = pytest.mark.integration
 
@@ -219,16 +218,16 @@ def test_journal_only_deletion_intent_blocks_recovery_and_can_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     create_bundle(tmp_path)
-    original_atomic_json = atomic_json
+    original_replace = storage_library.os.replace
 
-    def fail_after_intent(path: Path, value: object) -> None:
-        original_atomic_json(path, value)
-        if path.parent.name == "deletion-journal":
+    def fail_after_intent(source: Path, target: Path) -> None:
+        original_replace(source, target)
+        if Path(target) == tmp_path / "deletion-journal" / "integrity.json":
             raise OSError("P04 injected failure after journal publication")
 
     with Library(tmp_path) as library:
         with monkeypatch.context() as patch:
-            patch.setattr(storage_library, "atomic_json", fail_after_intent)
+            patch.setattr(storage_library.os, "replace", fail_after_intent)
             with pytest.raises(OSError):
                 library.delete_session("integrity")
     with Library(tmp_path) as restarted:

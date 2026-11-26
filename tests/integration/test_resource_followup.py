@@ -97,7 +97,13 @@ L_FINAL = {  # (state, blocked_reason, error_code, attempts) by hand (G-P07 tabl
 
 def l_write_waits(row: tuple[str, str, str]) -> bool:
     outcome, cause, _ = row
-    return cause == "sqlite_lock" or outcome in ("BLOCKED_RESOURCE", "FAILED", "BACKOFF", "UNKNOWN")
+    return cause == "sqlite_lock" or outcome in (
+        "SUCCEEDED",
+        "BLOCKED_RESOURCE",
+        "FAILED",
+        "BACKOFF",
+        "UNKNOWN",
+    )
 
 
 @pytest.mark.parametrize("row", L, ids=L_IDS)
@@ -192,7 +198,8 @@ def test_l_display_reads_never_wait_for_an_outcome_write(
             runner.stop(10)
     assert blocked_meanwhile, "the blocker ended before the display read"
     # The row really exercised a waiting outcome write (hand rule: the root mutex is
-    # taken by fail's acknowledgement authority; every write takes the SQLite lock).
+    # taken by fail's acknowledgement authority and new complete publication
+    # authority; every write takes the SQLite lock).
     assert (max(durations) >= HOLD / 2) is l_write_waits(row), durations
     assert elapsed < QUICK, f"display read waited {elapsed:.3f}s on the outcome write"
     attempts = len(store_rows(library, job.job_id))

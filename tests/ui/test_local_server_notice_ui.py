@@ -173,6 +173,8 @@ def test_server_notice_and_facts(
             and time.monotonic() < deadline
         ):
             QTest.qWait(5)
+            # Deliver timer events queued as qWait returns.
+            world.app.processEvents()
         assert (
             control.fact_observation.text()
             == "관측 만료 · 이 버전은 제공업체에 확인 요청을 보내지 않습니다"

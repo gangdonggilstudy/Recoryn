@@ -282,7 +282,7 @@ class ContentStore:
         self._mutex = root_mutex(library.root)
         self._closed = False
         with self._mutex:
-            library.list_sessions()  # Fail closed on a closed library or missing deletion history.
+            library.check_local_catalog()  # Construction is not management/publication permission.
             self._db = sqlite3.connect(
                 library.db_path, timeout=5, isolation_level=None, check_same_thread=False
             )

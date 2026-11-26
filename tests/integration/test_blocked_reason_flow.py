@@ -497,9 +497,13 @@ L_READY = [(ordinal, *row) for ordinal, row in enumerate(L_ROWS, 1) if ordinal n
     "ordinal,authority,operation", L_READY, ids=[f"G07-L-{row[0]:02}" for row in L_READY]
 )
 def test_canonical_authority_admission_and_failure_ack(tmp_path, ordinal, authority, operation):
+    from contextlib import ExitStack
+
     from recoryn.storage import Library
 
-    with Library(tmp_path / "library") as library, JobStore(library.db_path) as store:
+    with ExitStack() as contexts:
+        library = contexts.enter_context(Library(tmp_path / "library"))
+        store = contexts.enter_context(JobStore(library.db_path))
         library.create_session("s")
         canary = library.root / "sessions" / "s" / "authority-canary.bin"
         canary.parent.mkdir(parents=True)
@@ -537,6 +541,11 @@ def test_canonical_authority_admission_and_failure_ack(tmp_path, ordinal, author
                 ),
                 encoding="utf-8",
             )
+            # Establish a cold snapshot of these independent durable facts.
+            # A hot Job transition never performs an implicit audit/adoption.
+            root = library.root
+            library.close()
+            library = contexts.enter_context(Library(root))
         elif authority == "both":
             with library._mutex:
                 library._publish_intent("s", 1)
@@ -640,14 +649,14 @@ def test_authority_uncertainty_is_not_permission(tmp_path, monkeypatch, cause):
         if cause == "missing_owner":
             library.close()
         elif cause == "closed_mid_read":
-            read = library._journal_prefetch
+            read = library._journal_stamp
 
             def close_after_read():
                 result = read()
                 library.close()
                 return result
 
-            monkeypatch.setattr(library, "_journal_prefetch", close_after_read)
+            monkeypatch.setattr(library, "_journal_stamp", close_after_read)
         elif cause == "future":
             store._db.execute("PRAGMA user_version=2")
         elif cause in {"bad_status", "bad_generation", "newer_session"}:
@@ -669,7 +678,7 @@ def test_authority_uncertainty_is_not_permission(tmp_path, monkeypatch, cause):
 
             monkeypatch.setattr(library, "_journal_stamp", moving)
         else:
-            read = library._journal_prefetch
+            read = library._journal_stamp
 
             def changed():
                 result = read()
@@ -677,7 +686,7 @@ def test_authority_uncertainty_is_not_permission(tmp_path, monkeypatch, cause):
                     library._history_version += 1
                 return result
 
-            monkeypatch.setattr(library, "_journal_prefetch", changed)
+            monkeypatch.setattr(library, "_journal_stamp", changed)
         with Library.job_authority(library.db_path, "s") as state:
             assert state == "HISTORY_UNAVAILABLE"
         before = store.get(job.job_id)
@@ -712,13 +721,22 @@ def test_in_place_corrupt_history_is_not_hidden_by_an_unchanged_directory_index(
             library._publish_intent("past", 1)
         directory = library.root / "deletion-journal"
         before = directory.stat().st_mtime_ns
+        original = (directory / "past.json").read_bytes()
         (directory / "past.json").write_bytes(b"{malformed")
         assert directory.stat().st_mtime_ns == before
         with Library.job_authority(library.db_path, "s") as state:
-            assert state == "HISTORY_UNAVAILABLE"
+            assert state == "VALID"  # the approved unnotified, unexpired window
+        assert library._writer_intent("past") is True
+        assert library.verify_deletion_history(fresh=True)["status"] == "UNAVAILABLE"
         with pytest.raises(StateConflict, match="DELETION_HISTORY_UNAVAILABLE"):
             store.claim(job.job_id, "reader")
         assert store.get(job.job_id) == job
+        assert library._writer_intent("past") is True
+        (directory / "past.json").write_bytes(original)
+        with pytest.raises(StateConflict, match="DELETION_HISTORY_UNAVAILABLE"):
+            store.claim(job.job_id, "reader")
+        assert library.verify_deletion_history(fresh=True)["status"] == "READY"
+        assert store.claim(job.job_id, "reader").attempt_no == 1
 
 
 def test_authority_enumeration_is_outside_root_job_transaction_and_job_lock(tmp_path, monkeypatch):
@@ -771,7 +789,7 @@ def test_authority_enumeration_is_outside_root_job_transaction_and_job_lock(tmp_
         store.block_pending(
             job.job_id, "CONSENT", "CONSENT_REQUIRED", expected_version=current.state_version
         )
-        assert counts["iterdir"] >= 5 and counts["remove_tree"] == 0
+        assert counts == {"iterdir": 0, "scandir": 0, "listdir": 0, "remove_tree": 0}
 
 
 def test_intent_racing_with_preflight_forces_recheck_before_admission(tmp_path, monkeypatch):
@@ -796,18 +814,20 @@ def test_intent_racing_with_preflight_forces_recheck_before_admission(tmp_path, 
 
         publisher = threading.Thread(target=publish)
         publisher.start()
-        read = library._journal_prefetch
+        read = library._journal_stamp
         calls = [0]
 
         def raced():
             result = read()
+            if threading.current_thread() is publisher:
+                return result
             calls[0] += 1
             if calls[0] == 1:
                 begin.set()
                 assert done.wait(5), "journal I/O/preflight retained root mutex"
             return result
 
-        monkeypatch.setattr(library, "_journal_prefetch", raced)
+        monkeypatch.setattr(library, "_journal_stamp", raced)
         try:
             with pytest.raises(StateConflict, match="JOB_SESSION_DELETED"):
                 store.claim(job.job_id, "reader")
