@@ -2,3 +2,6 @@
 packaging/notices/*.txt -text
 packaging/notices/qt/** -text
 packaging/notices/ct2/** -text
+
+# Canonical hand-written schema oracle: preserve exact UTF-8 LF bytes.
+tests/fixtures/g09_schema_v1.json -text
