@@ -2501,3 +2501,107 @@ def test_management_alias(name):
     actual = getattr(s, name)
     expected = ast.parse(_WIRE_FIXTURE["aliases8"][name], mode="eval").body
     assert _s7_actual_type(actual) == _s7_expected_type(expected)
+
+
+# D13 OUTPUT-local hand literals; no build/prototype runtime dependency.
+LEGACY_OBS: list[dict[str, Any]] = []
+
+
+def _legacy_pointer(value: Any) -> Any:
+    if value is None:
+        return None
+    if value["kind"] == "ABSENT":
+        return s.AbsentPointer(value["kind"])
+    if value["kind"] == "FRESH":
+        return s.FreshPointer(value["kind"], value["dataset_id"], value["epoch"])
+    return s.CommitPointer(
+        value["kind"],
+        value["dataset_id"],
+        value["operation_id"],
+        value["epoch"],
+        value["input_digest"],
+    )
+
+
+def _legacy_construct_hand(root: dict[str, Any]) -> s.OutputDocument:
+    fields = dict(root["targets"][0])
+    fields["components"] = tuple(s.ComponentFact(**c) for c in fields["components"])
+    fields["source_pointer"] = _legacy_pointer(fields["source_pointer"])
+    sidecars = fields["sidecar_digests"]
+    fields["sidecar_digests"] = (
+        None
+        if sidecars is None
+        else tuple(
+            s.SourceSidecar(item["kind"], item["digest"], s.ManagementIdentity(**item["identity"]))
+            for item in sidecars
+        )
+    )
+    target = s.OutputTarget(**fields)
+    return s.OutputDocument(root["format"], root["operation_id"], root["plan_digest"], (target,))
+
+
+@pytest.mark.parametrize(
+    "row",
+    _WIRE_FIXTURE["legacy_output27"],
+    ids=[row["id"] for row in _WIRE_FIXTURE["legacy_output27"]],
+)
+def test_legacy_output_wire(row: dict[str, Any]) -> None:
+    raw = row["raw_utf8"].encode("utf-8")
+    assert len(raw) == row["bytes"]
+    assert hashlib.sha256(raw).hexdigest() == row["raw_sha256"]
+    root = json.loads(raw)
+    record: dict[str, Any] = {
+        "id": row["id"],
+        "raw_sha256": row["raw_sha256"],
+        "constructor_io": [],
+        "constructor_encode_calls": 0,
+    }
+    LEGACY_OBS.append(record)
+    value, error = _wire_capture(
+        lambda: s.decode_management(raw, kind=s.ManagementObjectKind.OUTPUT)
+    )
+    record["decode_status"] = "RETURNED" if error is None else "RAISED"
+    record["decode_error"] = type(error).__name__ if error else None
+    record["decode_kind"] = getattr(error, "kind", None)
+    if row["expected"] == "RETURN_AND_EXACT_ROUNDTRIP":
+        assert error is None, "LEGACY_HAND_TYPED_RETURN"
+        assert type(value) is s.OutputDocument
+        assert value.targets[0].data_digest == root["targets"][0]["data_digest"]
+        assert s.encode_management(value) == raw, "LEGACY_HAND_RAW_ROUNDTRIP"
+    else:
+        goal = (
+            "LEGACY_PHYSICAL2_MUST_REJECT"
+            if row["id"] == "N01"
+            else "LEGACY_CORE_FP_MUST_MATCH"
+            if row["id"] == "N11"
+            else "LEGACY_NEGATIVE_MUST_REJECT"
+        )
+        assert error is not None, goal
+        assert type(error) is s.SchemaWireError, "LEGACY_EXACT_WIRE_ERROR_AFTER_ACTUAL_API"
+        assert error.kind == "MALFORMED"
+
+    with _management_no_io(record["constructor_io"]):
+        constructed, ctor_error = _wire_capture(lambda: _legacy_construct_hand(root))
+        record["constructor_status"] = "RETURNED" if ctor_error is None else "RAISED"
+        record["constructor_error"] = type(ctor_error).__name__ if ctor_error else None
+        expected = row["constructor_expected"]
+        if expected in {"SCHEMA_WIRE_ERROR_BEFORE_ENCODE", "PYTHON_TYPE_ERROR_BEFORE_ENCODE"}:
+            assert type(ctor_error) is (
+                s.SchemaWireError if expected == "SCHEMA_WIRE_ERROR_BEFORE_ENCODE" else TypeError
+            )
+            if type(ctor_error) is s.SchemaWireError:
+                assert ctor_error.kind == "MALFORMED"
+            assert record["constructor_encode_calls"] == 0
+        else:
+            assert ctor_error is None, "LEGACY_HAND_CONSTRUCTOR_MUST_RETURN"
+            assert type(constructed) is s.OutputDocument
+            record["constructor_encode_calls"] += 1
+            encoded, encode_error = _wire_capture(lambda: s.encode_management(constructed))
+            record["constructor_encode_status"] = "RETURNED" if encode_error is None else "RAISED"
+            if expected == "RETURN_AND_ENCODE_RAW":
+                assert encode_error is None
+                assert encoded == raw
+            else:
+                assert type(encode_error) is s.SchemaWireError
+                assert encode_error.kind == "MALFORMED"
+    assert record["constructor_io"] == []

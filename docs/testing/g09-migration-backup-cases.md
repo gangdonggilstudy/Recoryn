@@ -1547,3 +1547,64 @@ CAN04의 diagnostic UNRESOLVED/RECONCILIATION_REQUIRED typed 수락과 no-I/O는
 정확 BASE archive+승인 파일 tree에서 실제 선택·관련 회귀·원 S1·단일 목표 변이·관리 I/O0·부모/실제 spawn 출처를 확인한다. CI와 같은 Ruff/format/mypy 및 정확 최종 tree의 full core/coverage7/offline wheel과 wheel schema bytes·import/spawn 출처를 연결한다. source/test/fixture가 달라지면 과거 성공을 재사용한 새 성공으로 쓰지 않는다. 로컬3.13/AST3.11은 실제3.11 runtime을 대신하지 않으며 새 공개 SHA의 세 원격 CI를 별도로 인수한다.
 
 실제 유지보수·정상 후속 write·FILE/owner/chain/rollback/VERIFIED/ACK·공용 legacy profile·실서비스/vault/실장비·모델/전원 장애 내구성·메모리 소거는 남은 과제다. 타입 기반만 진행한 상태와 전체 설계 구현·Windows 실장비 완료를 구분한다. 이 순수 증분의 rollback에 사용자 DB/data/witness/grant 복원을 섞지 않는다.
+
+## G09a D13: legacy OUTPUT local wire 조합 증분
+
+이 절은 D12의 current-F2 첫 제품 범위 뒤에 추가할 다음 증분의 계약이다. D12의 legacy 제외·당시 검증 전 스냅샷은 그 시점의 사실로 보존한다. 여기서는 caller가 선언한 **OUTPUT local typed 조합** 하나만 추가한다. 실제 whole-file profile/SQLite/등록/복구 지원을 채택한 것이 아니다. 이 절과 구현·회귀·독립 검토를 같은 정확8파일 단위로 통합하며 실제 PASS·공개 SHA·원격 CI는 해당 tree의 실행 결과로 별도 확인한다.
+
+공개 호출은 `decode_management(raw, kind=ManagementObjectKind.OUTPUT)`와 `encode_management(output_document)`다. 다른 kind·공개 함수/Enum/DTO/alias/signature는 변경하지 않는다. OUTPUT target의 기존10 field와 정렬/unique·타입·정수·canonical·byte/depth budget·닫힌 오류 정책을 유지하면서, 다음 조건을 **모두** 만족하는 한 조합만 허용한다.
+
+| field | 정확한 local 허용 조건 |
+| --- | --- |
+| profile_id | 정확 문자열 `LEGACY_JOBS_R0K0` |
+| physical_version | exact int `0` 또는 `1`; bool·다른 값은 거부 |
+| source_pointer | exact `AbsentPointer` / wire `{ "kind": "ABSENT" }` |
+| components | 정확1개: name `jobs.core`, version exact int1, fingerprint `recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a` |
+| media_digest/deletion_digest/health_digest | 모두 NULL |
+| sidecar_digests | 빈 배열 / typed 빈 tuple |
+| data_digest | 기존 소문자 hex64 문법. 빈 anchor의 digest 하나로 제한하지 않음 |
+| db_id/operation_id/plan_digest | 기존 OUTPUT 문법·typed 필드 조건 유지. 실제 DB/plan과의 equality 검증은 아님 |
+
+BINDINGS/PLAN의 F2 profile 목록30, S1 `target_profiles`/expected registry, COMPLETE와 기존 F2 OUTPUT 경로는 그대로다. namespace별 local wire 허용표와 actual whole-file 지원표를 동일시하지 않는다. source diff는 `_mo_target` 한 함수로 한정하고 함수 밖 bytes/AST/signature·import/helper/class/상수/alias를 보존한다.
+
+손 입력27은 정상 P1/P0/T1과 부정 N01~N24다. P1/P0는 기존 synthetic 빈 anchor 입력의 physical1/0 표현이며 새 실제 DB 지원 조합의 증거가 아니다. T1은 P1의 data_digest만 다른 유효 hex64로 바꾼 문법 양성이다. 세 정상은 actual public decode 반환·field 보존·exact raw 왕복을 요구한다. 부정24는 원 구체 오류와 constructor/encode 단계의 독립 oracle를 유지한다. N21의 직접 constructor Python binding TypeError를 wire의 SchemaWireError/MALFORMED와 구분한다. constructor 거부6은 encode0, 생성21은 encode 정상3/거부18이며 이 단계 수를 입력 분모에 더하지 않는다.
+
+원70/active40/보류10(CAN08/13/14/15·CAM01~06) 및 전체4105/명시245의 formal 분모·primary는 증가0이다. 아래27개는 그 formal ID를 대체하지 않는 local 보강 node다. 기존322를 유지하고27개를 더한 선택349(catalog61/API285/property3), 전체30467+27=예상30494는 실제 수집/phase/XML 각1로 대조해야 한다. 기존 독립 F2 OUTPUT/COMPLETE control2는 같은 raw의 기존 node를 재사용한다. 과거 private296/독립29·목표2 및 공개322를 새 tree PASS로 합산하지 않는다.
+
+정상/변이 입력은 `tests/fixtures/g09_management_wire_literals_v1.json`에 고정한다. source나 제품 함수로 expected를 생성하지 않으며 기존 모든 raw/hand model/ID/기대·S1 의미20·원 감사·회귀를 보존한다. 제품 시험 primary는 `tests/unit/test_management_wire_api.py::test_legacy_output_wire[ID]`다. 각 raw의 실제 bytes/SHA와 원 oracle는 아래 표 및 versioned fixture로 결속한다.
+
+| ID | bytes | SHA-256 | wire oracle | constructor/encode oracle |
+| --- | --- | --- | --- | --- |
+| P1 | 630 | `682f8f9f4c7f1ed1a8da8139d04c75a114fb4088374bfbd07bd7f10ed21c55d1` | RETURN_AND_EXACT_ROUNDTRIP | RETURN_AND_ENCODE_RAW |
+| P0 | 630 | `61a61dba720bbbd7a794f9f421083fe80e80246fc70c58dfe5627eb5936a0850` | RETURN_AND_EXACT_ROUNDTRIP | RETURN_AND_ENCODE_RAW |
+| T1 | 630 | `72046bf820fc9de5fa5c4e175534612b5385359b1a5ab0ca73f3ba80b56f3bc7` | RETURN_AND_EXACT_ROUNDTRIP | RETURN_AND_ENCODE_RAW |
+| N01 | 630 | `5cad06a717aee673a59990e1e30b7a90fbb0879af6dca0b40d7f798f27e1d222` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N02 | 630 | `608dabe9d5c4afc3f98a0ced1d7473159da38979bdfcae2f25e8d7fa4b1badc2` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N03 | 633 | `a8f33df8567cc270ade4c9c1e394837baf5b0fa6744f5f20d4de608f20a3b267` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | SCHEMA_WIRE_ERROR_BEFORE_ENCODE |
+| N04 | 632 | `0892d7770a966ec0a46336ce7126c46015fdb397c9d6bcdd7ba23f96c177e619` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | SCHEMA_WIRE_ERROR_BEFORE_ENCODE |
+| N05 | 617 | `82ef7202f936130c468803b82e38393b9b40aa7057cc614d5e96085a774b2ab1` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | SCHEMA_WIRE_ERROR_BEFORE_ENCODE |
+| N06 | 687 | `9551b2340743e985382c703ac763e755a03fdbcda01a48cb1ecee5d0b66d1fda` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N07 | 820 | `cc058e88a8c7b3386f94b2277a26b4dcfa4e3b39ddcbdf67f03f0c9cdd8fe67d` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N08 | 500 | `632b1e95a52efd8d527ae14585254200632ad6c4b9a424c2c1a1f13c38b4500f` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N09 | 634 | `56fc221a7639e085891d9284bcb1708a5185f2e370fecc624e457e5497f65b3a` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N10 | 630 | `9d6f6b20b438723e9e937feffd4e909553c9396a19e6b5d444047b0bbab188c0` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N11 | 630 | `2b6d572a645b0c2418d70f858ee1efb3171aad3f303e4931062770de34a82bb7` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N12 | 765 | `6e4726e9880644c024fb29ff5eb17ea1051befb8fcca6c1ca63b66ee2c5dd548` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N13 | 766 | `55d38aab3547230442dc3370214432802226c38d245594b71fc5bad104715d0a` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N14 | 621 | `08d018f643d8b7da17a1871029c7bc5c656ba2e5431f6e8585a4c3433623df9a` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N15 | 618 | `43d04ddb9afae9eb96e43481aed1afa15495ff9d813f6026302494e080880c17` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N16 | 692 | `0fdbb3a8330f16f6d9d5c438bca6cc2261d52d5031c251e7aa16977f7b8d82d1` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N17 | 692 | `92fef03566290797c735eb6202e2d3f3e2d02299e253cb5c6fe32363190abfe4` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N18 | 692 | `136f72483ea6b9af74b8e544596d67c20353c6ac069077e4f694d93271574e94` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N19 | 837 | `f7298229844c022db9b2390cf4f823b4ff6253f5d78c691c9d077cc718e21c57` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N20 | 632 | `bef6c575be9ed8efd58cfda3da48e8fb4f4f45a90dab9ddddd1e87022c82d1cc` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | SCHEMA_WIRE_ERROR_BEFORE_ENCODE |
+| N21 | 657 | `38eca8c7fe46e564da5e6e25aa6be808163fced570ae3c51d5e5a966254c47ba` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | PYTHON_TYPE_ERROR_BEFORE_ENCODE |
+| N22 | 629 | `6f3571b91f2aede7692ea6d60b7be8fd6e4a6a4bbf85d825bca0fb4b44722f13` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N23 | 761 | `e5db57f83ca3319957b20410495c6372b9e286eed09f82dd3912a70832f0ca66` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | RETURN_THEN_ENCODER_MALFORMED |
+| N24 | 633 | `d33c3917e68dec2bd879ae37459b62c70dbc257244ab2998528645cedb440022` | EXACT_SCHEMA_WIRE_ERROR_MALFORMED | SCHEMA_WIRE_ERROR_BEFORE_ENCODE |
+
+MW1은 legacy physical membership에2만 추가한 단일 site를 N01이 검출해야 한다. MW2는 legacy exact-FP 비교 한 곳만 제거한 site를 N11이 검출해야 한다. 정상 control 이후 실제 public API 반환·지정 assertion FAIL만 검출로 세며 MASKED·수집/setup/timeout/관측 INVALID는 분리한다. 같은 원 site의 재확인이며 고유 fault 수를 늘리지 않는다.
+
+필수 gate는 준비 포함 선택349 wall60초·단독 legacy/property/not-ui 및 실제 selected call/XML 각1·부모/실spawn의 source/공개 함수/공유 identity·관리 API I/O0·S1 readonly SQLite/연결 보존, 정적3종·관련 회귀·두 단일site, 동결 새 제품 결속 독립 검토와 공용 append 독립 검토다. X00가 최종 정확8 tree full core/coverage7/offline wheel87 raw·실제 wheel 부모/spawn·실제 commit/tree/메시지/trailer0·normal push/ref·새 SHA CI3을 종결한다. 선행60f4의 세 CI 실제 성공 전 의존 공개는 금지한다. 검증 실패·예산 초과 시 원 반례와 결과를 보존하고 분모/단언/게이트를 낮추지 않는다.
+
+이 조합의 ABSENT/NULL/빈 sidecars/profile/digest는 실제 SQLite 표·metadata/receipt/checkpoint·media/삭제/건강·내용/현재성/권한의 부재 또는 일치를 증명하지 않는다. LOP01/02·다른 R/K/physical·nonempty/post·actual inspector/profile·plan/chain/FILE/owner/receipt/witness/ACK/등록/복원·실장비는 미종결이다. 이 codec 수락은 어떤 I/O·등록·삭제·복구 허가도 발급하지 않는다. rollback은 순수 코드/문서 단위이며 DB/data/grant 복원을 섞지 않는다.

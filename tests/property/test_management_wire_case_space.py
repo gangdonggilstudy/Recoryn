@@ -243,7 +243,7 @@ def test_management_wire_primary_inventory():
         )
         assert row["id"] in active
     nodes = _WIRE_FIXTURE["planned_nodes"]
-    assert len(nodes) == len(set(nodes)) == 322
+    assert len(nodes) == len(set(nodes)) == 349
     for ident in _WIRE_FIXTURE["deferred10"]:
         assert not any("[" + ident + "]" in n for n in nodes)
 

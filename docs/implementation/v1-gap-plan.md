@@ -104,3 +104,13 @@ G-P04와 G-P05는 둘 다 `storage/library.py`와 `ui/main.py`를 바꾼다. 동
 ### D12 통합 준비 상태 갱신(전체 검증 전 스냅샷)
 
 앞선 ‘현재 작성 중’은 최초 D12 초안의 상태다. 이후 후보5파일의 작성·322건/6목표/정적3종과 비작성자의 제품결속322건·독립 손9건·선택감사·타입 단언 민감도 검토를 인수했다. 기존 S1 의미20과 원70의 local대상40/보류10은 유지한다. 정확10 tree의 full core·coverage7·offline wheel·새 SHA 원격 CI는 이 갱신 작성 시점에 아직 실행하지 않았다. 이 문단은 전체 검증 전 준비 스냅샷이며 후속 전체 결론·공개 SHA/원격 run은 실제 Git/CI와 오케스트레이터 검증 기록으로 따로 결속한다. [제품 결속 독립 검토](../reviews/g09a-type-integration-review.md)의 한정 판정을 전체 G09a·실제 권위·Windows 실장비 완료로 확대하지 않는다.
+
+## G09a D13 준비와 앞선 D12 실행 결과
+
+앞선 D12의 검증 전 스냅샷은 그 작성 시점의 사실로 보존한다. 이후 정확 tree `d0b7dc0eb43f1fff91ed156f711213d1d069c3b5`에서 로컬30,467건이 오류/skip/xfail0으로 통과했고, coverage7·offline wheel Python87 raw 및 실제 부모/spawn 출처·독립 공개 증거 감사를 인수했다. 같은 tree를 commit `60f4dc6a1d26c6f074ebbbbe1d83d3cbdb63b6f3`으로 normal push해 실제 원격 일치를 확인했다. 이 문단 준비 시 CI45944181518의 optional-runtime은 성공, core3.11/3.13은 진행 중이었다. 최종 원격 결론은 같은 SHA의 실제 run과 X00 후속 인수 기록으로 별도 확인한다.
+
+다음 D13은 legacy OUTPUT local wire 조합 하나만 추가하는 증분이다. caller의 profile 문자열·physical0/1·ABSENT·정확 jobs.core/1/FP·NULL3/빈 sidecar·hex64 digest 선언을 검사하며 실제 whole-file/DB/등록/복구 권위는 검사하지 않는다. BINDINGS/PLAN/S1 registry30·COMPLETE·공개 타입/서명은 유지한다. 기존322+손27=계획349와 예상 전체30494는 새 실행이 필요하고 formal70/4105/245·보류10은 변하지 않는다. 이 문단은 구현 전 준비 상태이며 새 제품 PASS·선행/신규 CI 성공·전체 G09a/v1/실장비 완료를 뜻하지 않는다. [관리 계약 D13 절](../testing/g09-migration-backup-cases.md)과 [작업 배정표](../collaboration/assignments.md)의 정확 범위·독립 검토·통합 게이트를 따른다.
+
+### D13 통합 준비 상태 갱신(전체 검증 전 스냅샷)
+
+앞선 D13의 ‘구현 전 준비’와 D12 CI 진행 중 문구는 그 문단 작성 시점의 사실이다. 이후 D12 공개60f4의 실제 원격 CI45944181518 세 작업 성공·ref/tree/message/trailer0을 재확인해 선행 게이트를 닫았다. D13 후보4의 작성349건/7.431초·단일목표2·정적3종과 비작성자의 새 제품결속 직접349건·독립 손27건·기존 control2건·실제목표2/control3·17.103초·OPEN0을 인수했다. 원27/기존322·formal70/보류10/4105/245는 보존했다. [제품 결속 독립 검토](../reviews/g09a-legacy-output-integration-review.md)는 local OUTPUT 조합과 실제 pytest/fixture 결속의 한정 판정이다. 이 스냅샷의 최종 정확8 tree·전체수집 예상30494/core/coverage7/offline wheel·공개/새SHA CI는 아직 실행하지 않았다. 후속 결과는 실제 tree/commit/ref/원격 run과 X00 인수 증거로 별도 결속하며 실제 whole-file/LOP/권위·전체 G09a/v1·실장비 완료로 확대하지 않는다.

@@ -9751,7 +9751,663 @@
     "tests/unit/test_schema_catalog.py::test_management_wire_types[G09a-X-CAW-24]",
     "tests/unit/test_schema_catalog.py::test_management_wire_types[G09a-X-CAW-25]",
     "tests/unit/test_schema_catalog.py::test_management_wire_types[G09a-X-CAW-26]",
-    "tests/unit/test_schema_catalog.py::test_schema_catalog_id_audit"
+    "tests/unit/test_schema_catalog.py::test_schema_catalog_id_audit",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[P1]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[P0]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[T1]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N01]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N02]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N03]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N04]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N05]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N06]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N07]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N08]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N09]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N10]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N11]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N12]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N13]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N14]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N15]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N16]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N17]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N18]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N19]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N20]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N21]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N22]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N23]",
+    "tests/unit/test_management_wire_api.py::test_legacy_output_wire[N24]"
   ],
-  "formal_denominator_increment": 0
+  "formal_denominator_increment": 0,
+  "legacy_output27": [
+    {
+      "id": "P1",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[P1]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 630,
+      "raw_sha256": "682f8f9f4c7f1ed1a8da8139d04c75a114fb4088374bfbd07bd7f10ed21c55d1",
+      "expected": "RETURN_AND_EXACT_ROUNDTRIP",
+      "constructor_expected": "RETURN_AND_ENCODE_RAW",
+      "primary_guard": "PRIVATE_TYPED_COMBINATION",
+      "normal_counterpart": "P1",
+      "formal_ID": false
+    },
+    {
+      "id": "P0",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[P0]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":0,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 630,
+      "raw_sha256": "61a61dba720bbbd7a794f9f421083fe80e80246fc70c58dfe5627eb5936a0850",
+      "expected": "RETURN_AND_EXACT_ROUNDTRIP",
+      "constructor_expected": "RETURN_AND_ENCODE_RAW",
+      "primary_guard": "PRIVATE_TYPED_COMBINATION",
+      "normal_counterpart": "P0",
+      "formal_ID": false
+    },
+    {
+      "id": "T1",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[T1]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 630,
+      "raw_sha256": "72046bf820fc9de5fa5c4e175534612b5385359b1a5ab0ca73f3ba80b56f3bc7",
+      "expected": "RETURN_AND_EXACT_ROUNDTRIP",
+      "constructor_expected": "RETURN_AND_ENCODE_RAW",
+      "primary_guard": "PRIVATE_TYPED_COMBINATION",
+      "normal_counterpart": "T1",
+      "formal_ID": false
+    },
+    {
+      "id": "N01",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N01]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":2,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 630,
+      "raw_sha256": "5cad06a717aee673a59990e1e30b7a90fbb0879af6dca0b40d7f798f27e1d222",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "PRIVATE_PHYSICAL_MEMBERSHIP",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N01",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/physical_version",
+        "replacement": 2,
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_INT_0_OR_1",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N02",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N02]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":3,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 630,
+      "raw_sha256": "608dabe9d5c4afc3f98a0ced1d7473159da38979bdfcae2f25e8d7fa4b1badc2",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "PRIVATE_PHYSICAL_MEMBERSHIP",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N02",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/physical_version",
+        "replacement": 3,
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_INT_0_OR_1",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N03",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N03]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":true,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 633,
+      "raw_sha256": "a8f33df8567cc270ade4c9c1e394837baf5b0fa6744f5f20d4de608f20a3b267",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "SCHEMA_WIRE_ERROR_BEFORE_ENCODE",
+      "primary_guard": "GENERIC_EXACT_INTEGER",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N03",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/physical_version",
+        "replacement": true,
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_INT_0_OR_1",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N04",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N04]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":\"1\",\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 632,
+      "raw_sha256": "0892d7770a966ec0a46336ce7126c46015fdb397c9d6bcdd7ba23f96c177e619",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "SCHEMA_WIRE_ERROR_BEFORE_ENCODE",
+      "primary_guard": "GENERIC_EXACT_INTEGER",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N04",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/physical_version",
+        "replacement": "1",
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_INT_0_OR_1",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N05",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N05]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":null}]}",
+      "bytes": 617,
+      "raw_sha256": "82ef7202f936130c468803b82e38393b9b40aa7057cc614d5e96085a774b2ab1",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "SCHEMA_WIRE_ERROR_BEFORE_ENCODE",
+      "primary_guard": "POINTER_EXACT_DICT",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N05",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/source_pointer",
+        "replacement": null,
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_ABSENT_POINTER",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N06",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N06]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"dataset_id\":\"55555555555555555555555555555555\",\"epoch\":0,\"kind\":\"FRESH\"}}]}",
+      "bytes": 687,
+      "raw_sha256": "9551b2340743e985382c703ac763e755a03fdbcda01a48cb1ecee5d0b66d1fda",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "PRIVATE_ABSENT_POINTER",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N06",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/source_pointer",
+        "replacement": {
+          "kind": "FRESH",
+          "dataset_id": "55555555555555555555555555555555",
+          "epoch": 0
+        },
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_ABSENT_POINTER",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N07",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N07]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"dataset_id\":\"55555555555555555555555555555555\",\"epoch\":1,\"input_digest\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"kind\":\"COMMIT\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}]}",
+      "bytes": 820,
+      "raw_sha256": "cc058e88a8c7b3386f94b2277a26b4dcfa4e3b39ddcbdf67f03f0c9cdd8fe67d",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "PRIVATE_ABSENT_POINTER",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N07",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/source_pointer",
+        "replacement": {
+          "kind": "COMMIT",
+          "dataset_id": "55555555555555555555555555555555",
+          "operation_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "epoch": 1,
+          "input_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_ABSENT_POINTER",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N08",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N08]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 500,
+      "raw_sha256": "632b1e95a52efd8d527ae14585254200632ad6c4b9a424c2c1a1f13c38b4500f",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "EXISTING_NONEMPTY_COMPONENTS",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N08",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/components",
+        "replacement": [],
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_CORE1_TUPLE",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N09",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N09]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:07e734ac1586231964d4236f8d90b812d5ddf8cdb038605115c6656828b69153\",\"name\":\"jobs.receipts\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 634,
+      "raw_sha256": "56fc221a7639e085891d9284bcb1708a5185f2e370fecc624e457e5497f65b3a",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "PRIVATE_EXACT_CORE_NAME",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N09",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/components",
+        "replacement": [
+          {
+            "name": "jobs.receipts",
+            "version": 1,
+            "fingerprint": "recoryn-shape-v1:07e734ac1586231964d4236f8d90b812d5ddf8cdb038605115c6656828b69153"
+          }
+        ],
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_CORE1_NAME",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N10",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N10]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":2}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 630,
+      "raw_sha256": "9d6f6b20b438723e9e937feffd4e909553c9396a19e6b5d444047b0bbab188c0",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "PRIVATE_CORE_VERSION1",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N10",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/components/0/version",
+        "replacement": 2,
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_CORE_VERSION1",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N11",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N11]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0b\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 630,
+      "raw_sha256": "2b6d572a645b0c2418d70f858ee1efb3171aad3f303e4931062770de34a82bb7",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "PRIVATE_EXACT_CORE_FP",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N11",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/components/0/fingerprint",
+        "replacement": "recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0b",
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EXACT_CORE_FP_AFTER_VALID_SYNTAX",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N12",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N12]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1},{\"fingerprint\":\"recoryn-shape-v1:07e734ac1586231964d4236f8d90b812d5ddf8cdb038605115c6656828b69153\",\"name\":\"jobs.receipts\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 765,
+      "raw_sha256": "6e4726e9880644c024fb29ff5eb17ea1051befb8fcca6c1ca63b66ee2c5dd548",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "PRIVATE_COMPONENT_COUNT1",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N12",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/components",
+        "replacement": [
+          {
+            "name": "jobs.core",
+            "version": 1,
+            "fingerprint": "recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a"
+          },
+          {
+            "name": "jobs.receipts",
+            "version": 1,
+            "fingerprint": "recoryn-shape-v1:07e734ac1586231964d4236f8d90b812d5ddf8cdb038605115c6656828b69153"
+          }
+        ],
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_NO_RECEIPTS_FACT",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N13",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N13]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:a9e56d69fe77d280595c42a2f18d64bc80b93b0c38c323942208e349cbbb1d1e\",\"name\":\"g09.management\",\"version\":1},{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 766,
+      "raw_sha256": "55d38aab3547230442dc3370214432802226c38d245594b71fc5bad104715d0a",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "PRIVATE_COMPONENT_COUNT1",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N13",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/components",
+        "replacement": [
+          {
+            "name": "g09.management",
+            "version": 1,
+            "fingerprint": "recoryn-shape-v1:a9e56d69fe77d280595c42a2f18d64bc80b93b0c38c323942208e349cbbb1d1e"
+          },
+          {
+            "name": "jobs.core",
+            "version": 1,
+            "fingerprint": "recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a"
+          }
+        ],
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_NO_MANAGEMENT_FACT_DECLARED_ONLY",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N14",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N14]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"UNKNOWN\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 621,
+      "raw_sha256": "08d018f643d8b7da17a1871029c7bc5c656ba2e5431f6e8585a4c3433623df9a",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "UNKNOWN_PROFILE",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N14",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/profile_id",
+        "replacement": "UNKNOWN",
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "UNKNOWN_PROFILE_NOT_REGISTERED",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N15",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N15]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"F2_J\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 618,
+      "raw_sha256": "43d04ddb9afae9eb96e43481aed1afa15495ff9d813f6026302494e080880c17",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "CURRENT_F2_PHYSICAL2_COMMIT",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N15",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/profile_id",
+        "replacement": "F2_J",
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "CURRENT_F2_STILL_REQUIRES_PHYSICAL2_AND_COMMIT",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N16",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N16]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 692,
+      "raw_sha256": "0fdbb3a8330f16f6d9d5c438bca6cc2261d52d5031c251e7aa16977f7b8d82d1",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "EXISTING_OPTIONAL_NULL_DIGEST",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N16",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/media_digest",
+        "replacement": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_NULL3_MEDIA_DIGEST",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N17",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N17]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 692,
+      "raw_sha256": "92fef03566290797c735eb6202e2d3f3e2d02299e253cb5c6fe32363190abfe4",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "EXISTING_OPTIONAL_NULL_DIGEST",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N17",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/deletion_digest",
+        "replacement": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_NULL3_DELETION_DIGEST",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N18",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N18]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 692,
+      "raw_sha256": "136f72483ea6b9af74b8e544596d67c20353c6ac069077e4f694d93271574e94",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "EXISTING_OPTIONAL_NULL_DIGEST",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N18",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/health_digest",
+        "replacement": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_NULL3_HEALTH_DIGEST",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N19",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N19]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[{\"digest\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"identity\":{\"file_id_hex\":\"11111111111111111111111111111111\",\"kind\":\"FILE\",\"volume_hex\":\"0000000000000000\"},\"kind\":\"COST_WITNESS\"}],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 837,
+      "raw_sha256": "f7298229844c022db9b2390cf4f823b4ff6253f5d78c691c9d077cc718e21c57",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "PRIVATE_EMPTY_SIDECARS",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N19",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/sidecar_digests",
+        "replacement": [
+          {
+            "kind": "COST_WITNESS",
+            "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "identity": {
+              "kind": "FILE",
+              "volume_hex": "0000000000000000",
+              "file_id_hex": "11111111111111111111111111111111"
+            }
+          }
+        ],
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "LEGACY_EMPTY_SOURCE_SIDECARS",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N20",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N20]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":null,\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 632,
+      "raw_sha256": "bef6c575be9ed8efd58cfda3da48e8fb4f4f45a90dab9ddddd1e87022c82d1cc",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "SCHEMA_WIRE_ERROR_BEFORE_ENCODE",
+      "primary_guard": "EXISTING_EXACT_ARRAY",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N20",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/sidecar_digests",
+        "replacement": null,
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "EXACT_ARRAY_NOT_NULL",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N21",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N21]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"recoryn_maintenance\":null,\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 657,
+      "raw_sha256": "38eca8c7fe46e564da5e6e25aa6be808163fced570ae3c51d5e5a966254c47ba",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "PYTHON_TYPE_ERROR_BEFORE_ENCODE",
+      "primary_guard": "EXISTING_TARGET_EXACT_KEYS",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N21",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/recoryn_maintenance",
+        "replacement": null,
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "EXTRA_KEY_TARGET_EXACT10",
+        "actual_execution": false,
+        "operation": "ADD_UNKNOWN_KEY"
+      }
+    },
+    {
+      "id": "N22",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N22]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 629,
+      "raw_sha256": "6f3571b91f2aede7692ea6d60b7be8fd6e4a6a4bbf85d825bca0fb4b44722f13",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "EXISTING_HEX64_DIGEST",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N22",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/data_digest",
+        "replacement": "54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8",
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "DIGEST_EXACT_HEX64",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N23",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N23]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1},{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":1}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 761,
+      "raw_sha256": "e5db57f83ca3319957b20410495c6372b9e286eed09f82dd3912a70832f0ca66",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "RETURN_THEN_ENCODER_MALFORMED",
+      "primary_guard": "EXISTING_COMPONENT_NAME_UNIQUE",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N23",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/components",
+        "replacement": [
+          {
+            "name": "jobs.core",
+            "version": 1,
+            "fingerprint": "recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a"
+          },
+          {
+            "name": "jobs.core",
+            "version": 1,
+            "fingerprint": "recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a"
+          }
+        ],
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "COMPONENT_NAMES_UNIQUE",
+        "actual_execution": false
+      }
+    },
+    {
+      "id": "N24",
+      "primary": "tests/unit/test_legacy_output_candidate.py::test_legacy_wire_case[N24]",
+      "kind": "OUTPUT",
+      "raw_utf8": "{\"format\":\"recoryn-maintenance-output-v1\",\"operation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"plan_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"targets\":[{\"components\":[{\"fingerprint\":\"recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a\",\"name\":\"jobs.core\",\"version\":true}],\"data_digest\":\"54b43acd2bbf4f498c8e87bbf7b7ca245647bafb50c957983ef9a1a6541d7b8b\",\"db_id\":\"44444444444444444444444444444444\",\"deletion_digest\":null,\"health_digest\":null,\"media_digest\":null,\"physical_version\":1,\"profile_id\":\"LEGACY_JOBS_R0K0\",\"sidecar_digests\":[],\"source_pointer\":{\"kind\":\"ABSENT\"}}]}",
+      "bytes": 633,
+      "raw_sha256": "d33c3917e68dec2bd879ae37459b62c70dbc257244ab2998528645cedb440022",
+      "expected": "EXACT_SCHEMA_WIRE_ERROR_MALFORMED",
+      "constructor_expected": "SCHEMA_WIRE_ERROR_BEFORE_ENCODE",
+      "primary_guard": "GENERIC_COMPONENT_EXACT_INTEGER",
+      "normal_counterpart": "P1",
+      "formal_ID": false,
+      "change": {
+        "label": "N24",
+        "base": "P1",
+        "JSON_pointer": "/targets/0/components/0/version",
+        "replacement": true,
+        "expected": "SchemaWireError(MALFORMED)",
+        "primary_boundary": "COMPONENT_VERSION_EXACT_INTEGER",
+        "actual_execution": false
+      }
+    }
+  ]
 }

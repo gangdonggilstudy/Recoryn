@@ -2094,18 +2094,31 @@ def _mo_target(value: Any) -> OutputTarget:
         "db_id profile_id physical_version components source_pointer data_digest media_digest sidecar_digests deletion_digest health_digest",
     )
     profile = _mo_nonempty(obj["profile_id"])
-    if profile not in _mb_PROFILES:
+    is_legacy = profile == "LEGACY_JOBS_R0K0"
+    if profile not in _mb_PROFILES and not is_legacy:
         raise _mb_bad()
     version = _mb_integer(obj["physical_version"])
     pointer = _mo_pointer(obj["source_pointer"])
-    if version != 2 or type(pointer) is not CommitPointer:
+    if is_legacy:
+        if version not in (0, 1) or type(pointer) is not AbsentPointer:
+            raise _mb_bad()
+    elif version != 2 or type(pointer) is not CommitPointer:
         raise _mb_bad()
     components = tuple(_mo_component(item) for item in _mb_array(obj["components"]))
     _mb_ordered([c.name for c in components])
     if not components:
         raise _mb_bad()
+    if is_legacy:
+        if len(components) != 1 or components[0].name != "jobs.core" or components[0].version != 1:
+            raise _mb_bad()
+        if components[0].fingerprint != (
+            "recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a"
+        ):
+            raise _mb_bad()
     sidecars = tuple(_mo_sidecar(item) for item in _mb_array(obj["sidecar_digests"]))
     _mb_ordered([s.kind for s in sidecars])
+    if is_legacy and sidecars:
+        raise _mb_bad()
     has_library = profile.startswith("F2_L")
     return OutputTarget(
         _mb_hex(obj["db_id"]),
