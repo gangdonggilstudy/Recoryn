@@ -95,3 +95,12 @@ G-P04와 G-P05는 둘 다 `storage/library.py`와 `ui/main.py`를 바꾼다. 동
 ## 외부 게이트(이 계획으로 닫지 않음)
 
 실장비 캡처 W01~W04, 전원 차단, 실제 모델·weights·음성 품질, 실제 Ollama·제공업체·계정·TLS·vault, 다른 GPU, clean VM, 서명, 법률 확인, VoiceLocal 소스는 EXTERNAL_GATE다. 두 보고서의 EXTERNAL_GATE 13행은 개발 gap과 합산하지 않는다.
+
+
+## G09a D12: current-F2 wire 타입 기반 증분
+
+기준 공개0c42의 복구 CI 세 작업 성공은 인수했다. 다음 정확10파일 단위는 순수 관리6종 codec과 canonical DTO 기반의 제품 결속이며 현재 작성 중이다. 원 S1 20행을 보존하고 local CAW26/CAN14 대상40을 계획하되 원70의 CAN08/13/14/15·CAM01~06 열 행과 실제 유지보수·권위·legacy/LOP는 남긴다. private 후보269/독립82·legacy296/29는 새 제품 PASS가 아니다. 새 제품 tree의 선택·독립검토·정확 full/coverage7/wheel·공개/원격 결과는 후속 인수하며 이 기록은 G09a 전체 또는 설계 v1 구현/실장비 완료를 뜻하지 않는다. 세부 범위와 경계는 [관리 계약의 D12 절](../testing/g09-migration-backup-cases.md) 및 [작업 배정표](../collaboration/assignments.md)를 따른다.
+
+### D12 통합 준비 상태 갱신(전체 검증 전 스냅샷)
+
+앞선 ‘현재 작성 중’은 최초 D12 초안의 상태다. 이후 후보5파일의 작성·322건/6목표/정적3종과 비작성자의 제품결속322건·독립 손9건·선택감사·타입 단언 민감도 검토를 인수했다. 기존 S1 의미20과 원70의 local대상40/보류10은 유지한다. 정확10 tree의 full core·coverage7·offline wheel·새 SHA 원격 CI는 이 갱신 작성 시점에 아직 실행하지 않았다. 이 문단은 전체 검증 전 준비 스냅샷이며 후속 전체 결론·공개 SHA/원격 run은 실제 Git/CI와 오케스트레이터 검증 기록으로 따로 결속한다. [제품 결속 독립 검토](../reviews/g09a-type-integration-review.md)의 한정 판정을 전체 G09a·실제 권위·Windows 실장비 완료로 확대하지 않는다.

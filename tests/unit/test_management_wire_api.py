@@ -1,0 +1,2503 @@
+from __future__ import annotations
+
+import ast
+import builtins
+import copy
+import ctypes
+import dataclasses
+import functools
+import hashlib
+import inspect
+import io
+import json
+import os
+import socket
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+import traceback
+import types
+import typing
+from collections import Counter
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
+from dataclasses import FrozenInstanceError, fields, is_dataclass, make_dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any, Literal, Union, cast, get_args, get_origin, get_type_hints
+from unittest.mock import patch
+
+import pytest
+
+from recoryn import schema as s
+
+
+# Shared test instrumentation is copied into each owned test module; no build dependency.
+def _wire_data():
+    return json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "fixtures/g09_management_wire_literals_v1.json"
+        ).read_text(encoding="utf8")
+    )
+
+
+@contextmanager
+def _management_no_io(events):
+    def denied(name):
+        def stop(*args, **kwargs):
+            events.append(name)
+            raise AssertionError("MANAGEMENT_IO_ATTEMPT:" + name)
+
+        return stop
+
+    with pytest.MonkeyPatch.context() as patch:
+        targets = [
+            (builtins, "open"),
+            (io, "open"),
+            (sqlite3, "connect"),
+            (socket, "socket"),
+            (socket, "create_connection"),
+            (socket, "getaddrinfo"),
+            (socket, "gethostbyname"),
+            (subprocess, "Popen"),
+            (threading.Thread, "start"),
+            (ctypes, "CDLL"),
+            (ctypes, "PyDLL"),
+            (ctypes.LibraryLoader, "LoadLibrary"),
+        ]
+        targets += [
+            (os, name)
+            for name in (
+                "open",
+                "fdopen",
+                "read",
+                "write",
+                "stat",
+                "lstat",
+                "listdir",
+                "scandir",
+                "mkdir",
+                "remove",
+                "unlink",
+                "rename",
+                "replace",
+                "system",
+            )
+        ]
+        targets += [(ctypes, name) for name in ("WinDLL", "OleDLL") if hasattr(ctypes, name)]
+        for module, names in (
+            ("win32cred", ("CredRead", "CredWrite", "CredDelete")),
+            ("keyring", ("get_password", "set_password", "delete_password")),
+        ):
+            if module in sys.modules:
+                targets += [
+                    (sys.modules[module], name)
+                    for name in names
+                    if hasattr(sys.modules[module], name)
+                ]
+        for owner, name in targets:
+            patch.setattr(owner, name, denied(owner.__name__ + "." + name))
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _management_selected_audit(request):
+    if hasattr(request.config, "_g09_management_audit"):
+        yield request.config._g09_management_audit
+        return
+    owned = (
+        "tests/unit/test_schema_catalog.py::",
+        "tests/unit/test_management_wire_api.py::",
+        "tests/property/test_management_wire_case_space.py::",
+    )
+    state = {
+        "selected": [
+            item.nodeid for item in request.session.items if item.nodeid.startswith(owned)
+        ],
+        "reports": [],
+        "calls": [],
+        "IO_attempts": [],
+        "active": request.session.items[0].nodeid if request.session.items else None,
+    }
+    selected_set = set(state["selected"])
+    request.config._g09_management_audit = state
+    patch = pytest.MonkeyPatch()
+
+    def protect(real, name):
+        @functools.wraps(real)
+        def observed(*args, **kwargs):
+            event = {"node": state["active"], "name": name, "status": "ENTERED"}
+            actual = inspect.unwrap(real)
+            event["actual_file"] = actual.__code__.co_filename
+            event["actual_globals_schema"] = actual.__globals__ is vars(s)
+            state["calls"].append(event)
+            try:
+                with _management_no_io(state["IO_attempts"]):
+                    value = real(*args, **kwargs)
+            except BaseException as error:
+                event.update(
+                    status="RAISED",
+                    error_type=type(error).__name__,
+                    kind=getattr(error, "kind", None),
+                )
+                raise
+            event["status"] = "RETURNED"
+            return value
+
+        return observed
+
+    for name in ("decode_management", "encode_management"):
+        patch.setattr(s, name, protect(getattr(s, name), name))
+    for cls in (s._FrozenWireData, s.ProgressDocument):
+        patch.setattr(
+            cls, "__post_init__", protect(cls.__post_init__, cls.__name__ + ".__post_init__")
+        )
+
+    class Audit:
+        def pytest_runtest_setup(self, item):
+            state["active"] = item.nodeid
+
+        def pytest_runtest_logreport(self, report):
+            if report.nodeid in selected_set:
+                state["reports"].append(
+                    {"node": report.nodeid, "when": report.when, "outcome": report.outcome}
+                )
+
+        def pytest_sessionfinish(self, session, exitstatus):
+            state["exitstatus"] = int(exitstatus)
+            expected = set(state["selected"])
+            counts = Counter(r["node"] for r in state["reports"] if r["when"] == "call")
+            state["call_counts"] = {n: counts[n] for n in expected}
+            state["selected_call_once"] = all(n == 1 for n in state["call_counts"].values())
+            state["nonselected_call_nodes"] = sorted(
+                {r["node"] for r in state["reports"] if r["when"] == "call"} - expected
+            )
+            if exitstatus == 0:
+                assert state["selected_call_once"] and not state["nonselected_call_nodes"]
+                assert not state["IO_attempts"]
+            destination = os.environ.get("RECORYN_MANAGEMENT_AUDIT")
+            if destination:
+                Path(destination).write_text(
+                    json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf8"
+                )
+
+    request.config.pluginmanager.register(Audit(), "g09_management_selected_audit")
+    yield state
+    patch.undo()
+
+
+def _wire_capture(call):
+    try:
+        return call(), None
+    except Exception as error:
+        return None, error
+
+
+def _wire_closed(error, goal="WIRE_EXPECTED_MALFORMED_AFTER_ACTUAL_API", kind="MALFORMED"):
+    assert error is not None, goal
+    assert type(error) is s.SchemaWireError
+    assert (
+        error.kind == kind
+        and str(error) == kind
+        and repr(error) == "SchemaWireError(" + kind + ")"
+        and error.args == (kind,)
+    )
+
+
+_WIRE_FIXTURE = _wire_data()
+
+
+def _decode_BINDINGS(raw):
+    return s.decode_management(raw, kind=s.ManagementObjectKind.BINDINGS)
+
+
+def _decode_PROGRESS(raw):
+    return s.decode_management(raw, kind=s.ManagementObjectKind.PROGRESS)
+
+
+def _decode_PLAN(raw):
+    return s.decode_management(raw, kind=s.ManagementObjectKind.PLAN)
+
+
+def _decode_RECORD(raw):
+    return s.decode_management(raw, kind=s.ManagementObjectKind.RECORD)
+
+
+def _decode_OUTPUT(raw):
+    return s.decode_management(raw, kind=s.ManagementObjectKind.OUTPUT)
+
+
+def _decode_COMPLETE(raw):
+    return s.decode_management(raw, kind=s.ManagementObjectKind.COMPLETE)
+
+
+_progress__HAND_P1 = bytes.fromhex(
+    "7b22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d70726f67726573732d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227265636f72645f646967657374223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c2273657175656e6365223a302c2276657273696f6e223a317d"
+)
+_progress__HAND_P1_SHA = "724f1642b0c8811244e599baa7867a480558adc874b57aacbc824650133c7ce0"
+_progress__ROWS = (
+    (
+        "P01",
+        "7b22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d70726f67726573732d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227265636f72645f646967657374223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c2273657175656e6365223a302c2276657273696f6e223a317d",
+        "ROUNDTRIP",
+    ),
+    (
+        "P03",
+        "7b22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d70726f67726573732d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227265636f72645f646967657374223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c2273657175656e6365223a393232333337323033363835343737353830372c2276657273696f6e223a317d",
+        "ROUNDTRIP",
+    ),
+    (
+        "P04",
+        "7b22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d70726f67726573732d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227265636f72645f646967657374223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c2273657175656e6365223a2d312c2276657273696f6e223a317d",
+        "MALFORMED",
+    ),
+    (
+        "P05",
+        "7b22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d70726f67726573732d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227265636f72645f646967657374223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c2273657175656e6365223a393232333337323033363835343737353830382c2276657273696f6e223a317d",
+        "MALFORMED",
+    ),
+    (
+        "P06",
+        "7b22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d70726f67726573732d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227265636f72645f646967657374223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c2273657175656e6365223a302c2276657273696f6e223a747275657d",
+        "MALFORMED",
+    ),
+    (
+        "P07",
+        "7b22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d70726f67726573732d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227265636f72645f646967657374223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c2273657175656e6365223a302c2276657273696f6e223a312c227a7a7a223a22444f5f4e4f545f4543484f5f50524f47524553535f43414e4152595f433a2f70726976617465227d",
+        "MALFORMED",
+    ),
+    (
+        "P08",
+        "7b2022666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d70726f67726573732d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227265636f72645f646967657374223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c2273657175656e6365223a302c2276657273696f6e223a317d",
+        "MALFORMED",
+    ),
+    ("P09", None, "MALFORMED_CONSTRUCTOR_OR_ENCODER"),
+    ("P10", None, "LIMIT_EXCEEDED_BEFORE_PARSE"),
+)
+_progress__OBSERVATIONS: list[dict[str, object]] = []
+
+
+@contextmanager
+def _progress__deny_api_io(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    attempts: list[str] = []
+
+    def denied(name: str):
+
+        def stop(*args: object, **kwargs: object) -> None:
+            attempts.append(name)
+            raise AssertionError("codec API attempted forbidden I/O: " + name)
+
+        return stop
+
+    with monkeypatch.context() as patch:
+        for module, names in (
+            (builtins, ("open",)),
+            (io, ("open",)),
+            (os, ("open", "stat", "lstat", "system")),
+            (sqlite3, ("connect",)),
+            (socket, ("socket", "create_connection", "getaddrinfo")),
+            (subprocess, ("Popen",)),
+            (ctypes, ("CDLL", "WinDLL", "OleDLL", "PyDLL")),
+        ):
+            for name in names:
+                if hasattr(module, name):
+                    patch.setattr(module, name, denied(module.__name__ + "." + name))
+        yield attempts
+
+
+def _progress__closed_error(error: s.SchemaWireError, kind: str) -> None:
+    assert error.kind == kind, "closed error kind must match hand oracle"
+    assert str(error) == kind
+    assert repr(error) == "SchemaWireError(" + kind + ")"
+    assert error.args == (kind,)
+    assert error.__cause__ is None and error.__context__ is None
+    assert "DO_NOT_ECHO_PROGRESS_CANARY" not in str(error) + repr(error)
+    assert "C:/private" not in str(error) + repr(error)
+
+
+@pytest.mark.parametrize(
+    "label,raw_hex,expected", _progress__ROWS, ids=[row[0] for row in _progress__ROWS]
+)
+def test_regression_progress_private_progress_probe(
+    label: str, raw_hex: str | None, expected: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = bytes.fromhex(raw_hex) if raw_hex is not None else b""
+    caller_file_roundtrip = False
+    if label == "P01":
+        source = tmp_path / "hand-progress.json"
+        source.write_bytes(_progress__HAND_P1)
+        raw = source.read_bytes()
+        caller_file_roundtrip = True
+        assert raw == _progress__HAND_P1 and len(raw) == 283
+        assert hashlib.sha256(raw).hexdigest() == _progress__HAND_P1_SHA
+    if label == "P10":
+        raw = b"!" * 8388609
+    document = None
+    encoded = None
+    error = None
+    stage = "decode"
+    calls = {"decode": 0, "constructor": 0, "encode": 0}
+    with _progress__deny_api_io(monkeypatch) as attempts:
+        try:
+            if label == "P09":
+                stage = "constructor"
+                calls["constructor"] += 1
+                document = s.ProgressDocument(
+                    "recoryn-maintenance-progress-v1", 1, "a" * 32, "b" * 64, 0, "c" * 63
+                )
+                stage = "encode"
+                calls["encode"] += 1
+                encoded = s.encode_management(document)
+            else:
+                calls["decode"] += 1
+                document = _decode_PROGRESS(raw)
+                if expected == "ROUNDTRIP":
+                    stage = "encode"
+                    calls["encode"] += 1
+                    encoded = s.encode_management(document)
+        except s.SchemaWireError as caught:
+            error = caught
+    _progress__OBSERVATIONS.append(
+        dict(
+            label=label,
+            calls=calls,
+            failure_stage=stage if error is not None else None,
+            rejection_kind=error.kind if error is not None else None,
+            io_attempts=list(attempts),
+            caller_file_roundtrip=caller_file_roundtrip,
+            raw_sha256=hashlib.sha256(raw).hexdigest() if label != "P09" else None,
+            raw_bytes=len(raw) if label != "P09" else None,
+        )
+    )
+    assert not attempts, "codec API must perform no I/O"
+    if expected == "ROUNDTRIP":
+        assert error is None, "hand positive progress must be accepted"
+        assert type(document) is s.ProgressDocument
+        assert encoded == raw, "encoder must equal independent hand wire bytes"
+        assert document is not None
+        expected_sequence = 9223372036854775807 if label == "P03" else 0
+        assert (
+            document.format,
+            document.version,
+            document.operation_id,
+            document.plan_digest,
+            document.sequence,
+            document.record_digest,
+        ) == (
+            "recoryn-maintenance-progress-v1",
+            1,
+            "a" * 32,
+            "b" * 64,
+            expected_sequence,
+            "c" * 64,
+        ), "DTO must preserve every hand field"
+        assert type(document.version) is int and type(document.sequence) is int
+        assert not hasattr(document, "__dict__")
+        assert not any(hasattr(document, name) for name in ("permit", "owner", "complete", "proof"))
+        with pytest.raises(FrozenInstanceError):
+            setattr(document, "sequence", 7)  # noqa: B010
+    elif label == "P10":
+        assert error is not None, "oversized raw must be rejected before parse"
+        _progress__closed_error(error, "LIMIT_EXCEEDED")
+    elif label == "P09":
+        assert error is not None, "direct short-digest DTO must be rejected"
+        _progress__closed_error(error, "MALFORMED")
+        assert stage in {"constructor", "encode"}
+    else:
+        assert error is not None, "malformed hand progress must be rejected"
+        _progress__closed_error(error, "MALFORMED")
+
+
+_plan_EVENTS: list[dict[str, Any]] = []
+_plan_LABELS = (
+    "P01-normal",
+    "P02-A",
+    "P03-B",
+    "P04-C",
+    "P05-D",
+    "P06-E",
+    "P07-F",
+    "P08-G",
+    "P09-H",
+)
+
+
+@contextmanager
+def _plan_no_io(hits: dict[str, int]) -> Iterator[None]:
+
+    def deny(name: str) -> Callable[..., Any]:
+
+        def blocked(*args: Any, **kwargs: Any) -> Any:
+            hits[name] = hits.get(name, 0) + 1
+            raise AssertionError("API_IO_FORBIDDEN:" + name)
+
+        return blocked
+
+    targets: list[tuple[Any, str]] = [(builtins, "open"), (io, "open")]
+    targets.extend(
+        (os, name)
+        for name in (
+            "open",
+            "fdopen",
+            "read",
+            "write",
+            "stat",
+            "lstat",
+            "scandir",
+            "listdir",
+            "mkdir",
+            "makedirs",
+            "rename",
+            "replace",
+            "remove",
+            "unlink",
+            "rmdir",
+        )
+    )
+    targets.extend(
+        (Path, name) for name in ("open", "read_bytes", "read_text", "write_bytes", "write_text")
+    )
+    targets.extend(
+        (socket, name) for name in ("socket", "getaddrinfo", "gethostbyname", "create_connection")
+    )
+    targets.extend([(sqlite3, "connect"), (subprocess, "Popen"), (subprocess, "run")])
+    targets.extend((ctypes, name) for name in ("CDLL", "PyDLL", "WinDLL") if hasattr(ctypes, name))
+    if hasattr(ctypes, "windll"):
+        targets.append((ctypes.windll, "LoadLibrary"))
+    with pytest.MonkeyPatch.context() as patch:
+        for owner, name in targets:
+            patch.setattr(
+                owner, name, deny(getattr(owner, "__name__", type(owner).__name__) + "." + name)
+            )
+        yield
+
+
+def _plan_capture(label: str, call: Callable[[], Any]) -> tuple[Any, str | None]:
+    hits: dict[str, int] = {}
+    result: Any = None
+    code = None
+    frames = []
+    try:
+        with _plan_no_io(hits):
+            try:
+                result = call()
+            except s.SchemaWireError as exc:
+                code = exc.kind
+                tb = exc.__traceback__
+                while tb is not None:
+                    frames.append(
+                        {
+                            "file": tb.tb_frame.f_code.co_filename,
+                            "function": tb.tb_frame.f_code.co_name,
+                            "line": tb.tb_lineno,
+                        }
+                    )
+                    tb = tb.tb_next
+    finally:
+        _plan_EVENTS.append(
+            {"label": label, "I_O_calls": hits, "error_kind": code, "frames": frames}
+        )
+    return (result, code)
+
+
+@pytest.fixture(scope="session")
+def _plan_hand() -> dict[str, Any]:
+    return _WIRE_FIXTURE["replay_payloads"]["plan"]
+
+
+@pytest.fixture(autouse=True)
+def _plan_save_observations() -> Iterator[None]:
+    yield
+    destination = os.environ.get("PLAN_IO_REPORT")
+    if destination:
+        Path(destination).write_text(json.dumps(_plan_EVENTS, indent=2) + "\n", encoding="utf-8")
+
+
+def _plan_patched_model(_plan_hand: dict[str, Any], index: int) -> dict[str, Any]:
+    model = copy.deepcopy(_plan_hand["hand_model"])
+    operation = _plan_hand["negative_boundary_candidates"][index]["patch"][0]
+    if operation["op"] == "copy":
+        model["targets"].append(copy.deepcopy(model["targets"][0]))
+        return model
+    if operation["op"] == "move":
+        components = model["targets"][0]["post_contract"]["components"]
+        components.insert(0, components.pop(1))
+        return model
+    parts = operation["path"].strip("/").split("/")
+    owner = model
+    for part in parts[:-1]:
+        owner = owner[int(part)] if isinstance(owner, list) else owner[part]
+    last = int(parts[-1]) if isinstance(owner, list) else parts[-1]
+    owner[last] = operation["value"]
+    return model
+
+
+@pytest.mark.parametrize("index", range(9), ids=_plan_LABELS)
+def test_regression_plan_selected_plan_case(_plan_hand: dict[str, Any], index: int) -> None:
+    raw = _plan_hand["hand_canonical_utf8"].encode("utf-8")
+    document, error = _plan_capture(_plan_LABELS[index] + ":control", lambda: _decode_PLAN(raw))
+    assert error is None, "NORMAL_HAND_PLAN_REJECTED"
+    assert type(document) is s.PlanDocument
+    if index == 0:
+        output, error = _plan_capture("P01:encode", lambda: s.encode_management(document))
+        assert error is None, "NORMAL_HAND_ENCODING_REJECTED"
+        assert output == raw, "ENCODE_HAND_BYTES"
+        assert type(document.targets) is tuple
+        assert type(document.targets[0].post_contract.components) is tuple
+        assert document.targets[0].pre_image_slot.kind == "DB_IMAGE"
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            document.targets = ()
+        return
+    negative = json.dumps(
+        _plan_patched_model(_plan_hand, index - 1),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    _, error = _plan_capture(_plan_LABELS[index] + ":negative", lambda: _decode_PLAN(negative))
+    assert error == "MALFORMED", "NEGATIVE_EXPECTED_MALFORMED:" + _plan_LABELS[index]
+
+
+def test_regression_plan_direct_constructor_mutable_alias(_plan_hand: dict[str, Any]) -> None:
+    document, error = _plan_capture(
+        "P10:control", lambda: _decode_PLAN(_plan_hand["hand_canonical_utf8"].encode("utf-8"))
+    )
+    assert error is None, "NORMAL_HAND_PLAN_REJECTED"
+    _, error = _plan_capture(
+        "P10:constructor", lambda: dataclasses.replace(document, targets=list(document.targets))
+    )
+    assert error == "MALFORMED", "CONSTRUCTOR_MUTABLE_ALIAS"
+
+
+def test_regression_plan_raw_budget_before_parse() -> None:
+    oversized = b"x" * 8388609
+    _, error = _plan_capture("P11:raw-budget", lambda: _decode_PLAN(oversized))
+    assert error == "LIMIT_EXCEEDED", "RAW_BUDGET_BEFORE_PARSE"
+
+
+_record__HAND_R1 = bytes.fromhex(
+    "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a6e756c6c2c2273657175656e6365223a302c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b226b696e64223a22414253454e54227d7d5d2c2276657273696f6e223a317d"
+)
+_record__ROWS = (
+    (
+        "HAND_R1",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a6e756c6c2c2273657175656e6365223a302c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b226b696e64223a22414253454e54227d7d5d2c2276657273696f6e223a317d",
+        "ROUNDTRIP",
+    ),
+    (
+        "R01",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c2273657175656e6365223a302c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b226b696e64223a22414253454e54227d7d5d2c2276657273696f6e223a317d",
+        "MALFORMED",
+    ),
+    (
+        "R02",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a6e756c6c2c2273657175656e6365223a312c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b226b696e64223a22414253454e54227d7d5d2c2276657273696f6e223a317d",
+        "MALFORMED",
+    ),
+    (
+        "R03",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a6e756c6c2c2273657175656e6365223a302c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a6e756c6c7d5d2c2276657273696f6e223a317d",
+        "MALFORMED",
+    ),
+    (
+        "R04",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a6e756c6c2c2273657175656e6365223a302c2274617267657473223a5b7b2263726564697465645f65706f6368223a372c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b226b696e64223a22414253454e54227d7d5d2c2276657273696f6e223a317d",
+        "MALFORMED",
+    ),
+    (
+        "R05",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a6e756c6c2c2273657175656e6365223a302c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b22646174617365745f6964223a223131313131313131313131313131313131313131313131313131313131313131222c2265706f6368223a312c226b696e64223a224652455348227d7d5d2c2276657273696f6e223a317d",
+        "MALFORMED",
+    ),
+    (
+        "R06",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a6e756c6c2c2273657175656e6365223a302c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b22646174617365745f6964223a223131313131313131313131313131313131313131313131313131313131313131222c2265706f6368223a302c226b696e64223a224652455348227d7d5d2c2276657273696f6e223a317d",
+        "ROUNDTRIP",
+    ),
+    (
+        "R07",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a6e756c6c2c2273657175656e6365223a302c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b22646174617365745f6964223a223131313131313131313131313131313131313131313131313131313131313131222c2265706f6368223a302c22696e7075745f646967657374223a2265656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565222c226b696e64223a22434f4d4d4954222c226f7065726174696f6e5f6964223a223939393939393939393939393939393939393939393939393939393939393939227d7d5d2c2276657273696f6e223a317d",
+        "MALFORMED",
+    ),
+    (
+        "R08",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a6e756c6c2c2273657175656e6365223a302c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b226b696e64223a22414253454e54227d7d5d2c2276657273696f6e223a317d",
+        "MALFORMED",
+    ),
+    (
+        "Q1_NORMAL",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a2266356262346365663637336631333664646537623364376666303437656365373931356132393135333262323630626132633736616234316536623032663431222c2273657175656e6365223a312c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b226b696e64223a22414253454e54227d7d5d2c2276657273696f6e223a317d",
+        "ROUNDTRIP",
+    ),
+    (
+        "COMMIT1_NORMAL",
+        "7b2262696e64696e675f6c696e6b73223a6e756c6c2c22646973706f736974696f6e223a2252554e4e494e47222c22666f726d6174223a227265636f72796e2d6d61696e74656e616e63652d7265636f72642d7631222c226f7065726174696f6e5f6964223a226161616161616161616161616161616161616161616161616161616161616161222c226f75747075745f646967657374223a6e756c6c2c227068617365223a22505245504152494e47222c22706c616e5f646967657374223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c227072696f725f646967657374223a6e756c6c2c2273657175656e6365223a302c2274617267657473223a5b7b2263726564697465645f65706f6368223a6e756c6c2c2264625f6964223a223434343434343434343434343434343434343434343434343434343434343434222c227072655f696d616765223a6e756c6c2c22726573746f72655f656666656374223a6e756c6c2c227369646563617273223a5b5d2c22736f757263655f637574223a22505245222c22736f757263655f646967657374223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c22736f757263655f706f696e746572223a7b22646174617365745f6964223a223131313131313131313131313131313131313131313131313131313131313131222c2265706f6368223a312c22696e7075745f646967657374223a2265656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565222c226b696e64223a22434f4d4d4954222c226f7065726174696f6e5f6964223a223939393939393939393939393939393939393939393939393939393939393939227d7d5d2c2276657273696f6e223a317d",
+        "ROUNDTRIP",
+    ),
+    ("MUTABLE_CONSTRUCTOR", None, "MALFORMED_CONSTRUCTOR"),
+    ("RAW_BUDGET", None, "LIMIT_EXCEEDED_BEFORE_PARSE"),
+)
+_record__OBSERVATIONS: list[dict[str, object]] = []
+
+
+@contextmanager
+def _record__deny_io(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    attempts: list[str] = []
+
+    def denied(name: str) -> Any:
+
+        def stop(*args: object, **kwargs: object) -> None:
+            attempts.append(name)
+            raise AssertionError("RECORD API attempted forbidden I/O: " + name)
+
+        return stop
+
+    with monkeypatch.context() as patch:
+        for owner, names in (
+            (builtins, ("open",)),
+            (io, ("open",)),
+            (os, ("open", "stat", "lstat", "read", "write", "system")),
+            (sqlite3, ("connect",)),
+            (socket, ("socket", "create_connection", "getaddrinfo")),
+            (subprocess, ("Popen",)),
+            (ctypes, ("CDLL", "WinDLL", "OleDLL", "PyDLL")),
+        ):
+            for name in names:
+                if hasattr(owner, name):
+                    patch.setattr(owner, name, denied(owner.__name__ + "." + name))
+        yield attempts
+
+
+def _record__plain_actual(value: object) -> Any:
+    if is_dataclass(value) and (not isinstance(value, type)):
+        assert type(value).__dataclass_params__.frozen
+        assert not hasattr(value, "__dict__")
+        return {
+            field.name: _record__plain_actual(getattr(value, field.name)) for field in fields(value)
+        }
+    if type(value) is tuple:
+        return [_record__plain_actual(item) for item in value]
+    assert type(value) in {str, int, type(None)}
+    return value
+
+
+def _record__direct_document(prior: str | None, mutable: bool = False) -> s.RecordDocument:
+    target = s.RecordTarget(
+        "4" * 32, "PRE", s.AbsentPointer("ABSENT"), "d" * 64, None, (), None, None
+    )
+    targets = [target] if mutable else (target,)
+    return s.RecordDocument(
+        "recoryn-maintenance-record-v1",
+        1,
+        "a" * 32,
+        "b" * 64,
+        0,
+        prior,
+        "PREPARING",
+        "RUNNING",
+        targets,
+        None,
+        None,
+    )
+
+
+def _record__closed(error: s.SchemaWireError, kind: str) -> None:
+    assert error.kind == kind
+    assert str(error) == kind and repr(error) == "SchemaWireError(" + kind + ")"
+    assert error.args == (kind,)
+    assert error.__cause__ is None and error.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "label,raw_hex,expected", _record__ROWS, ids=[row[0] for row in _record__ROWS]
+)
+def test_regression_record_private_record_probe(
+    label: str, raw_hex: str | None, expected: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = bytes.fromhex(raw_hex) if raw_hex else b""
+    caller_file_roundtrip = False
+    if label == "HAND_R1":
+        source = tmp_path / "hand-record.json"
+        source.write_bytes(_record__HAND_R1)
+        raw = source.read_bytes()
+        caller_file_roundtrip = True
+        assert len(raw) == 573
+        assert (
+            hashlib.sha256(raw).hexdigest()
+            == "f5bb4cef673f136dde7b3d7ff047ece7915a291532b260ba2c76ab41e6b02f41"
+        )
+    if label == "RAW_BUDGET":
+        raw = b"!" * 8388609
+    error = None
+    document = None
+    encoded = None
+    calls = {"decode": 0, "encode": 0, "direct_constructor": 0}
+    stage = "decode"
+    with _record__deny_io(monkeypatch) as attempts:
+        try:
+            if label == "MUTABLE_CONSTRUCTOR":
+                stage = "constructor"
+                calls["direct_constructor"] += 1
+                document = _record__direct_document(None, mutable=True)
+                stage = "encode"
+                calls["encode"] += 1
+                encoded = s.encode_management(document)
+            else:
+                calls["decode"] += 1
+                document = _decode_RECORD(raw)
+                if expected == "ROUNDTRIP":
+                    stage = "encode"
+                    calls["encode"] += 1
+                    encoded = s.encode_management(document)
+        except s.SchemaWireError as caught:
+            error = caught
+    observation: dict[str, object] = dict(
+        label=label,
+        calls=calls,
+        stage=stage,
+        error_kind=error.kind if error else None,
+        io_attempts=list(attempts),
+        caller_file_roundtrip=caller_file_roundtrip,
+        raw_sha256=hashlib.sha256(raw).hexdigest() if raw else None,
+        raw_bytes=len(raw) if raw else None,
+    )
+    _record__OBSERVATIONS.append(observation)
+    assert not attempts, "RECORD API I/O must remain zero"
+    if expected == "ROUNDTRIP":
+        assert error is None, "hand RECORD control must be accepted"
+        assert type(document) is s.RecordDocument
+        assert _record__plain_actual(document) == json.loads(raw), (
+            "DTO must preserve every hand field"
+        )
+        assert encoded == raw, "encoder must equal the independent hand wire"
+        assert document is not None
+        assert type(document.version) is int and type(document.sequence) is int
+        assert type(document.targets) is tuple
+        assert not any(hasattr(document, key) for key in ("permit", "owner", "issuer", "proof"))
+        if label == "R06":
+            pointer = document.targets[0].source_pointer
+            assert type(pointer) is s.FreshPointer and pointer.epoch == 0
+            assert not hasattr(pointer, "operation_id")
+        with pytest.raises(FrozenInstanceError):
+            setattr(document, "sequence", 7)  # noqa: B010
+    elif label == "MUTABLE_CONSTRUCTOR":
+        assert error is not None, "mutable target list must be rejected by constructor"
+        _record__closed(error, "MALFORMED")
+        assert stage == "constructor" and calls["decode"] == calls["encode"] == 0
+    elif label == "RAW_BUDGET":
+        assert error is not None, "oversized RECORD raw must be rejected before parse"
+        _record__closed(error, "LIMIT_EXCEEDED")
+    else:
+        assert error is not None, "malformed hand RECORD must be rejected"
+        _record__closed(error, "MALFORMED")
+    if label == "R01":
+        direct_error = None
+        encode_error = None
+        direct = None
+        with _record__deny_io(monkeypatch) as direct_attempts:
+            try:
+                calls["direct_constructor"] += 1
+                direct = _record__direct_document("d" * 64)
+            except s.SchemaWireError as caught:
+                direct_error = caught
+            if direct_error is None:
+                try:
+                    calls["encode"] += 1
+                    s.encode_management(direct)
+                except s.SchemaWireError as caught:
+                    encode_error = caught
+        observation.update(
+            direct_constructor_returned=direct is not None,
+            direct_constructor_error=direct_error.kind if direct_error else None,
+            direct_encode_error=encode_error.kind if encode_error else None,
+            direct_io_attempts=list(direct_attempts),
+        )
+        assert not direct_attempts
+        assert direct_error is None, "type-correct cross-field-invalid constructor must return"
+        assert type(direct) is s.RecordDocument
+        assert _record__plain_actual(direct) == json.loads(raw), (
+            "direct DTO must equal the same R01 fields"
+        )
+        assert encode_error is not None, "encoder must reject direct cross-field-invalid R01"
+        _record__closed(encode_error, "MALFORMED")
+
+
+_record_independent_ROWS = _WIRE_FIXTURE["replay_payloads"]["record_independent"]
+
+
+@contextmanager
+def _record_independent_no_io(monkeypatch):
+    attempts = []
+
+    def denied(*args, **kwargs):
+        attempts.append("EXTERNAL_IO")
+        raise AssertionError("RECORD_API_IO_ATTEMPT")
+
+    with monkeypatch.context() as patch:
+        targets = [
+            (builtins, "open"),
+            (io, "open"),
+            (os, "open"),
+            (os, "stat"),
+            (os, "lstat"),
+            (os, "listdir"),
+            (os, "scandir"),
+            (sqlite3, "connect"),
+            (socket, "socket"),
+            (socket, "getaddrinfo"),
+            (subprocess, "Popen"),
+            (ctypes, "CDLL"),
+            (ctypes, "PyDLL"),
+        ]
+        for module, name in targets:
+            patch.setattr(module, name, denied)
+        for name in ["WinDLL", "OleDLL"]:
+            if hasattr(ctypes, name):
+                patch.setattr(ctypes, name, denied)
+        yield attempts
+    assert not attempts
+
+
+@pytest.mark.parametrize(
+    "row", _record_independent_ROWS, ids=[s["id"] for s in _record_independent_ROWS]
+)
+def test_regression_record_independent_independent_record(row, monkeypatch):
+    raw = row["raw"].encode("utf8")
+    error = None
+    document = None
+    encoded = None
+    with _record_independent_no_io(monkeypatch):
+        try:
+            document = _decode_RECORD(raw)
+            if row["expected"] == "ROUNDTRIP":
+                encoded = s.encode_management(document)
+        except s.SchemaWireError as caught:
+            error = caught
+    if row["expected"] == "ROUNDTRIP":
+        assert error is None, "HAND_RECORD_POSITIVE_MUST_BE_ACCEPTED"
+        assert type(document) is s.RecordDocument
+        assert encoded == raw, "HAND_RECORD_EXACT_BYTES"
+        assert type(document.targets) is tuple
+    else:
+        assert error is not None, "HAND_RECORD_LOCAL_REJECT_REQUIRED"
+        assert type(error) is s.SchemaWireError
+        assert error.kind == "MALFORMED", "HAND_RECORD_ERROR_KIND"
+
+
+_integer_HAND = _WIRE_FIXTURE["replay_payloads"]["integer"]["rows"]
+
+
+@contextmanager
+def _integer_no_io(monkeypatch):
+    attempts = []
+
+    def denied(*args, **kwargs):
+        attempts.append("API_IO")
+        raise AssertionError("BINDINGS_API_IO_ATTEMPT")
+
+    with monkeypatch.context() as patch:
+        for module, name in [
+            (builtins, "open"),
+            (io, "open"),
+            (os, "open"),
+            (os, "stat"),
+            (os, "lstat"),
+            (os, "listdir"),
+            (os, "scandir"),
+            (sqlite3, "connect"),
+            (socket, "socket"),
+            (socket, "getaddrinfo"),
+            (subprocess, "Popen"),
+            (ctypes, "CDLL"),
+            (ctypes, "PyDLL"),
+        ]:
+            patch.setattr(module, name, denied)
+        for name in ["WinDLL", "OleDLL"]:
+            if hasattr(ctypes, name):
+                patch.setattr(ctypes, name, denied)
+        yield attempts
+    assert not attempts, "BINDINGS_API_IO_MUST_REMAIN_ZERO"
+
+
+@pytest.mark.parametrize("row", _integer_HAND, ids=[s["id"] for s in _integer_HAND])
+def test_regression_integer_integer_boundary(row, monkeypatch):
+    raw = bytes.fromhex(row["raw_hex"])
+    result = error = encoded = None
+    limit = sys.get_int_max_str_digits()
+    depth_exceptions = []
+    original_depth = s._mb_scan_depth
+
+    def depth(text):
+        try:
+            return original_depth(text)
+        except Exception as caught:
+            depth_exceptions.append(caught)
+            raise
+
+    monkeypatch.setattr(s, "_mb_scan_depth", depth)
+    with _integer_no_io(monkeypatch):
+        try:
+            result = _decode_BINDINGS(raw)
+            if row["expected"] == "ROUNDTRIP":
+                encoded = s.encode_management(result)
+        except Exception as caught:
+            error = caught
+    assert sys.get_int_max_str_digits() == limit, "NO_GLOBAL_DIGIT_LIMIT_CHANGE"
+    if row["expected"] == "ROUNDTRIP":
+        assert error is None, "BINDINGS_HAND_POSITIVE_REQUIRED"
+        assert type(result) is s.BindingsDocument
+        assert encoded == raw, "BINDINGS_HAND_BYTES_UNCHANGED"
+        assert result.generation == (9223372036854775807 if row["id"] == "XBI02" else 0)
+        assert type(result.entries) is tuple
+    else:
+        assert type(error) is s.SchemaWireError, "BINDINGS_CLOSED_TYPE_AFTER_ACTUAL_API"
+        assert error.kind == row["expected"], "BINDINGS_LITERAL_KIND_AFTER_ACTUAL_API"
+        if row["id"] == "XBI05":
+            assert len(depth_exceptions) == 1 and error is depth_exceptions[0], (
+                "LIMIT_EXCEPTION_IDENTITY_PRESERVED"
+            )
+        if row["id"] == "XBI06":
+            token = "X00_BINDINGS_INTEGER_CANARY_"
+            assert token not in str(error) + repr(error) + repr(error.args)
+            assert token not in "".join(traceback.format_exception(error))
+
+
+_output__INPUTS = _WIRE_FIXTURE["replay_payloads"]["output"]
+_output__MODELS = _output__INPUTS["normal_shape_hand_models"]
+_output__OUTPUT = _output__MODELS["output"]["raw_utf8"].encode("utf-8")
+_output__COMPLETE = _output__MODELS["complete"]["raw_utf8"].encode("utf-8")
+_output__CANDIDATES = _output__INPUTS["candidates"]
+_output__OBSERVATIONS: list[dict[str, Any]] = []
+_output__ERROR_OBSERVATIONS: list[dict[str, Any]] = []
+
+
+def _output__guarded(monkeypatch: pytest.MonkeyPatch, label: str, call: Callable[[], Any]) -> Any:
+    counts = dict.fromkeys(["open", "write", "DB", "socket", "DNS", "native", "vault"], 0)
+
+    def deny(kind: str) -> Callable[..., Any]:
+
+        def denied(*args: Any, **kwargs: Any) -> Any:
+            counts[kind] += 1
+            raise AssertionError("API I/O: " + kind)
+
+        return denied
+
+    with monkeypatch.context() as patch:
+        patch.setattr("builtins.open", deny("open"))
+        patch.setattr(io, "open", deny("open"))
+        patch.setattr(os, "open", deny("open"))
+        patch.setattr(os, "write", deny("write"))
+        for name in ["read_bytes", "read_text"]:
+            patch.setattr(Path, name, deny("open"))
+        for name in ["write_bytes", "write_text", "open"]:
+            patch.setattr(Path, name, deny("write"))
+        patch.setattr(sqlite3, "connect", deny("DB"))
+        patch.setattr(socket, "socket", deny("socket"))
+        patch.setattr(socket, "create_connection", deny("socket"))
+        patch.setattr(socket, "getaddrinfo", deny("DNS"))
+        patch.setattr(socket, "gethostbyname", deny("DNS"))
+        for name in ["CDLL", "PyDLL", "WinDLL", "OleDLL"]:
+            if hasattr(ctypes, name):
+                patch.setattr(ctypes, name, deny("native"))
+        patch.setattr(ctypes.LibraryLoader, "LoadLibrary", deny("native"))
+        result = call()
+    _output__OBSERVATIONS.append({"label": label, "io_counts": counts})
+    assert counts == {
+        "open": 0,
+        "write": 0,
+        "DB": 0,
+        "socket": 0,
+        "DNS": 0,
+        "native": 0,
+        "vault": 0,
+    }
+    return result
+
+
+def _output__kind(call: Callable[[], Any]) -> str:
+    try:
+        call()
+    except s.SchemaWireError as error:
+        chain = []
+        trace = error.__traceback__
+        while trace is not None:
+            chain.append({"function": trace.tb_frame.f_code.co_name, "line": trace.tb_lineno})
+            trace = trace.tb_next
+        _output__ERROR_OBSERVATIONS.append({"kind": error.kind, "chain": chain})
+        return error.kind
+    return "ACCEPTED"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _output__evidence() -> Iterator[None]:
+    yield
+    destination = os.environ.get("OUTPUT_IO_EVIDENCE")
+    if destination:
+        Path(destination).write_text(
+            json.dumps(
+                {
+                    "api_observations": _output__OBSERVATIONS,
+                    "error_boundaries": _output__ERROR_OBSERVATIONS,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+
+@pytest.mark.parametrize("kind", ["output", "complete"], ids=["normal-output", "normal-complete"])
+def test_regression_output_normal(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    raw = _output__OUTPUT if kind == "output" else _output__COMPLETE
+
+    def action() -> None:
+        if kind == "output":
+            document = _decode_OUTPUT(raw)
+            assert s.encode_management(document) == raw
+            assert type(document) is s.OutputDocument
+            assert type(document.targets) is tuple and len(document.targets) == 1
+            assert len(dataclasses.fields(document.targets[0])) == 10
+            assert tuple(x.name for x in document.targets[0].components) == (
+                "g09.management",
+                "jobs.checkpoints",
+                "jobs.core",
+                "jobs.receipts",
+            )
+            assert (
+                document.targets[0].components[0].fingerprint
+                == "recoryn-shape-v1:a9e56d69fe77d280595c42a2f18d64bc80b93b0c38c323942208e349cbbb1d1e"
+            )
+            assert document.targets[0].sidecar_digests == ()
+            assert document.targets[0].media_digest is None
+            assert document.targets[0].deletion_digest is None
+            assert document.targets[0].health_digest is None
+        else:
+            document2 = _decode_COMPLETE(raw)
+            assert s.encode_management(document2) == raw
+            assert type(document2) is s.CompleteDocument
+            assert len(dataclasses.fields(document2)) == 5
+            assert document2.record_digest == "e" * 64
+            assert (
+                document2.output_digest
+                == "5e1dc7e24827d76386673a87a187110a1d7ce3e5e52fa616cd3e0f9badb29778"
+            )
+        obj = _decode_OUTPUT(raw) if kind == "output" else _decode_COMPLETE(raw)
+        assert not hasattr(obj, "__dict__")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            cast(Any, obj).operation_id = "0" * 32
+
+    _output__guarded(monkeypatch, "normal-" + kind, action)
+
+
+@pytest.mark.parametrize("index", range(8), ids=["candidate-" + str(i) for i in range(1, 9)])
+def test_regression_output_boundary(monkeypatch: pytest.MonkeyPatch, index: int) -> None:
+    entry = _output__CANDIDATES[index]
+    raw = entry["raw_utf8"].encode("utf-8")
+    output = entry["base"] == "손OUTPUT"
+
+    def action() -> None:
+        if output:
+            assert s.encode_management(_decode_OUTPUT(_output__OUTPUT)) == _output__OUTPUT
+            outcome = _output__kind(lambda: _decode_OUTPUT(raw))
+        else:
+            assert s.encode_management(_decode_COMPLETE(_output__COMPLETE)) == _output__COMPLETE
+            outcome = _output__kind(lambda: _decode_COMPLETE(raw))
+        if index < 6:
+            assert outcome == "MALFORMED", "TARGET: exact malformed boundary"
+        else:
+            assert outcome == "ACCEPTED", "TARGET: outer mismatch is not parser MALFORMED"
+            document = _decode_COMPLETE(raw)
+            assert s.encode_management(document) == raw
+            assert document.output_digest == (
+                "f" * 64 if index == 6 else _output__MODELS["complete"]["model"]["output_digest"]
+            )
+            assert document.record_digest == ("e" * 64 if index == 6 else "d" * 64)
+            assert set(f.name for f in dataclasses.fields(document)) == {
+                "format",
+                "operation_id",
+                "plan_digest",
+                "record_digest",
+                "output_digest",
+            }
+            assert not hasattr(document, "verified") and (not hasattr(document, "completion"))
+
+    _output__guarded(monkeypatch, "candidate-" + str(index + 1), action)
+
+
+@pytest.mark.parametrize(
+    "kind", ["output-list", "complete-int"], ids=["mutable-targets", "int-record-digest"]
+)
+def test_regression_output_direct_constructor(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+
+    def action() -> None:
+        calls: list[str] = []
+        with monkeypatch.context() as patch:
+            if kind == "output-list":
+                valid = _decode_OUTPUT(_output__OUTPUT)
+                patch.setattr(s, "encode_management", lambda value: calls.append("encode"))
+
+                def construct() -> None:
+                    invalid = s.OutputDocument(
+                        valid.format,
+                        valid.operation_id,
+                        valid.plan_digest,
+                        cast(Any, list(valid.targets)),
+                    )
+                    s.encode_management(invalid)
+            else:
+                valid2 = _decode_COMPLETE(_output__COMPLETE)
+                patch.setattr(s, "encode_management", lambda value: calls.append("encode"))
+
+                def construct() -> None:
+                    invalid2 = s.CompleteDocument(
+                        valid2.format,
+                        valid2.operation_id,
+                        valid2.plan_digest,
+                        cast(Any, 7),
+                        valid2.output_digest,
+                    )
+                    s.encode_management(invalid2)
+
+            assert _output__kind(construct) == "MALFORMED", (
+                "TARGET: constructor must reject exact bad type"
+            )
+            assert calls == [], "TARGET: constructor refusal must precede encoding"
+
+    _output__guarded(monkeypatch, kind, action)
+
+
+@pytest.mark.parametrize("kind", ["output", "complete"], ids=["budget-output", "budget-complete"])
+def test_regression_output_preparse_budget(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    raw = b" " * 8388609
+
+    def action() -> None:
+        parses: list[int] = []
+        original = json.loads
+
+        def parsing(*args: Any, **kwargs: Any) -> Any:
+            parses.append(1)
+            return original(*args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(json, "loads", parsing)
+            call = _decode_OUTPUT if kind == "output" else _decode_COMPLETE
+            assert _output__kind(lambda: call(raw)) == "LIMIT_EXCEEDED", (
+                "TARGET: preparse byte budget kind"
+            )
+            assert parses == [], "TARGET: parser must not run for oversized bytes"
+
+    _output__guarded(monkeypatch, "budget-" + kind, action)
+
+
+_output_fix1__ROWS = _WIRE_FIXTURE["replay_payloads"]["output_fix1"]["rows"]
+_output_fix1__NORMAL = _WIRE_FIXTURE["replay_payloads"]["output"]["normal_shape_hand_models"]
+_output_fix1__REPORT: list[dict[str, Any]] = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _output_fix1__save_evidence() -> Iterator[None]:
+    yield
+    target = os.environ.get("OUTPUT_FIX1_IO_EVIDENCE")
+    if target:
+        Path(target).write_text(
+            json.dumps(_output_fix1__REPORT, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+
+@pytest.mark.parametrize(
+    "index",
+    [0, 1, 2, 3],
+    ids=["OCR06-complete", "huge-output", "depth17-output", "depth17-complete"],
+)
+def test_regression_output_fix1_fix1(monkeypatch: pytest.MonkeyPatch, index: int) -> None:
+    row = _output_fix1__ROWS[index]
+    raw = row["raw_utf8"].encode("utf-8")
+    expected = "MALFORMED" if index < 2 else "LIMIT_EXCEEDED"
+    assert row["expected_kind"] == expected
+    kind = row["api"]
+    emitted: list[s.SchemaWireError] = []
+    captured: Exception | None = None
+    target_calls: list[str] = []
+    scanner_calls: list[str] = []
+
+    def action() -> None:
+        nonlocal captured
+        normal = _output_fix1__NORMAL[kind]["raw_utf8"].encode("utf-8")
+        decode: Callable[[bytes], s.OutputDocument | s.CompleteDocument]
+        if kind == "output":
+            assert s.encode_management(_decode_OUTPUT(normal)) == normal, "CONTROL: normal OUTPUT"
+            decode = _decode_OUTPUT
+        else:
+            assert s.encode_management(_decode_COMPLETE(normal)) == normal, (
+                "CONTROL: normal COMPLETE"
+            )
+            decode = _decode_COMPLETE
+        scan = s._mb_scan_depth
+
+        def record_scan(text: str) -> None:
+            scanner_calls.append("scan")
+            try:
+                scan(text)
+            except s.SchemaWireError as error:
+                emitted.append(error)
+                raise
+
+        with monkeypatch.context() as patch:
+            patch.setattr(s, "_mb_scan_depth", record_scan)
+            target_calls.append(kind)
+            try:
+                decode(raw)
+            except Exception as error:
+                captured = error
+
+    _output__guarded(monkeypatch, row["label"], action)
+    chain = []
+    trace = captured.__traceback__ if captured is not None else None
+    while trace is not None:
+        chain.append({"function": trace.tb_frame.f_code.co_name, "line": trace.tb_lineno})
+        trace = trace.tb_next
+    _output_fix1__REPORT.append(
+        {
+            "label": row["label"],
+            "raw_bytes": len(raw),
+            "raw_sha256": row["raw_sha256"],
+            "target_calls": target_calls,
+            "scanner_calls": scanner_calls,
+            "exception_type": type(captured).__name__,
+            "exception_module": type(captured).__module__,
+            "kind": captured.kind if isinstance(captured, s.SchemaWireError) else None,
+            "emitted_depth_kind": [e.kind for e in emitted],
+            "same_depth_error_object": bool(emitted) and captured is emitted[0],
+            "traceback": chain,
+            "io_counts": _output__OBSERVATIONS[-1]["io_counts"],
+        }
+    )
+    assert target_calls == [kind], "TARGET: actual API must be called once"
+    assert type(captured) is s.SchemaWireError, (
+        "TARGET: closed SchemaWireError type after actual API"
+    )
+    assert captured.kind == expected, "TARGET: exact MALFORMED/LIMIT_EXCEEDED kind"
+    if index >= 2:
+        assert len(emitted) == 1 and captured is emitted[0], "TARGET: rethrow same depth exception"
+
+
+_component_probe__HAND = _WIRE_FIXTURE["replay_payloads"]["component_probe"]
+_component_probe__NORMAL = _component_probe__HAND["normal_raw_utf8"].encode("utf-8")
+_component_probe__ZERO = _component_probe__HAND["zero_raw_utf8"].encode("utf-8")
+_component_probe__REPORT: list[dict[str, Any]] = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _component_probe__save_evidence() -> Iterator[None]:
+    yield
+    target = os.environ.get("OUTPUT_COMPONENT_IO_EVIDENCE")
+    if target:
+        Path(target).write_text(
+            json.dumps(_component_probe__REPORT, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+
+@pytest.mark.parametrize("mode", ["decode", "encode"], ids=["zero-decode", "zero-encode"])
+def test_regression_component_probe_component_positive_bound(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    calls: list[str] = []
+    constructors: list[str] = []
+    events: list[dict[str, Any]] = []
+    caught: Exception | None = None
+    returned = False
+    returned_type: str | None = None
+    returned_version: int | None = None
+    encoded_equals_hand: bool | None = None
+    original_dto_preserved = False
+    single_field_change = mode == "decode"
+    real_component = s._mo_component
+
+    def observe(value: Any) -> s.ComponentFact:
+        event: dict[str, Any] = {
+            "input_version": value.get("version") if type(value) is dict else None,
+            "source_file": real_component.__code__.co_filename,
+            "source_function": real_component.__qualname__,
+            "source_globals_match": real_component.__globals__ is s.__dict__,
+        }
+        events.append(event)
+        try:
+            result = real_component(value)
+        except Exception as error:
+            event["exception_type"] = type(error).__name__
+            raise
+        event["returned_version"] = result.version
+        event["returned_fingerprint"] = result.fingerprint
+        return result
+
+    def action() -> None:
+        nonlocal caught, returned, returned_type, returned_version
+        nonlocal encoded_equals_hand, original_dto_preserved, single_field_change
+        normal = _decode_OUTPUT(_component_probe__NORMAL)
+        assert s.encode_management(normal) == _component_probe__NORMAL, (
+            "CONTROL: complete normal OUTPUT"
+        )
+        assert normal.targets[0].components[0].version == 1
+        changed = normal
+        if mode == "encode":
+            try:
+                first = dataclasses.replace(normal.targets[0].components[0], version=0)
+                constructors.append("component-returned")
+                target = dataclasses.replace(
+                    normal.targets[0], components=(first,) + normal.targets[0].components[1:]
+                )
+                constructors.append("target-returned")
+                changed = dataclasses.replace(normal, targets=(target,) + normal.targets[1:])
+                constructors.append("root-returned")
+            except Exception as error:
+                caught = error
+                return
+            expected_input = dataclasses.asdict(normal)
+            expected_input["targets"][0]["components"][0]["version"] = 0
+            single_field_change = dataclasses.asdict(changed) == expected_input
+            assert single_field_change, "CONTROL: caller DTO changes only component version"
+            assert first.fingerprint == normal.targets[0].components[0].fingerprint
+        with monkeypatch.context() as patch:
+            patch.setattr(s, "_mo_component", observe)
+            calls.append(mode)
+            try:
+                if mode == "decode":
+                    document = _decode_OUTPUT(_component_probe__ZERO)
+                    returned_type = type(document).__name__
+                    returned_version = document.targets[0].components[0].version
+                else:
+                    encoded = s.encode_management(changed)
+                    returned_type = type(encoded).__name__
+                    encoded_equals_hand = encoded == _component_probe__ZERO
+                returned = True
+            except Exception as error:
+                caught = error
+        original_dto_preserved = normal.targets[0].components[0].version == 1
+        assert original_dto_preserved, "CONTROL: original frozen DTO remains version1"
+
+    _output__guarded(monkeypatch, "component-zero-" + mode, action)
+    _component_probe__REPORT.append(
+        {
+            "mode": mode,
+            "API_calls": calls,
+            "constructor_returns": constructors,
+            "returned": returned,
+            "returned_type": returned_type,
+            "returned_version": returned_version,
+            "encoded_equals_zero_hand": encoded_equals_hand,
+            "exception_type": type(caught).__name__ if caught is not None else None,
+            "exception_kind": caught.kind if isinstance(caught, s.SchemaWireError) else None,
+            "component_guard_events": events,
+            "original_DTO_preserved": original_dto_preserved,
+            "single_field_change": single_field_change,
+            "IO_counts": _output__OBSERVATIONS[-1]["io_counts"],
+        }
+    )
+    if mode == "encode":
+        assert constructors == ["component-returned", "target-returned", "root-returned"], (
+            "CONTROL: structural constructors must not mask encoder target"
+        )
+    assert calls == [mode], "CONTROL: actual target API must be reached"
+    assert events and events[0]["input_version"] == 0, "CONTROL: actual component guard reached"
+    assert not returned, "TARGET: component version0 must be rejected after actual API call"
+    assert type(caught) is s.SchemaWireError, "TARGET: exact closed SchemaWireError"
+    assert caught.kind == "MALFORMED", "TARGET: component positive range is MALFORMED"
+
+
+_component_bounds__HAND = _WIRE_FIXTURE["replay_payloads"]["component_bounds"]
+_component_bounds__REPORT: list[dict[str, Any]] = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _component_bounds__save_evidence() -> Iterator[None]:
+    yield
+    destination = os.environ.get("OUTPUT_BOUNDS_IO_EVIDENCE")
+    if destination:
+        Path(destination).write_text(
+            json.dumps(_component_bounds__REPORT, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+
+@pytest.mark.parametrize("index", [0, 1, 2, 3], ids=["max", "over", "bool", "negative"])
+def test_regression_component_bounds_positive_component_range(
+    monkeypatch: pytest.MonkeyPatch, index: int
+) -> None:
+    row = _component_bounds__HAND["rows"][index]
+    raw = row["raw_utf8"].encode("utf-8")
+    expected = "ROUNDTRIP" if index == 0 else "MALFORMED"
+    assert row["expected"] == expected
+    calls: list[str] = []
+    caught: Exception | None = None
+    returned = False
+    returned_version: int | None = None
+
+    def action() -> None:
+        nonlocal caught, returned, returned_version
+        normal = _component_bounds__HAND["normal_raw_utf8"].encode("utf-8")
+        assert s.encode_management(_decode_OUTPUT(normal)) == normal, "CONTROL: normal hand"
+        calls.append("decode")
+        try:
+            document = _decode_OUTPUT(raw)
+            returned = True
+            returned_version = document.targets[0].components[0].version
+            if index == 0:
+                assert returned_version == 9223372036854775807
+                calls.append("encode")
+                assert s.encode_management(document) == raw, (
+                    "TARGET: typed max exact bytes roundtrip"
+                )
+        except Exception as error:
+            caught = error
+
+    _output__guarded(monkeypatch, "component-bound-" + row["label"], action)
+    trace = caught.__traceback__ if caught is not None else None
+    frames = []
+    while trace is not None:
+        frames.append({"function": trace.tb_frame.f_code.co_name, "line": trace.tb_lineno})
+        trace = trace.tb_next
+    _component_bounds__REPORT.append(
+        {
+            "label": row["label"],
+            "raw_bytes": len(raw),
+            "raw_sha256": row["raw_sha256"],
+            "calls": calls,
+            "returned": returned,
+            "returned_version": returned_version,
+            "exception_type": type(caught).__name__ if caught is not None else None,
+            "exception_kind": caught.kind if isinstance(caught, s.SchemaWireError) else None,
+            "frames": frames,
+            "IO_counts": _output__OBSERVATIONS[-1]["io_counts"],
+            "actual_catalog_authority": False,
+        }
+    )
+    if index == 0:
+        assert caught is None and returned, "TARGET: signed64 max is a pure typed positive"
+        assert calls == ["decode", "encode"]
+    else:
+        assert calls == ["decode"], "TARGET: raw reader reached, not a direct constructor probe"
+        assert not returned, "TARGET: invalid component range must reject"
+        assert type(caught) is s.SchemaWireError, "TARGET: closed malformed type"
+        assert caught.kind == "MALFORMED", "TARGET: exact component range code"
+
+
+_s7_DATA = _WIRE_FIXTURE["api151"]
+_s7_OBS = []
+_s7_KINDS = ("BINDINGS", "PLAN", "RECORD", "PROGRESS", "OUTPUT", "COMPLETE")
+_s7_ROOTS = (
+    "BindingsDocument",
+    "PlanDocument",
+    "RecordDocument",
+    "ProgressDocument",
+    "OutputDocument",
+    "CompleteDocument",
+)
+_s7_BODIES = {
+    "BINDINGS": ("_mb_decode_bindings", "_mb_encode_bindings"),
+    "PLAN": ("_mn_decode_plan", "_mn_encode_plan"),
+    "RECORD": ("_mr_decode_record", "_mr_encode_record"),
+    "PROGRESS": ("_mp_decode_progress", "_mp_encode_progress"),
+    "OUTPUT": ("_mo_decode_output", "_mo_encode_output"),
+    "COMPLETE": ("_mo_decode_complete", "_mo_encode_complete"),
+}
+
+
+class _s7_ForeignKind(Enum):
+    BINDINGS = "BINDINGS"
+
+
+class _s7_SchemaKind(Enum):
+    CURRENT = "CURRENT"
+
+
+class _s7_BytesSubclass(bytes):
+    pass
+
+
+class _s7_Duck:
+    reads = 0
+
+    @property
+    def format(self):
+        type(self).reads += 1
+        return "recoryn-management-bindings-v1"
+
+    def __len__(self):
+        type(self).reads += 1
+        return 0
+
+    def _s7_decode(self, *args, **kwargs):
+        type(self).reads += 1
+        return "{}"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _s7_ForeignDocument:
+    format: str
+
+
+class _s7_SubBindings(s.BindingsDocument):
+    __slots__ = ()
+
+
+class _s7_SubPlan(s.PlanDocument):
+    __slots__ = ()
+
+
+class _s7_SubRecord(s.RecordDocument):
+    __slots__ = ()
+
+
+class _s7_SubProgress(s.ProgressDocument):
+    __slots__ = ()
+
+
+class _s7_SubOutput(s.OutputDocument):
+    __slots__ = ()
+
+
+class _s7_SubComplete(s.CompleteDocument):
+    __slots__ = ()
+
+
+_s7_SUBS = (
+    _s7_SubBindings,
+    _s7_SubPlan,
+    _s7_SubRecord,
+    _s7_SubProgress,
+    _s7_SubOutput,
+    _s7_SubComplete,
+)
+
+
+@contextmanager
+def _s7_no_io(monkeypatch):
+    attempts = []
+
+    def denied(name):
+
+        def stop(*args, **kwargs):
+            attempts.append(name)
+            raise AssertionError("PUBLIC_WIRE_IO:" + name)
+
+        return stop
+
+    with monkeypatch.context() as patch:
+        for owner, names in (
+            (builtins, ["open"]),
+            (io, ["open"]),
+            (os, ["open", "stat", "lstat", "read", "write", "listdir", "scandir", "system"]),
+            (sqlite3, ["connect"]),
+            (socket, ["socket", "create_connection", "getaddrinfo"]),
+            (subprocess, ["Popen"]),
+            (ctypes, ["CDLL", "PyDLL", "WinDLL", "OleDLL"]),
+        ):
+            for name in names:
+                if hasattr(owner, name):
+                    patch.setattr(owner, name, denied(owner.__name__ + "." + name))
+        yield attempts
+    assert not attempts, "PUBLIC_WIRE_CONSTRUCTOR_IO0"
+
+
+def _s7_raw(kind):
+    return _s7_DATA["hand6"][kind]["raw_utf8"].encode("utf8")
+
+
+def _s7_enum(kind):
+    return getattr(s.ManagementObjectKind, kind)
+
+
+def _s7_decode(kind, payload=None):
+    return s.decode_management(_s7_raw(kind) if payload is None else payload, kind=_s7_enum(kind))
+
+
+def _s7_capture(action):
+    try:
+        return (action(), None)
+    except BaseException as error:
+        return (None, error)
+
+
+def _s7_closed(error, kind="MALFORMED"):
+    assert type(error) is s.SchemaWireError, "PUBLIC_WIRE_EXACT_SINGLE_ERROR"
+    assert error.kind == kind, "PUBLIC_WIRE_LITERAL_ERROR_KIND"
+
+
+def _s7_plain(value):
+    if dataclasses.is_dataclass(value) and (not isinstance(value, type)):
+        return {f.name: _s7_plain(getattr(value, f.name)) for f in dataclasses.fields(value)}
+    if type(value) is tuple:
+        return [_s7_plain(v) for v in value]
+    return value
+
+
+def _s7_actual_type(t):
+    origin, args = (get_origin(t), get_args(t))
+    if origin is Literal:
+        return ("literal", tuple((type(x).__name__, repr(x)) for x in args))
+    if origin in (types.UnionType, Union):
+        return ("union", tuple(sorted((_s7_actual_type(x) for x in args), key=repr)))
+    if origin is tuple:
+        return ("tuple", _s7_actual_type(args[0]), args[1] is Ellipsis)
+    return ("name", "None" if t is type(None) else t.__name__)
+
+
+def _s7_expected_type(node):
+    if isinstance(node, ast.Name):
+        if node.id in _s7_DATA["canonical_aliases"]:
+            return _s7_expected_type(
+                ast.parse(_s7_DATA["canonical_aliases"][node.id], mode="eval").body
+            )
+        return ("name", node.id)
+    if isinstance(node, ast.Constant) and node.value is None:
+        return ("name", "None")
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        items = []
+
+        def flatten(n):
+            if isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr):
+                flatten(n.left)
+                flatten(n.right)
+            else:
+                items.append(_s7_expected_type(n))
+
+        flatten(node)
+        return ("union", tuple(sorted(items, key=repr)))
+    assert isinstance(node, ast.Subscript)
+    if isinstance(node.value, ast.Name) and node.value.id == "Literal":
+        items = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+        values = [ast.literal_eval(n) for n in items]
+        return ("literal", tuple((type(x).__name__, repr(x)) for x in values))
+    assert isinstance(node.value, ast.Name) and node.value.id == "tuple"
+    return (
+        "tuple",
+        _s7_expected_type(node.slice.elts[0]),
+        ast.literal_eval(node.slice.elts[1]) is Ellipsis,
+    )
+
+
+def _s7_target(value):
+    return s.RecordTarget(
+        "4" * 32, "PRE", s.AbsentPointer("ABSENT"), "d" * 64, None, (), None, value
+    )
+
+
+def _s7_record_with_target(t):
+    return s.RecordDocument(
+        "recoryn-maintenance-record-v1",
+        1,
+        "a" * 32,
+        "b" * 64,
+        0,
+        None,
+        "PREPARING",
+        "RUNNING",
+        (t,),
+        None,
+        None,
+    )
+
+
+@pytest.fixture
+def _s7_body_calls(monkeypatch):
+    events = []
+    for name in [n for pair in _s7_BODIES.values() for n in pair]:
+        original = getattr(s, name)
+
+        def make(real, function_name):
+
+            @functools.wraps(real)
+            def observed(*args, **kwargs):
+                events.append(function_name)
+                return real(*args, **kwargs)
+
+            return observed
+
+        monkeypatch.setattr(s, name, make(original, name))
+    return events
+
+
+@pytest.mark.parametrize("row", _s7_DATA["cases"] if _s7_DATA else [], ids=lambda row: row["id"])
+def test_public_wire_case(row, monkeypatch, _s7_body_calls):
+    family = row["family"]
+    label = row["id"][len(family) + 1 :]
+    _s7_Duck.reads = 0
+    observation = {"id": row["id"], "family": family}
+    try:
+        if family == "MATRIX":
+            document, error = _s7_capture(
+                lambda: s.decode_management(_s7_raw(row["wire"]), kind=_s7_enum(row["kind"]))
+            )
+            if row["expected"] == "ROUNDTRIP":
+                assert error is None, "HAND_FORMAT_KIND_POSITIVE_REQUIRED"
+                assert type(document) is getattr(s, _s7_ROOTS[_s7_KINDS.index(row["kind"])])
+                assert s.encode_management(document) == _s7_raw(row["wire"]), (
+                    "HAND_MATRIX_EXACT_BYTES"
+                )
+            else:
+                _s7_closed(error)
+        elif family == "KIND":
+            if label == "EXTEND_ENUM":
+                error = None
+                try:
+
+                    class Extended(s.ManagementObjectKind):
+                        NEW = "NEW"
+                except TypeError as caught:
+                    error = caught
+                assert type(error) is TypeError
+                assert not _s7_body_calls
+            else:
+                values = {
+                    "STRING": "BINDINGS",
+                    "NONE": None,
+                    "BOOL": True,
+                    "INT": 0,
+                    "FOREIGN_ENUM": _s7_ForeignKind.BINDINGS,
+                    "SCHEMA_KIND": _s7_SchemaKind.CURRENT,
+                    "DUCK": _s7_Duck(),
+                    "ENUM_CLASS": s.ManagementObjectKind,
+                }
+                _, error = _s7_capture(
+                    lambda: s.decode_management(_s7_raw("BINDINGS"), kind=values[label])
+                )
+                assert error is not None, "EXACT_KIND_MUST_REJECT_AFTER_ACTUAL_API"
+                _s7_closed(error)
+                assert not _s7_body_calls and _s7_Duck.reads == 0
+        elif family == "RAW":
+            values = {
+                "STR": "{}",
+                "BYTEARRAY": bytearray(_s7_raw("BINDINGS")),
+                "MEMORYVIEW": memoryview(_s7_raw("BINDINGS")),
+                "BYTES_SUBCLASS": _s7_BytesSubclass(_s7_raw("BINDINGS")),
+                "NONE": None,
+                "INT": 1,
+                "DUCK": _s7_Duck(),
+            }
+            _, error = _s7_capture(
+                lambda: s.decode_management(values[label], kind=_s7_enum("BINDINGS"))
+            )
+            _s7_closed(error)
+            assert not _s7_body_calls and _s7_Duck.reads == 0
+        elif family == "BUDGET":
+            _, error = _s7_capture(
+                lambda: s.decode_management(b" " * 8388609, kind=_s7_enum(row["kind"]))
+            )
+            _s7_closed(error, "LIMIT_EXCEEDED")
+            assert not _s7_body_calls, "OVERSIZE_MUST_NOT_HANDOFF_BODY"
+        elif family == "PRIORITY":
+            payload = b" " * 8388609 if label == "WRONG_KIND_HUGE" else _s7_Duck()
+            _, error = _s7_capture(lambda: s.decode_management(payload, kind="BINDINGS"))
+            _s7_closed(error)
+            assert _s7_Duck.reads == 0 and (not _s7_body_calls)
+        elif family == "BINDING":
+            actions = {
+                "MISSING_KIND": lambda: s.decode_management(_s7_raw("BINDINGS")),
+                "POSITIONAL_KIND": lambda: s.decode_management(
+                    _s7_raw("BINDINGS"), _s7_enum("BINDINGS")
+                ),
+                "UNKNOWN_KEYWORD": lambda: s.decode_management(
+                    _s7_raw("BINDINGS"), kind=_s7_enum("BINDINGS"), unknown=True
+                ),
+                "ENCODE_MISSING": lambda: s.encode_management(),
+            }
+            _, error = _s7_capture(actions[label])
+            assert type(error) is TypeError and (not _s7_body_calls)
+        elif family == "ROOT":
+            document = _s7_decode(row["kind"])
+            cls = type(document)
+            assert cls.__name__ == row["root"] and cls.__qualname__ == row["root"], (
+                "CANONICAL_REAL_CLASS_NAME_AFTER_ACTUAL_API"
+            )
+            assert cls.__module__ == "recoryn.schema" and cls is getattr(s, row["root"])
+            assert cls.__dataclass_params__.frozen and (not hasattr(document, "__dict__"))
+            with pytest.raises(dataclasses.FrozenInstanceError):
+                document.format = document.format
+            assert set(get_args(s.ManagementDocument)) == {getattr(s, n) for n in _s7_ROOTS}
+        elif family == "FIELDS":
+            cls = getattr(s, row["root"])
+            assert (
+                cls.__name__ == row["root"]
+                and cls.__qualname__ == row["root"]
+                and (cls.__module__ == "recoryn.schema")
+            )
+            assert cls.__dataclass_params__.frozen
+            assert [f.name for f in dataclasses.fields(cls)] == [
+                f["name"] for f in row["expected_fields"]
+            ]
+            hints = get_type_hints(cls)
+            for f in row["expected_fields"]:
+                assert _s7_actual_type(hints[f["name"]]) == _s7_expected_type(
+                    ast.parse(f["type"], mode="eval").body
+                )
+        elif family == "SUBCLASS":
+            document = _s7_decode(row["kind"])
+            cls = _s7_SUBS[_s7_KINDS.index(row["kind"])]
+            with _s7_no_io(monkeypatch):
+                subclass = cls(
+                    **{f.name: getattr(document, f.name) for f in dataclasses.fields(document)}
+                )
+            _s7_body_calls.clear()
+            _, error = _s7_capture(lambda: s.encode_management(subclass))
+            _s7_closed(error)
+            assert not _s7_body_calls
+        elif family == "ENCODER":
+            document = _s7_decode(row["kind"])
+            object.__setattr__(document, "format", "WRONG_FORMAT")
+            _, error = _s7_capture(lambda: s.encode_management(document))
+            _s7_closed(error)
+        elif family == "BADROOT":
+            values = {
+                "DICT": {},
+                "DUCK": _s7_Duck(),
+                "NONE": None,
+                "BYTES": b"{}",
+                "FOREIGN_DATACLASS": _s7_ForeignDocument("recoryn-management-bindings-v1"),
+                "LIST": [],
+            }
+            _, error = _s7_capture(lambda: s.encode_management(values[label]))
+            _s7_closed(error)
+            assert _s7_Duck.reads == 0, "DUCK_FORMAT_GETTER_MUST_NOT_RUN"
+            assert not _s7_body_calls
+        elif family == "SHARED":
+            if label == "IDENTITY":
+                cls = s.ManagementIdentity
+                with _s7_no_io(monkeypatch):
+                    identity = cls("FILE", "0" * 16, "7" * 32)
+                    artifact = s.ArtifactRef("a" * 32, "4" * 32, "DB_IMAGE", "e" * 64, identity)
+                    sidecar = s.SourceSidecar("COST_WITNESS", "e" * 64, identity)
+                assert artifact.identity is sidecar.identity is identity
+                assert type(identity) is cls and cls.__name__ == "ManagementIdentity"
+            else:
+                expected = {
+                    "ABSENT": s.AbsentPointer,
+                    "FRESH": s.FreshPointer,
+                    "COMMIT": s.CommitPointer,
+                }[label]
+                assert getattr(s, expected.__name__) is expected
+                assert expected in get_args(get_type_hints(s.RecordTarget)["source_pointer"])
+                assert expected in get_args(get_type_hints(s.OutputTarget)["source_pointer"])
+                assert expected in get_args(s.WirePointer)
+        elif family == "RESTORE_OK":
+            with _s7_no_io(monkeypatch):
+                t, error = _s7_capture(lambda: _s7_target(row["value"]))
+            assert error is None, "RESTORE_LITERAL_ALLOWED_CONSTRUCTOR_MUST_RETURN"
+            with _s7_no_io(monkeypatch):
+                document = _s7_record_with_target(t)
+            expected = _s7_DATA["restore_hand7"][row["hand_index"]]["raw_utf8"].encode()
+            assert s.encode_management(document) == expected
+            decoded = _s7_decode("RECORD", expected)
+            assert decoded.targets[0].restore_effect == row["value"]
+        elif family == "RESTORE_BAD":
+            values = {"TRUE": True, "FALSE": False, "OTHER": "OTHER", "LOWER": "not_started"}
+            with _s7_no_io(monkeypatch):
+                _, error = _s7_capture(lambda: _s7_target(values[label]))
+            _s7_closed(error)
+            assert not _s7_body_calls
+        elif family == "PROGRESS_STRONG":
+            model = json.loads(_s7_raw("PROGRESS"))
+            key, value = {
+                "FORMAT": ("format", "WRONG"),
+                "VERSION": ("version", 2),
+                "OPERATION_ID": ("operation_id", "x" * 32),
+                "PLAN_DIGEST": ("plan_digest", "b" * 63),
+                "SEQUENCE": ("sequence", 9223372036854775808),
+                "RECORD_DIGEST": ("record_digest", "b" * 63),
+            }[label]
+            model[key] = value
+            with _s7_no_io(monkeypatch):
+                _, error = _s7_capture(lambda: s.ProgressDocument(**model))
+            assert error is not None, "PROGRESS_STRONG_CTOR_MUST_REJECT"
+            _s7_closed(error)
+            assert not _s7_body_calls
+        elif family == "CANARY":
+            canary = "PUBLIC_WIRE_SYNTHETIC_CANARY"
+            _, error = _s7_capture(
+                lambda: s.decode_management(
+                    b'{"PUBLIC_WIRE_SYNTHETIC_CANARY":', kind=_s7_enum(row["kind"])
+                )
+            )
+            _s7_closed(error)
+            assert canary not in str(error) + repr(error) + repr(error.args)
+            observation["suppressed_context_type"] = (
+                type(error.__context__).__name__ if error.__context__ else None
+            )
+            observation["context_zeroization_claim"] = False
+        elif family == "CAW12":
+            events = []
+            real = s._mp_record_digest
+
+            @functools.wraps(real)
+            def observed(value):
+                events.append(
+                    dict(
+                        value_length=len(value),
+                        code_file=real.__code__.co_filename,
+                        globals_schema=real.__globals__ is vars(s),
+                    )
+                )
+                return real(value)
+
+            monkeypatch.setattr(s, "_mp_record_digest", observed)
+            payload = _s7_DATA["caw12"]["raw_utf8"].encode()
+            _, error = _s7_capture(lambda: s.decode_management(payload, kind=_s7_enum("PROGRESS")))
+            _s7_closed(error)
+            assert events and events[0]["value_length"] == 63 and events[0]["globals_schema"], (
+                "CAW12_MUST_REACH_ACTUAL_DIGEST63"
+            )
+            assert (
+                _s7_body_calls[0] == "_mp_decode_progress"
+                and "_mb_decode_bindings" not in _s7_body_calls
+            )
+            observation["actual_digest_events"] = events
+        else:
+            assert family == "S1"
+            _, error = _s7_capture(lambda: s.expected_shape_wire("no.such.component", 1))
+            assert type(error) is ValueError and (not isinstance(error, s.SchemaWireError))
+    finally:
+        observation["body_calls"] = list(_s7_body_calls)
+        observation["duck_reads"] = _s7_Duck.reads
+        _s7_OBS.append(observation)
+
+
+"""Independent per-call observability; no product helpers used as an oracle."""
+_ind_ROWS = []
+_ind_COLLECTED = []
+_ind_PHASES = []
+_ind_CONFIG = {}
+_ind_SCHEMA = str(Path(s.__file__))
+_ind_CURRENT = None
+
+
+class _ind_IORejected(AssertionError):
+    pass
+
+
+@contextmanager
+def _ind_watch(row):
+    global _ind_CURRENT
+    record = dict(
+        id=row["private_id"],
+        calls=Counter(),
+        constructor_calls=Counter(),
+        IO_attempts=[],
+        source_exceptions=[],
+        phase="begin",
+        goal_reached=False,
+        error_observations=[],
+    )
+    _ind_ROWS.append(record)
+    previous = _ind_CURRENT
+    _ind_CURRENT = record
+    old_profile = sys.getprofile()
+    old_trace = sys.gettrace()
+    start = time.perf_counter()
+
+    def profile(frame, event, arg):
+        if event == "call" and frame.f_code.co_filename == _ind_SCHEMA:
+            record["calls"][frame.f_code.co_name] += 1
+            if frame.f_code.co_name == "__post_init__":
+                record["constructor_calls"][type(frame.f_locals["self"]).__name__] += 1
+
+    def trace(frame, event, arg):
+        if frame.f_code.co_filename != _ind_SCHEMA:
+            return None
+        if event == "exception" and type(arg[1]) is s.SchemaWireError:
+            record["source_exceptions"].append(
+                dict(
+                    function=frame.f_code.co_name,
+                    line=frame.f_lineno,
+                    error_id=id(arg[1]),
+                    class_id=id(type(arg[1])),
+                    kind=arg[1].kind,
+                )
+            )
+        return trace
+
+    def denied(label):
+
+        def fail(*args, **kwargs):
+            record["IO_attempts"].append(label)
+            raise _ind_IORejected("MANAGEMENT_IO_ATTEMPT:" + label)
+
+        return fail
+
+    targets = [
+        (builtins, "open"),
+        (io, "open"),
+        (os, "open"),
+        (os, "stat"),
+        (os, "lstat"),
+        (os, "listdir"),
+        (os, "scandir"),
+        (os, "mkdir"),
+        (os, "remove"),
+        (os, "unlink"),
+        (os, "rename"),
+        (os, "replace"),
+        (sqlite3, "connect"),
+        (socket, "socket"),
+        (socket, "create_connection"),
+        (socket, "getaddrinfo"),
+        (subprocess, "Popen"),
+        (threading.Thread, "start"),
+        (ctypes, "CDLL"),
+        (ctypes.LibraryLoader, "LoadLibrary"),
+    ]
+    for name in ["WinDLL", "OleDLL"]:
+        if hasattr(ctypes, name):
+            targets.append((ctypes, name))
+    with ExitStack() as stack:
+        for owner, name in targets:
+            stack.enter_context(patch.object(owner, name, denied(owner.__name__ + "." + name)))
+        sys.setprofile(profile)
+        sys.settrace(trace)
+        try:
+            yield record
+        finally:
+            sys.setprofile(old_profile)
+            sys.settrace(old_trace)
+            record["seconds"] = time.perf_counter() - start
+            _ind_CURRENT = previous
+
+
+def _ind_capture(function):
+    try:
+        return (function(), None)
+    except Exception as error:
+        return (None, error)
+
+
+def _ind_wire_error(error, _ind_kind="MALFORMED", goal="WIRE_ERROR_EXPECTATION"):
+    assert type(error) is s.SchemaWireError, goal + ": exact SchemaWireError required"
+    assert error.kind == _ind_kind, goal + ": exact kind required"
+    assert (
+        str(error) == _ind_kind
+        and repr(error) == "SchemaWireError(" + _ind_kind + ")"
+        and (error.args == (_ind_kind,))
+    )
+    if _ind_CURRENT is not None:
+        _ind_CURRENT["error_observations"].append(
+            dict(
+                class_id=id(type(error)),
+                kind=error.kind,
+                standard_str=str(error),
+                standard_repr=repr(error),
+                standard_args=list(error.args),
+                suppressed_context_type=type(error.__context__).__name__
+                if error.__context__
+                else None,
+                suppress_context=error.__suppress_context__,
+                raw_context_contents_logged=False,
+            )
+        )
+
+
+"""82 independent planned nodes: expected literals come only from frozen prep."""
+_ind_HAND = _WIRE_FIXTURE["independent_hand"]
+_ind_H = {x["kind_literal"]: x for x in _ind_HAND["normal_hand6"]}
+_ind_R = {x["private_id"]: x for x in _ind_HAND["private_selection"]}
+_ind_BODY = {
+    "BINDINGS": "_mb_decode_bindings",
+    "PLAN": "_mn_decode_plan",
+    "RECORD": "_mr_decode_record",
+    "PROGRESS": "_mp_decode_progress",
+    "OUTPUT": "_mo_decode_output",
+    "COMPLETE": "_mo_decode_complete",
+}
+
+
+def _ind_group(prefix):
+    return [
+        x
+        for x in _ind_HAND["private_selection"]
+        if x["private_id"].startswith(prefix)
+        and x["private_id"] in _WIRE_FIXTURE["independent_active30"]
+    ]
+
+
+def _ind_ids(rows):
+    return [x["private_id"] for x in rows]
+
+
+def _ind_raw(_ind_kind):
+    return _ind_H[_ind_kind]["raw_utf8"].encode("utf8")
+
+
+def _ind_kind(name):
+    return getattr(s.ManagementObjectKind, name)
+
+
+def _ind_decode(name):
+    return s.decode_management(_ind_raw(name), kind=_ind_kind(name))
+
+
+def _ind_phase(a, name):
+    a["phase"] = name
+
+
+@pytest.mark.parametrize("row", _ind_group("PW-E"), ids=_ind_ids(_ind_group("PW-E")))
+def test_independent_public_edge(row):
+    with _ind_watch(row) as a:
+        n = int(row["private_id"][4:])
+        counter = {"format": 0, "kind": 0}
+
+        class OtherKind(Enum):
+            BINDINGS = "BINDINGS"
+
+        class StrChild(str):
+            pass
+
+        class BytesChild(bytes):
+            pass
+
+        class GetterSentinel(Exception):
+            pass
+
+        class DuckKind:
+            @property
+            def name(self):
+                counter["kind"] += 1
+                raise GetterSentinel("PW-KIND-GETTER-CANARY")
+
+            @property
+            def value(self):
+                counter["kind"] += 1
+                raise GetterSentinel("PW-KIND-GETTER-CANARY")
+
+        class DuckRoot:
+            @property
+            def format(self):
+                counter["format"] += 1
+                raise GetterSentinel("PW-FORMAT-GETTER-CANARY")
+
+        if n <= 7:
+            k = {
+                1: "BINDINGS",
+                2: OtherKind.BINDINGS,
+                3: None,
+                4: True,
+                5: 1,
+                6: DuckKind(),
+                7: StrChild("BINDINGS"),
+            }[n]
+            _ind_phase(a, "actual decode exact kind")
+            _, error = _ind_capture(lambda: s.decode_management(_ind_raw("BINDINGS"), kind=k))
+        elif n <= 11:
+            b = _ind_raw("BINDINGS")
+            b = {8: b.decode("utf8"), 9: bytearray(b), 10: memoryview(b), 11: BytesChild(b)}[n]
+            _ind_phase(a, "actual decode exact raw")
+            _, error = _ind_capture(lambda: s.decode_management(b, kind=_ind_kind("BINDINGS")))
+        elif n in (12, 13):
+            b = b"x" * 8388609
+            k = "BINDINGS" if n == 12 else _ind_kind("BINDINGS")
+            _ind_phase(a, "kind-before-budget/preparse")
+            _, error = _ind_capture(lambda: s.decode_management(b, kind=k))
+            assert all(a["calls"][name] == 0 for name in _ind_BODY.values()), (
+                "BUDGET_AND_KIND_PREBODY"
+            )
+        else:
+            model = json.loads(_ind_H["PROGRESS"]["raw_utf8"])
+            if n == 14:
+
+                class RootChild(s.ProgressDocument):
+                    pass
+
+                document = RootChild(**model)
+            elif n == 15:
+                document = DuckRoot()
+            elif n == 16:
+                document = model
+            elif n == 17:
+                foreign = make_dataclass(
+                    "ForeignProgress",
+                    [
+                        ("format", str),
+                        ("version", int),
+                        ("operation_id", str),
+                        ("plan_digest", str),
+                        ("sequence", int),
+                        ("record_digest", str),
+                    ],
+                    frozen=True,
+                    slots=True,
+                )
+                document = foreign(**model)
+            elif n == 18:
+                document = _ind_OldProgressDocument(**model)
+            elif n == 19:
+                document = _ind_decode("PROGRESS")
+                object.__setattr__(document, "format", "unknown")
+            else:
+                document = _ind_decode("BINDINGS")
+                object.__setattr__(document, "entries", list(document.entries))
+            _ind_phase(a, "actual encode exact root/revalidation")
+            _, error = _ind_capture(lambda: s.encode_management(document))
+        a["getter_counters"] = counter
+        a["goal_reached"] = True
+        assert counter["format"] == 0, "PW-E15_DUCK_FORMAT_ACCESSES_MUST_BE_ZERO"
+        assert counter["kind"] == 0, "KIND_DUCK_ATTRIBUTE_MUST_NOT_BE_READ"
+        _ind_wire_error(
+            error,
+            row["expected_kind"],
+            goal="PW-E01_EXACT_KIND_MUST_REJECT" if n == 1 else row["private_id"],
+        )
+        if n <= 11:
+            assert all(a["calls"][name] == 0 for name in _ind_BODY.values())
+        assert not a["IO_attempts"]
+
+
+@pytest.mark.parametrize("row", _ind_group("PW-A"), ids=_ind_ids(_ind_group("PW-A")))
+def test_independent_binding(row):
+    with _ind_watch(row) as a:
+        i = int(row["private_id"][4:])
+        b = _ind_raw("BINDINGS")
+        k = _ind_kind("BINDINGS")
+        calls = [
+            lambda: s.decode_management(),
+            lambda: s.decode_management(b),
+            lambda: s.decode_management(b, k),
+            lambda: s.decode_management(b, kind=k, extra=1),
+            lambda: s.decode_management(b, b, kind=k),
+        ]
+        _, error = _ind_capture(calls[i - 1])
+        assert type(error) is TypeError
+        assert not isinstance(error, s.SchemaWireError) and a["calls"]["decode_management"] == 0
+        a["goal_reached"] = True
+        _ind_phase(a, "Python binding rejected before body")
+        assert not a["IO_attempts"]
+
+
+@pytest.mark.parametrize("row", _ind_group("PW-R"), ids=_ind_ids(_ind_group("PW-R")))
+def test_independent_public_reflection(row):
+    with _ind_watch(row) as a:
+        ident = row["private_id"]
+        namespace = {
+            "str": str,
+            "int": int,
+            "tuple": tuple,
+            "Literal": typing.Literal,
+            "NoneType": type(None),
+        }
+        namespace.update({x["name"]: getattr(s, x["name"]) for x in _ind_HAND["canonical34"]})
+        namespace.update(
+            WirePointer=s.AbsentPointer | s.FreshPointer | s.CommitPointer,
+            WireOperationKind=typing.Literal["APPLY", "ROLLBACK"],
+            RestoreEffect=typing.Literal[
+                "NOT_STARTED",
+                "INTENT_RECORDED",
+                "BACKUP_RETURNED",
+                "BACKUP_FAILED",
+                "NO_COPY_VERIFIED",
+                "UNKNOWN",
+                None,
+            ],
+        )
+        if ident == "PW-R01":
+            for expected in _ind_HAND["canonical34"]:
+                cls = getattr(s, expected["name"])
+                assert is_dataclass(cls)
+                assert (
+                    cls.__module__ == "recoryn.schema"
+                    and cls.__name__ == cls.__qualname__ == expected["name"]
+                )
+                assert cls.__dataclass_params__.frozen
+                names = [x["name"] for x in expected["fields"]]
+                assert [f.name for f in fields(cls)] == names and list(cls.__slots__) == names
+                hints = typing.get_type_hints(cls)
+                for f in expected["fields"]:
+                    wanted = (
+                        type(None)
+                        if f["type"] == "None"
+                        else eval(f["type"], {"__builtins__": {}}, namespace)
+                    )
+                    assert hints[f["name"]] == wanted, (expected["name"], f["name"])
+            a["canonical_classes_checked"] = 34
+        elif ident == "PW-R02":
+            docs = {}
+            for k in ["BINDINGS", "PLAN", "RECORD", "OUTPUT"]:
+                _ind_phase(a, "R02_decode_" + k)
+                v, error = _ind_capture(lambda k=k: _ind_decode(k))
+                if error is not None:
+                    a["masked_before_identity"] = type(error) is s.SchemaWireError
+                    a["counterpart_error_class"] = type(error).__name__
+                    pytest.fail("PW-R02_NORMAL_COUNTERPART_REJECTED_BEFORE_CLASS_IDENTITY")
+                docs[k] = v
+            _ind_phase(a, "R02_actual_class_identity")
+            a["goal_reached"] = True
+            assert (
+                type(docs["BINDINGS"].anchor_identity)
+                is type(docs["PLAN"].targets[0].physical_binding.anchor_identity)
+                is s.ManagementIdentity
+            ), "SHARED_IDENTITY_IS"
+            assert type(docs["PLAN"].targets[0].pre_pointer) is s.FreshPointer, (
+                "SHARED_FRESH_POINTER_IS"
+            )
+            assert (
+                type(docs["PLAN"].targets[0].post_contract.pointer)
+                is type(docs["OUTPUT"].targets[0].source_pointer)
+                is s.CommitPointer
+            ), "SHARED_COMMIT_POINTER_IS"
+            assert type(docs["RECORD"].targets[0].source_pointer) is s.AbsentPointer, (
+                "SHARED_ABSENT_POINTER_IS"
+            )
+            for cls in [
+                s.BindingPrimary,
+                s.HistoricalBinding,
+                s.CurrentBinding,
+                s.FreshBindingTarget,
+                s.BindingsDocument,
+                s.PhysicalBinding,
+                s.LocalBinding,
+                s.ArtifactRef,
+                s.BindingLink,
+                s.SourceSidecar,
+            ]:
+                for name, hint in typing.get_type_hints(cls).items():
+                    if name == "pre_identity":
+                        expected = next(
+                            x for x in _ind_HAND["canonical34"] if x["name"] == "FreshBindingTarget"
+                        )
+                        assert (
+                            next(x["type"] for x in expected["fields"] if x["name"] == name)
+                            == "None"
+                        )
+                        assert hint is type(None)
+                    elif name.endswith("identity"):
+                        assert hint is s.ManagementIdentity or set(typing.get_args(hint)) == {
+                            s.ManagementIdentity,
+                            type(None),
+                        }
+            for cls, name in [
+                (s.PlanTarget, "pre_pointer"),
+                (s.PostContract, "pointer"),
+                (s.RecordTarget, "source_pointer"),
+                (s.OutputTarget, "source_pointer"),
+            ]:
+                args = set(typing.get_args(typing.get_type_hints(cls)[name]))
+                args.discard(type(None))
+                assert args == {s.AbsentPointer, s.FreshPointer, s.CommitPointer}
+            assert (
+                s.ComponentFact is not s.PostComponent
+                and s.PlannedSlot is not s.SourceSidecar is not s.ArtifactRef
+            )
+        elif ident == "PW-R03":
+            assert typing.get_origin(s.RestoreEffect) is typing.Literal
+            assert typing.get_args(s.RestoreEffect) == tuple(_ind_HAND["RestoreEffect"]["args"])
+            assert typing.get_type_hints(s.RecordTarget)["restore_effect"] is s.RestoreEffect
+            original = _ind_decode("RECORD").targets[0]
+            values = {f.name: getattr(original, f.name) for f in fields(original)}
+            for allowed in _ind_HAND["RestoreEffect"]["args"]:
+                obj = s.RecordTarget(**dict(values, restore_effect=allowed))
+                assert obj.restore_effect == allowed
+            for forbidden in [True, "arbitrary"]:
+                _, error = _ind_capture(
+                    lambda forbidden=forbidden: s.RecordTarget(
+                        **dict(values, restore_effect=forbidden)
+                    )
+                )
+                _ind_wire_error(error)
+        elif ident == "PW-R04":
+            assert [(x.name, x.value) for x in s.ManagementObjectKind] == list(
+                zip(_ind_HAND["kind_literals"], _ind_HAND["kind_literals"], strict=True)
+            )
+            sig = inspect.signature(s.decode_management)
+            assert list(sig.parameters) == ["raw", "kind"]
+            assert (
+                sig.parameters["kind"].kind is inspect.Parameter.KEYWORD_ONLY
+                and sig.parameters["kind"].default is inspect.Parameter.empty
+            )
+            hints = typing.get_type_hints(s.decode_management)
+            assert hints["raw"] is bytes and hints["kind"] is s.ManagementObjectKind
+            assert typing.get_args(s.ManagementDocument) == tuple(
+                getattr(s, n) for n in _ind_HAND["root_literals"]
+            )
+            assert typing.get_type_hints(s.encode_management)["return"] is bytes
+            try:
+
+                class IllegalKind(s.ManagementObjectKind):
+                    pass
+            except TypeError as enum_error:
+                a["Enum_subclass_definition_error"] = type(enum_error).__name__
+            else:
+                pytest.fail("ENUM_MEMBER_SUBCLASS_MUST_FAIL_AT_CLASS_DEFINITION")
+        elif ident == "PW-R05":
+            _, error = _ind_capture(lambda: s.expected_shape_wire("__unknown__", 1))
+            assert type(error) is ValueError and (not isinstance(error, s.SchemaWireError))
+            a["S1_builtin_ValueError_distinct"] = True
+        else:
+            obj = _ind_decode("BINDINGS")
+            values = {f.name: getattr(obj, f.name) for f in fields(obj)}
+            _ind_phase(a, "constructor mutable tuple rejection")
+            _, error = _ind_capture(
+                lambda: s.BindingsDocument(**dict(values, entries=list(obj.entries)))
+            )
+            _ind_wire_error(error)
+            assert a["calls"]["encode_management"] == 0
+        if not a.get("masked_before_identity"):
+            a["goal_reached"] = True
+        assert not a["IO_attempts"]
+
+
+@pytest.mark.parametrize("row", _ind_group("PW-C"), ids=_ind_ids(_ind_group("PW-C")))
+def test_independent_progress_constructor(row):
+    with _ind_watch(row) as a:
+        values = json.loads(_ind_H["PROGRESS"]["raw_utf8"])
+        values[row["field"]] = row["value"]
+        _ind_phase(a, "actual strong Progress constructor")
+        _, error = _ind_capture(lambda: s.ProgressDocument(**values))
+        _ind_wire_error(error)
+        assert a["calls"]["encode_management"] == a["calls"]["decode_management"] == 0
+        a["goal_reached"] = True
+        assert not a["IO_attempts"]
+
+
+@pytest.mark.parametrize("row", _ind_group("PW-B-"), ids=_ind_ids(_ind_group("PW-B-")))
+def test_independent_body_error_identity(row):
+    with _ind_watch(row) as a:
+        _ind_phase(a, "actual selected body required-key guard")
+        _, error = _ind_capture(
+            lambda: s.decode_management(
+                row["raw_utf8"].encode("utf8"), kind=_ind_kind(row["kind_literal"])
+            )
+        )
+        _ind_wire_error(error)
+        assert a["calls"][_ind_BODY[row["kind_literal"]]] == 1
+        inner = [x for x in a["source_exceptions"] if x["function"] not in ["decode_management"]]
+        assert inner and all(x["class_id"] == id(s.SchemaWireError) for x in inner)
+        assert any(x["error_id"] == id(error) for x in inner), (
+            "SAME_ACTUAL_INNER_EXCEPTION_NOT_WRAPPER_REMAP"
+        )
+        a["goal_reached"] = True
+        assert not a["IO_attempts"]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ind_OldProgressDocument:
+    format: str
+    version: int
+    operation_id: str
+    plan_digest: str
+    sequence: int
+    record_digest: str
+
+
+def test_bindings_progress_wrong_domain():
+    raw = _WIRE_FIXTURE["api151"]["caw12"]["raw_utf8"].encode()
+    _, error = _wire_capture(lambda: s.decode_management(raw, kind=s.ManagementObjectKind.BINDINGS))
+    _wire_closed(error)
+    assert error.__cause__ is None and error.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "name", list(_WIRE_FIXTURE["aliases8"]), ids=list(_WIRE_FIXTURE["aliases8"])
+)
+def test_management_alias(name):
+    actual = getattr(s, name)
+    expected = ast.parse(_WIRE_FIXTURE["aliases8"][name], mode="eval").body
+    assert _s7_actual_type(actual) == _s7_expected_type(expected)

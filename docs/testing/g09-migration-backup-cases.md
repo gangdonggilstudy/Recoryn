@@ -1456,3 +1456,94 @@ SC12 primary와 data container의 두 확인 사항은 모두 X00 확정 답변�
 이 후보들은 다른 정상 counterpart를 선행 setup으로 명시하고 실제 단일 site/목표를 구현 후 봉인해야 한다. parser/phase/소유의 다른 방어가 목표를 가리면 MASKED, import/setup/예상 밖 오류는 INVALID다. 실제 supported profile에서 별도 source tuple가 필요하면 그 feasible/제외·literalID/primary/hand oracle/단일 mutation을 먼저 인수한다. 후보7을 선택4105/명시245에 더하지 않는다.
 
 원 resource/CA의 본인 초안 자체를 최종 독립 승인하지 않았고, 승인된 X00 override와 pA 교차 인수만 조립했다. 독립 문서 확인·공유 정본 반영·새 BASE/정확 scope/구현 배정은 X00 소관이다. source5dda의 정적 근거만 사용했으며 실제 codec·bootstrap·issuer·OS 소유·source closure·C1/ACK·migration/복원·late I/O·금융/삭제/건강·성능/전체 CI/coverage/wheel은 미검증이다. 이번 제품 import·DB/OS/API/시험/수집/변이·기존/공유/제품/Git 쓰기·네트워크/설치/실장치/음성/모델/vault/유료·추가 agent/pane/승인UI0이다. 실제 S1 결과를 본 조립의 새 PASS로 계산하지 않는다.
+
+## 2026-11-27 D12: 관리 wire 타입 기반의 첫 제품 증분
+
+이 절은 원 v1 유지보수 계약을 축소하지 않고 구현 증분을 구분한다. 첫 제품 단위는 current-F2 범위의 순수 관리 wire codec·canonical DTO 기반이다. 앱의 실제 plan/apply/resume/rollback, FILE/owner/receipt/chain/epoch floor/marker/ACK 권위와 G09a 전체 구현 완료는 후속 과제다. 아래 API가 반환한 DTO는 typed 사실이며 실제 현재성·작업 권한·파일 존재·검증 완료 증명서가 아니다.
+
+기준 공개는 0c42fc397b3d0abec0e29e3a15f46a1475558a8b이며 복구 CI45924795426의 core3.11/core3.13/optional-runtime 실제 성공은 X00가 인수했다. 그 성공은 이 새 타입 증분의 새 실행 결과가 아니다. 최초 제품 source 후보는 S7 LF6ecc3973d01e31caa45e268bf7887e996a1e8d92650e8b1cd75d53cd6a395cc5다. 최종 제품 tree·검증·공개 상태는 이 단위의 독립 검토와 Git/원격 CI로 따로 결속한다. 이 절 작성 시 후보 결속/신규 시험은 진행 중이며 새 제품 full/coverage/wheel PASS를 주장하지 않는다.
+
+### 공개 API·타입·오류의 한정 채택
+
+기존 S1 공개 API인 schema.expected_shape_wire/component_shape_wire 두 개를 보존한다. 앞선 계획 표의 inspect_schema는 후속 인터페이스이며 공개0c42와 이번 S7 source에 구현돼 있지 않다. 이 증분에 stub을 추가하거나 기존 구현으로 기록하지 않는다. 추가 공개 API는 다음과 같다.
+
+```text
+schema.decode_management(raw: bytes, *, kind: ManagementObjectKind) -> ManagementDocument
+schema.encode_management(document: ManagementDocument) -> bytes
+```
+
+ManagementObjectKind는 정확 BINDINGS/PLAN/RECORD/PROGRESS/OUTPUT/COMPLETE 여섯 Enum 값이다. decode는 정확 kind, 정확 bytes, wire budget, 해당 body 순으로 검사한다. encode는 정확한 root class 여섯 개만 받고 duck getter/coercion으로 root를 바꾸지 않는다. Python 함수 인자 binding의 TypeError와 함수 내부 wire 오류를 구분한다. 내부 오류는 단일 SchemaWireError(ValueError)의 MALFORMED/LIMIT_EXCEEDED이며 표준 str/repr/args는 closed kind만 표시한다. 원 S1의 builtin ValueError 의미는 바꾸지 않는다. immutable 문자열·suppressed exception context의 메모리 소거를 보장하지 않는다.
+
+canonical root 여섯 개는 BindingsDocument/PlanDocument/RecordDocument/ProgressDocument/OutputDocument/CompleteDocument다. 아래 canonical DTO34는 recoryn.schema의 실제 module/qualname를 가진 frozen/slots 값이며 공유 Identity와 pointer class를 별도 body별로 복제하지 않는다. private 과거 DTO/pickle의 자동 호환을 보장하지 않는다. 원 component-shape의 SQL 읽기와 관리 codec의 무I/O는 별도 경계다.
+
+| canonical DTO | ordered field:type |
+| --- | --- |
+| `ManagementIdentity` | `kind:Literal['FILE', 'DIR'], volume_hex:str, file_id_hex:str` |
+| `BindingPrimary` | `kind:Literal['LIBRARY_ROOT', 'DB_PARENT'], anchor_identity:ManagementIdentity, namespace_identity:ManagementIdentity, catalog_id:str` |
+| `OperationRef` | `operation_id:str, plan_digest:str, link_nonce:str` |
+| `HistoricalBinding` | `name:str, identity:ManagementIdentity, retired_by:OperationRef` |
+| `CurrentBinding` | `name:str, identity:ManagementIdentity \| None` |
+| `OperationGenesis` | `kind:Literal['OPERATION'], operation_id:str, plan_digest:str` |
+| `FreshBindingTarget` | `db_id:str, dataset_id:str, anchor_identity:ManagementIdentity, namespace_identity:ManagementIdentity, name:str, roles:tuple[str, ...], profile_id:str, pre_identity:None` |
+| `FreshBindingLayout` | `primary:BindingPrimary, targets:tuple[FreshBindingTarget, ...]` |
+| `FreshGenesis` | `kind:Literal['FRESH_INIT'], intent_id:str, layout:FreshBindingLayout` |
+| `UncommittedFloor` | `kind:Literal['UNCOMMITTED']` |
+| `EpochCredit` | `operation_id:str, plan_digest:str, sequence:int, record_digest:str` |
+| `KnownEpochFloor` | `kind:Literal['KNOWN'], value:int, credits:tuple[EpochCredit, ...]` |
+| `BindingEntry` | `db_id:str, dataset_id:str, state:Literal['PREPARED', 'BOUND', 'RETIRED'], current:CurrentBinding, history:tuple[HistoricalBinding, ...], roles:tuple[str, ...], primary:BindingPrimary, genesis:OperationGenesis \| FreshGenesis, operation_ref:OperationRef \| None, epoch_floor:UncommittedFloor \| KnownEpochFloor` |
+| `BindingsDocument` | `format:Literal['recoryn-management-bindings-v1'], version:int, catalog_id:str, generation:int, anchor_identity:ManagementIdentity, namespace_identity:ManagementIdentity, entries:tuple[BindingEntry, ...]` |
+| `ProgressDocument` | `format:Literal['recoryn-maintenance-progress-v1'], version:int, operation_id:str, plan_digest:str, sequence:int, record_digest:str` |
+| `AbsentPointer` | `kind:Literal['ABSENT']` |
+| `FreshPointer` | `kind:Literal['FRESH'], dataset_id:str, epoch:int` |
+| `CommitPointer` | `kind:Literal['COMMIT'], dataset_id:str, operation_id:str, epoch:int, input_digest:str` |
+| `PhysicalBinding` | `anchor_identity:ManagementIdentity, parent_identity:ManagementIdentity, name:str, identity:ManagementIdentity` |
+| `LocalBinding` | `anchor_identity:ManagementIdentity, namespace_identity:ManagementIdentity, catalog_id:str, db_id:str, link_nonce:str` |
+| `PostComponent` | `component:str, version:int, fingerprint:str` |
+| `PostContract` | `profile_id:str, physical_version:int, components:tuple[PostComponent, ...], pointer:WirePointer, preservation_digest:str` |
+| `PlannedSlot` | `operation_id:str, db_id:str, kind:Literal['DB_IMAGE', 'COST_WITNESS']` |
+| `PlanTarget` | `db_id:str, roles:tuple[str, ...], physical_binding:PhysicalBinding, local_binding:LocalBinding, pre_profile:str, pre_pointer:WirePointer, pre_state_digest:str, target_profile:str, target_epoch:int, input_digest:str, post_contract:PostContract, pre_image_slot:PlannedSlot, sidecar_slots:tuple[PlannedSlot, ...]` |
+| `PlanDocument` | `format:Literal['recoryn-maintenance-plan-v1'], operation_id:str, kind:WireOperationKind, dataset_id:str, reverses_operation_id:str \| None, targets:tuple[PlanTarget, ...], approval_digest:str, commit_order:tuple[str, ...]` |
+| `ArtifactRef` | `operation_id:str, db_id:str, kind:Literal['DB_IMAGE', 'COST_WITNESS'], digest:str, identity:ManagementIdentity` |
+| `BindingLink` | `db_id:str, anchor_identity:ManagementIdentity, namespace_identity:ManagementIdentity, catalog_id:str, link_nonce:str, binding_digest:str` |
+| `RecordTarget` | `db_id:str, source_cut:Literal['PRE', 'IMAGE_UNREBOUND', 'POST', 'UNRESOLVED'], source_pointer:AbsentPointer \| FreshPointer \| CommitPointer \| None, source_digest:str \| None, pre_image:ArtifactRef \| None, sidecars:tuple[ArtifactRef, ...], credited_epoch:int \| None, restore_effect:Literal['NOT_STARTED', 'INTENT_RECORDED', 'BACKUP_RETURNED', 'BACKUP_FAILED', 'NO_COPY_VERIFIED', 'UNKNOWN', None]` |
+| `RecordDocument` | `format:Literal['recoryn-maintenance-record-v1'], version:int, operation_id:str, plan_digest:str, sequence:int, prior_digest:str \| None, phase:Literal['PREPARING', 'IMAGE_VERIFIED', 'APPLYING', 'VERIFYING', 'VERIFIED'], disposition:Literal['RUNNING', 'NEEDS_RESUME', 'QUARANTINED', 'RECONCILIATION_REQUIRED'], targets:tuple[RecordTarget, ...], binding_links:tuple[BindingLink, ...] \| None, output_digest:str \| None` |
+| `ComponentFact` | `name:str, version:int, fingerprint:str` |
+| `SourceSidecar` | `kind:Literal['COST_WITNESS'], digest:str, identity:ManagementIdentity` |
+| `OutputTarget` | `db_id:str, profile_id:str, physical_version:int, components:tuple[ComponentFact, ...], source_pointer:AbsentPointer \| FreshPointer \| CommitPointer, data_digest:str, media_digest:str \| None, sidecar_digests:tuple[SourceSidecar, ...], deletion_digest:str \| None, health_digest:str \| None` |
+| `OutputDocument` | `format:Literal['recoryn-maintenance-output-v1'], operation_id:str, plan_digest:str, targets:tuple[OutputTarget, ...]` |
+| `CompleteDocument` | `format:Literal['recoryn-maintenance-complete-v1'], operation_id:str, plan_digest:str, record_digest:str, output_digest:str` |
+
+명시 alias8은 아래와 같다. RestoreEffect는 여섯 문자열과 None을 Literal 내부에 두며 별도 Union matcher 확장을 요구하지 않는다.
+
+| alias | exact definition |
+| --- | --- |
+| `BindingGenesis` | `OperationGenesis \| FreshGenesis` |
+| `EpochFloor` | `UncommittedFloor \| KnownEpochFloor` |
+| `ManagementDocument` | `BindingsDocument \| PlanDocument \| RecordDocument \| ProgressDocument \| OutputDocument \| CompleteDocument` |
+| `RestoreEffect` | `Literal["NOT_STARTED", "INTENT_RECORDED", "BACKUP_RETURNED", "BACKUP_FAILED", "NO_COPY_VERIFIED", "UNKNOWN", None]` |
+| `WireDisposition` | `Literal["RUNNING", "NEEDS_RESUME", "QUARANTINED", "RECONCILIATION_REQUIRED"]` |
+| `WireOperationKind` | `Literal["APPLY", "ROLLBACK"]` |
+| `WirePhase` | `Literal["PREPARING", "IMAGE_VERIFIED", "APPLYING", "VERIFYING", "VERIFIED"]` |
+| `WirePointer` | `AbsentPointer \| FreshPointer \| CommitPointer` |
+
+원 component fact의 name과 향후 PostComponent의 component, ArtifactRef/SourceSidecar와 실제 slot/handle을 임의로 합치지 않는다. RECORD의 output_digest는 hex64이고 pre_image 등은 ArtifactRef5다. 단계별 local 문법과 외부 actual object equality를 섞지 않는다.
+
+### 지원 경계와 원 경우의 수
+
+OUTPUT의 이번 실제 지원은 기존 current-F2 profile 조건이다. 별도 private LEGACY_JOBS_R0K0 OUTPUT 분기는 코드·독립 검토가 완료됐어도 이번 source에 합치거나 공용 registry/profile로 채택하지 않는다. legacy 원 정상 기대는 그대로 남기고 MALFORMED로 바꾸지 않는다. actual inspector의 DB metadata/receipt/checkpoint 부재·빈/비빈 data equality·LOP01/02는 이 증분에서 닫지 않는다. profile의 typed 지원과 실제 운영 입력의 지원을 구분한다.
+
+원70은 CAW26/CAN18/CAM6/SC12/FP8을 유지한다. 이번 실제 대상은 원 S1 의미20을 보존하고 local CAW26/CAN14의40을 추가하는 계획이다. 보류10은 CAN08/13/14/15와 CAM01~06이다. 실제 계획 E·이전 record digest·APPLY/ROLLBACK plan·marker/workflow oracle가 필요한 행은 pure codec의 다른 거부로 통과 처리하지 않는다. CAM06의 empty O1 root-keyset unit도 실제 공통 접점 추가를 이번에 승인하지 않아 보류한다. 미구현 행의 placeholder/skip/xfail/성공stub을 만들지 않는다.
+
+CAN04의 diagnostic UNRESOLVED/RECONCILIATION_REQUIRED typed 수락과 no-I/O는 실제 normal-entry 거부의 완료 증거가 아니다. CAN03/04/10/11/17/18의 부정은 다른 phase/ref/cut 불일치에 가리지 않는 완전한 정상 counterpart에서 고정한다. CAN10의 VERIFYING+nonNULL output은 PREPARING 부정과 다른 tuple이다. CAW12는 원282B/record_digest63 손 raw를 kind=PROGRESS로 보내 actual digest guard에 결속한다. 과거 BINDINGS 도메인의 선행 거부를 그 목표 검출로 쓰지 않는다.
+
+원4105/명시245는 승인된 전체 계획이며 이 증분의 실제 PASS 수가 아니다. 후보269/독립82·private legacy296/독립29를 새 formal 분모나 새 제품 tree PASS로 소급하지 않는다. 원269 node의 의미는 실제 제품 node·보존 S1·같은 의미의 재사용으로 대응시키고 중복 primary 증분0을 기록한다. 추가 API 보강은 literal 입력/기대/선택을 실행 전에 고정한다. 제품 encoder/Enum/registry 계산을 expected로 복제하지 않는다.
+
+### 제품 단위와 검증·잔여 과제
+
+정확 제품 단위는 schema.py, test_schema_catalog.py, 신규 unit API 시험, 신규 property case-space 감사, 신규 wire literal fixture, .gitattributes, 이 문서, v1-gap-plan, assignments, 신규 독립 review의10파일이다. 기존 S1 함수·20 tuple·readonly 연결·golden을 보존한다. 새 fixture의 bytes는 -text 경로 규칙으로 고정한다. 제품과 시험은 build/prototype/test-only adapter의 runtime 의존을 두지 않는다.
+
+정적 ID/primary 감사와 이번 실제 선택 집합의 실행 감사를 구분한다. 단독 ID/property/not-ui에서 비선택 행의 실행을 요구하지 않는다. 실제 selected call1과 setup/teardown 실패는 별도로 확인한다. 동일 site 재확인은 새 unique fault가 아니다. 정상 control 뒤 실제 지정 단계/반환 후 목표 assertion FAIL만 mutation 검출이며 다른 guard는 MASKED, 수집·하네스·timeout은 INVALID다.
+
+정확 BASE archive+승인 파일 tree에서 실제 선택·관련 회귀·원 S1·단일 목표 변이·관리 I/O0·부모/실제 spawn 출처를 확인한다. CI와 같은 Ruff/format/mypy 및 정확 최종 tree의 full core/coverage7/offline wheel과 wheel schema bytes·import/spawn 출처를 연결한다. source/test/fixture가 달라지면 과거 성공을 재사용한 새 성공으로 쓰지 않는다. 로컬3.13/AST3.11은 실제3.11 runtime을 대신하지 않으며 새 공개 SHA의 세 원격 CI를 별도로 인수한다.
+
+실제 유지보수·정상 후속 write·FILE/owner/chain/rollback/VERIFIED/ACK·공용 legacy profile·실서비스/vault/실장비·모델/전원 장애 내구성·메모리 소거는 남은 과제다. 타입 기반만 진행한 상태와 전체 설계 구현·Windows 실장비 완료를 구분한다. 이 순수 증분의 rollback에 사용자 DB/data/witness/grant 복원을 섞지 않는다.

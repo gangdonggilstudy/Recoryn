@@ -5,10 +5,20 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import types as _mc_types
+from dataclasses import dataclass as _mc_dataclass
+from dataclasses import fields as _mc_fields
+from enum import Enum as _mgmt_Enum
+from functools import cache as _mc_cache
 from functools import lru_cache
 from typing import Any
+from typing import Literal as _mc_Literal
+from typing import TypeAlias as _mgmt_TypeAlias
+from typing import cast as _mc_cast
+from typing import get_args as _mc_get_args
+from typing import get_origin as _mc_get_origin
+from typing import get_type_hints as _mc_get_type_hints
 
-# Fixed source-backed DDL; no database construction or test-fixture dependency.
 _CATALOG: dict[str, tuple[int, str]] = {
     "library.core": (
         1,
@@ -59,25 +69,20 @@ _CATALOG: dict[str, tuple[int, str]] = {
         "CREATE TABLE recoryn_schema_components(component TEXT PRIMARY KEY NOT NULL, version INTEGER NOT NULL CHECK(version>0), fingerprint TEXT NOT NULL, profile TEXT NOT NULL);\nCREATE TABLE recoryn_maintenance(singleton INTEGER PRIMARY KEY CHECK(singleton=1), library_instance_id TEXT NOT NULL, operation_id TEXT, epoch INTEGER NOT NULL CHECK(epoch>=0), commit_state TEXT NOT NULL CHECK(commit_state IN ('NORMAL','DB_COMMITTED')), input_digest TEXT, CHECK((commit_state='NORMAL' AND operation_id IS NULL AND epoch=0 AND input_digest IS NULL) OR (commit_state='DB_COMMITTED' AND operation_id IS NOT NULL AND epoch>0 AND input_digest IS NOT NULL)));",
     ),
 }
-
 _KEYWORDS = frozenset(
-    "CREATE TABLE INDEX UNIQUE TRIGGER IF NOT EXISTS PRIMARY KEY FOREIGN REFERENCES "
-    "INTEGER TEXT REAL BLOB NOT NULL DEFAULT CHECK COLLATE AUTOINCREMENT ASC DESC "
-    "ON UPDATE DELETE INSERT AFTER BEFORE OF WHEN BEGIN END SELECT RAISE ABORT "
-    "SET WHERE OR AND INTO VALUES IGNORE FROM IN IS OLD NEW CASCADE RESTRICT "
-    "NO ACTION MATCH NONE WITHOUT ROWID STRICT FOR EACH ROW".split()
+    "CREATE TABLE INDEX UNIQUE TRIGGER IF NOT EXISTS PRIMARY KEY FOREIGN REFERENCES INTEGER TEXT REAL BLOB NOT NULL DEFAULT CHECK COLLATE AUTOINCREMENT ASC DESC ON UPDATE DELETE INSERT AFTER BEFORE OF WHEN BEGIN END SELECT RAISE ABORT SET WHERE OR AND INTO VALUES IGNORE FROM IN IS OLD NEW CASCADE RESTRICT NO ACTION MATCH NONE WITHOUT ROWID STRICT FOR EACH ROW".split()
 )
 _IDENTIFIERS = frozenset(
-    word.lower()
-    for _, ddl in _CATALOG.values()
-    for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ddl)
-    if word.upper() not in _KEYWORDS
+    (
+        word.lower()
+        for _, ddl in _CATALOG.values()
+        for word in re.findall("[A-Za-z_][A-Za-z0-9_]*", ddl)
+        if word.upper() not in _KEYWORDS
+    )
 )
 _COLLATIONS = frozenset({"BINARY", "NOCASE", "RTRIM"})
 _TOKEN = re.compile(
-    r"\s+|--[^\n]*(?:\n|$)|/\*[\s\S]*?\*/|"
-    r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[[^\]]*\]|"
-    r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|!=|>=|<=|<>|==|[(),.;=+*/%<>-]"
+    "\\s+|--[^\\n]*(?:\\n|$)|/\\*[\\s\\S]*?\\*/|'(?:''|[^'])*'|\\\"(?:\\\"\\\"|[^\\\"])*\\\"|`(?:``|[^`])*`|\\[[^\\]]*\\]|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|!=|>=|<=|<>|==|[(),.;=+*/%<>-]"
 )
 _Token = tuple[str, str]
 _Shape = dict[str, Any]
@@ -100,7 +105,7 @@ def _tokens(sql: str) -> list[_Token]:
             continue
         if word.startswith("'"):
             value = word[1:-1].replace("''", "'")
-            if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+            if any(55296 <= ord(char) <= 57343 for char in value):
                 raise _invalid()
             result.append(("s", value))
         elif word[0] in '"`[':
@@ -120,7 +125,7 @@ def _tokens(sql: str) -> list[_Token]:
             else:
                 raise _invalid()
         elif word.isdecimal():
-            if not re.fullmatch(r"0|[1-9][0-9]*", word):
+            if not re.fullmatch("0|[1-9][0-9]*", word):
                 raise _invalid()
             result.append(("n", word))
         else:
@@ -340,8 +345,8 @@ def _table(cursor: _Cursor, name: str) -> _Shape:
             integer_alias = (
                 rowid
                 and len(keys) == 1
-                and columns[keys[0][0]][1] == "INTEGER"
-                and not inline_primary_desc
+                and (columns[keys[0][0]][1] == "INTEGER")
+                and (not inline_primary_desc)
             )
             if integer_alias:
                 continue
@@ -441,7 +446,7 @@ def _objects(sql: str, tables: dict[str, _Shape] | None = None) -> list[_Shape]:
         cursor.need("CREATE")
         unique = cursor.take("UNIQUE")
         kind = cursor.pop()[1]
-        if kind not in {"TABLE", "INDEX", "TRIGGER"} or unique and kind != "INDEX":
+        if kind not in {"TABLE", "INDEX", "TRIGGER"} or (unique and kind != "INDEX"):
             raise _invalid()
         if cursor.take("IF"):
             cursor.need("NOT")
@@ -500,8 +505,6 @@ def _pragma_collation(value: object) -> str:
 
 
 def _pragma_default(tokens: list[_Token] | None) -> list[_Token] | None:
-    # SQLite omits exactly the outer DEFAULT (...) wrapper in table_xinfo.
-    # This adjusts only the observation check; the SQL wire keeps every token.
     if tokens and tokens[0] == ("p", "("):
         cursor = _Cursor(tokens)
         inner = cursor.group()
@@ -537,9 +540,9 @@ def _verify_table(connection: sqlite3.Connection, obj: _Shape) -> None:
             str(actual[1]).lower() != column[0]
             or str(actual[2]).upper() != column[1]
             or bool(actual[3]) != nullable_flag
-            or default != _pragma_default(column[3])
-            or actual[5] != column[4]
-            or actual[6] != column[5]
+            or (default != _pragma_default(column[3]))
+            or (actual[5] != column[4])
+            or (actual[6] != column[5])
         ):
             raise _invalid()
     actual_foreign: dict[int, list[Any]] = {}
@@ -555,7 +558,7 @@ def _verify_table(connection: sqlite3.Connection, obj: _Shape) -> None:
     for row in _read(connection, f"PRAGMA main.index_list({_quote(name)})"):
         if row[3] not in {"pk", "u"}:
             continue
-        if not re.fullmatch(r"sqlite_autoindex_" + re.escape(name) + r"_[1-9][0-9]*", row[1], re.I):
+        if not re.fullmatch("sqlite_autoindex_" + re.escape(name) + "_[1-9][0-9]*", row[1], re.I):
             raise _invalid()
         autoindexes.append([row[3], _index_keys(connection, row[1])])
     if _wire(sorted(autoindexes, key=_wire)) != _wire(obj["autoindexes"]):
@@ -568,7 +571,7 @@ def component_shape_wire(connection: sqlite3.Connection, component: str) -> byte
     This is neither a whole-dataset profile check nor an admission/ownership proof.
     The caller retains connection, transaction and concurrency ownership.
     """
-    expected = _expected(component)  # Reject unknown names before the first query.
+    expected = _expected(component)
     try:
         stamp = _read(connection, "PRAGMA main.schema_version")
         rows = _read(connection, "SELECT type,name,tbl_name,sql FROM main.sqlite_schema")
@@ -577,7 +580,7 @@ def component_shape_wire(connection: sqlite3.Connection, component: str) -> byte
         by_name = {str(row[1]).lower(): row for row in rows}
         selected_tables = {name for name, obj in required.items() if obj["kind"] == "table"}
         for kind, raw_name, raw_table, _ in rows:
-            name, table = str(raw_name).lower(), str(raw_table).lower()
+            name, table = (str(raw_name).lower(), str(raw_table).lower())
             if table in selected_tables and kind in {"index", "trigger"}:
                 if name.startswith("sqlite_autoindex_") and kind == "index":
                     continue
@@ -587,7 +590,7 @@ def component_shape_wire(connection: sqlite3.Connection, component: str) -> byte
         observed: dict[str, _Shape] = {}
         for name, obj in required.items():
             row = by_name.get(name)
-            if row is None or row[0] != obj["kind"] or not isinstance(row[3], str):
+            if row is None or row[0] != obj["kind"] or (not isinstance(row[3], str)):
                 raise _invalid()
             if obj["kind"] == "table":
                 parsed = _objects(row[3])
@@ -609,7 +612,7 @@ def component_shape_wire(connection: sqlite3.Connection, component: str) -> byte
                     len(found) != 1
                     or bool(found[0][2]) != parsed[0]["unique"]
                     or bool(found[0][4]) != (parsed[0]["where"] is not None)
-                    or _index_keys(connection, name) != parsed[0]["keys"]
+                    or (_index_keys(connection, name) != parsed[0]["keys"])
                 ):
                     raise _invalid()
         if stamp != _read(connection, "PRAGMA main.schema_version"):
@@ -619,3 +622,1678 @@ def component_shape_wire(connection: sqlite3.Connection, component: str) -> byte
         )
     except sqlite3.Error:
         raise _invalid() from None
+
+
+_mb_MAX_BYTES = 8388608
+_mb_MAX_DEPTH = 16
+_mb_ROLES = frozenset({"library", "jobs", "content", "consent", "consent1-legacy", "cost"})
+_mb_PROFILES = frozenset(
+    ["F2_J"]
+    + ["F2_S_" + suffix for suffix in ("CONS", "COST1", "COST2", "CONS_COST1", "CONS_COST2")]
+    + [
+        "F2_" + library + suffix
+        for library in ("L", "LJ", "LC", "LJC")
+        for suffix in ("", "_CONS", "_COST1", "_COST2", "_CONS_COST1", "_CONS_COST2")
+    ]
+)
+
+
+class SchemaWireError(ValueError):
+    def __init__(self, kind: _mc_Literal["MALFORMED", "LIMIT_EXCEEDED"]) -> None:
+        self.kind = (
+            kind if type(kind) is str and kind in {"MALFORMED", "LIMIT_EXCEEDED"} else "MALFORMED"
+        )
+        super().__init__(self.kind)
+
+    def __repr__(self) -> str:
+        return f"SchemaWireError({self.kind})"
+
+
+def _mb_bad() -> SchemaWireError:
+    return SchemaWireError("MALFORMED")
+
+
+@_mc_cache
+def _mb_hints(cls: type[Any]) -> dict[str, Any]:
+    return _mc_get_type_hints(cls)
+
+
+def _mb_matches(value: object, annotation: Any) -> bool:
+    origin, args = (_mc_get_origin(annotation), _mc_get_args(annotation))
+    if origin is _mc_Literal:
+        return any(type(value) is type(option) and value == option for option in args)
+    if origin is _mc_types.UnionType:
+        return any(_mb_matches(value, option) for option in args)
+    if origin is tuple:
+        return (
+            type(value) is tuple
+            and len(args) == 2
+            and (args[1] is Ellipsis)
+            and all(_mb_matches(item, args[0]) for item in value)
+        )
+    return type(value) is annotation
+
+
+class _FrozenWireData:
+    __slots__ = ()
+
+    def __post_init__(self) -> None:
+        for field in _mc_fields(self):  # type: ignore[arg-type]
+            if not _mb_matches(
+                getattr(self, field.name), _mb_hints(_mc_cast(Any, type(self)))[field.name]
+            ):
+                raise _mb_bad()
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class ManagementIdentity(_FrozenWireData):
+    kind: _mc_Literal["FILE", "DIR"]
+    volume_hex: str
+    file_id_hex: str
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class BindingPrimary(_FrozenWireData):
+    kind: _mc_Literal["LIBRARY_ROOT", "DB_PARENT"]
+    anchor_identity: ManagementIdentity
+    namespace_identity: ManagementIdentity
+    catalog_id: str
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class OperationRef(_FrozenWireData):
+    operation_id: str
+    plan_digest: str
+    link_nonce: str
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class HistoricalBinding(_FrozenWireData):
+    name: str
+    identity: ManagementIdentity
+    retired_by: OperationRef
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class CurrentBinding(_FrozenWireData):
+    name: str
+    identity: ManagementIdentity | None
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class OperationGenesis(_FrozenWireData):
+    kind: _mc_Literal["OPERATION"]
+    operation_id: str
+    plan_digest: str
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class FreshBindingTarget(_FrozenWireData):
+    db_id: str
+    dataset_id: str
+    anchor_identity: ManagementIdentity
+    namespace_identity: ManagementIdentity
+    name: str
+    roles: tuple[str, ...]
+    profile_id: str
+    pre_identity: None
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class FreshBindingLayout(_FrozenWireData):
+    primary: BindingPrimary
+    targets: tuple[FreshBindingTarget, ...]
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class FreshGenesis(_FrozenWireData):
+    kind: _mc_Literal["FRESH_INIT"]
+    intent_id: str
+    layout: FreshBindingLayout
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class UncommittedFloor(_FrozenWireData):
+    kind: _mc_Literal["UNCOMMITTED"]
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class EpochCredit(_FrozenWireData):
+    operation_id: str
+    plan_digest: str
+    sequence: int
+    record_digest: str
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class KnownEpochFloor(_FrozenWireData):
+    kind: _mc_Literal["KNOWN"]
+    value: int
+    credits: tuple[EpochCredit, ...]
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class BindingEntry(_FrozenWireData):
+    db_id: str
+    dataset_id: str
+    state: _mc_Literal["PREPARED", "BOUND", "RETIRED"]
+    current: CurrentBinding
+    history: tuple[HistoricalBinding, ...]
+    roles: tuple[str, ...]
+    primary: BindingPrimary
+    genesis: OperationGenesis | FreshGenesis
+    operation_ref: OperationRef | None
+    epoch_floor: UncommittedFloor | KnownEpochFloor
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class BindingsDocument(_FrozenWireData):
+    format: _mc_Literal["recoryn-management-bindings-v1"]
+    version: int
+    catalog_id: str
+    generation: int
+    anchor_identity: ManagementIdentity
+    namespace_identity: ManagementIdentity
+    entries: tuple[BindingEntry, ...]
+
+
+_mb_RECORDS = frozenset(
+    {
+        ManagementIdentity,
+        BindingPrimary,
+        OperationRef,
+        HistoricalBinding,
+        CurrentBinding,
+        OperationGenesis,
+        FreshBindingTarget,
+        FreshBindingLayout,
+        FreshGenesis,
+        UncommittedFloor,
+        EpochCredit,
+        KnownEpochFloor,
+        BindingEntry,
+        BindingsDocument,
+    }
+)
+
+
+def _mb_plain(value: object, depth: int = 0) -> Any:
+    if type(value) in _mb_RECORDS:
+        if depth >= _mb_MAX_DEPTH:
+            raise SchemaWireError("LIMIT_EXCEEDED")
+        return {
+            field.name: _mb_plain(getattr(value, field.name), depth + 1)
+            for field in _mc_fields(_mc_cast(Any, value))
+        }
+    if type(value) is tuple:
+        if depth >= _mb_MAX_DEPTH:
+            raise SchemaWireError("LIMIT_EXCEEDED")
+        return [_mb_plain(item, depth + 1) for item in value]
+    if type(value) in {str, int, type(None)}:
+        return value
+    raise _mb_bad()
+
+
+def _mb_canonical(value: object) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
+
+
+def _mb_object(value: Any, keys: str) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != set(keys.split()):
+        raise _mb_bad()
+    return value
+
+
+def _mb_array(value: Any) -> list[Any]:
+    if type(value) is not list:
+        raise _mb_bad()
+    return value
+
+
+def _mb_text(value: Any) -> str:
+    if type(value) is not str or any(55296 <= ord(c) <= 57343 for c in value):
+        raise _mb_bad()
+    return value
+
+
+def _mb_hex(value: Any, length: int = 32) -> str:
+    if type(value) is not str or re.fullmatch("[0-9a-f]{" + str(length) + "}", value) is None:
+        raise _mb_bad()
+    return value
+
+
+def _mb_integer(value: Any) -> int:
+    if type(value) is not int or value < 0 or value > 2**63 - 1:
+        raise _mb_bad()
+    return value
+
+
+def _mb_name(value: Any) -> str:
+    value = _mb_text(value)
+    base = value.split(".", 1)[0].rstrip(" ").upper()
+    reserved = {"CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"}
+    reserved.update(prefix + digit for prefix in ("COM", "LPT") for digit in "123456789¹²³")
+    if (
+        not value
+        or value in {".", ".."}
+        or value.endswith((".", " "))
+        or any(ord(c) < 32 or c in '<>:"/\\|?*' for c in value)
+        or (base in reserved)
+        or (len(value.encode("utf-16-le")) > 510)
+    ):
+        raise _mb_bad()
+    return _mc_cast(str, value)
+
+
+def _mb_ordered(keys: list[Any]) -> None:
+    if keys != sorted(keys) or len(keys) != len(set(keys)):
+        raise _mb_bad()
+
+
+def _mb_roles(value: Any) -> tuple[str, ...]:
+    result = tuple(_mb_text(role) for role in _mb_array(value))
+    _mb_ordered(list(result))
+    if not result or not set(result) <= _mb_ROLES or {"consent", "consent1-legacy"} <= set(result):
+        raise _mb_bad()
+    return result
+
+
+def _mb_identity(value: Any, expected_kind: str) -> ManagementIdentity:
+    obj = _mb_object(value, "kind volume_hex file_id_hex")
+    if obj["kind"] != expected_kind:
+        raise _mb_bad()
+    return ManagementIdentity(
+        obj["kind"], _mb_hex(obj["volume_hex"], 16), _mb_hex(obj["file_id_hex"])
+    )
+
+
+def _mb_primary(value: Any) -> BindingPrimary:
+    obj = _mb_object(value, "kind anchor_identity namespace_identity catalog_id")
+    if obj["kind"] not in {"LIBRARY_ROOT", "DB_PARENT"}:
+        raise _mb_bad()
+    return BindingPrimary(
+        obj["kind"],
+        _mb_identity(obj["anchor_identity"], "DIR"),
+        _mb_identity(obj["namespace_identity"], "DIR"),
+        _mb_hex(obj["catalog_id"]),
+    )
+
+
+def _mb_ref(value: Any) -> OperationRef:
+    obj = _mb_object(value, "operation_id plan_digest link_nonce")
+    return OperationRef(
+        _mb_hex(obj["operation_id"]), _mb_hex(obj["plan_digest"], 64), _mb_hex(obj["link_nonce"])
+    )
+
+
+def _mb_genesis(value: Any) -> OperationGenesis | FreshGenesis:
+    if type(value) is not dict:
+        raise _mb_bad()
+    if value.get("kind") == "OPERATION":
+        obj = _mb_object(value, "kind operation_id plan_digest")
+        return OperationGenesis(
+            "OPERATION", _mb_hex(obj["operation_id"]), _mb_hex(obj["plan_digest"], 64)
+        )
+    obj = _mb_object(value, "kind intent_id layout")
+    if obj["kind"] != "FRESH_INIT":
+        raise _mb_bad()
+    layout = _mb_object(obj["layout"], "primary targets")
+    targets = []
+    for item in _mb_array(layout["targets"]):
+        item = _mb_object(
+            item,
+            "db_id dataset_id anchor_identity namespace_identity name roles profile_id pre_identity",
+        )
+        if item["pre_identity"] is not None or item["profile_id"] not in _mb_PROFILES:
+            raise _mb_bad()
+        targets.append(
+            FreshBindingTarget(
+                _mb_hex(item["db_id"]),
+                _mb_hex(item["dataset_id"]),
+                _mb_identity(item["anchor_identity"], "DIR"),
+                _mb_identity(item["namespace_identity"], "DIR"),
+                _mb_name(item["name"]),
+                _mb_roles(item["roles"]),
+                item["profile_id"],
+                None,
+            )
+        )
+    _mb_ordered([target.db_id for target in targets])
+    if not targets:
+        raise _mb_bad()
+    return FreshGenesis(
+        "FRESH_INIT",
+        _mb_hex(obj["intent_id"]),
+        FreshBindingLayout(_mb_primary(layout["primary"]), tuple(targets)),
+    )
+
+
+def _mb_floor(
+    value: Any, genesis: OperationGenesis | FreshGenesis
+) -> UncommittedFloor | KnownEpochFloor:
+    if type(value) is not dict:
+        raise _mb_bad()
+    if value.get("kind") == "UNCOMMITTED":
+        _mb_object(value, "kind")
+        return UncommittedFloor("UNCOMMITTED")
+    obj = _mb_object(value, "kind value credits")
+    if obj["kind"] != "KNOWN":
+        raise _mb_bad()
+    number = _mb_integer(obj["value"])
+    credits = []
+    for credit in _mb_array(obj["credits"]):
+        credit = _mb_object(credit, "operation_id plan_digest sequence record_digest")
+        credits.append(
+            EpochCredit(
+                _mb_hex(credit["operation_id"]),
+                _mb_hex(credit["plan_digest"], 64),
+                _mb_integer(credit["sequence"]),
+                _mb_hex(credit["record_digest"], 64),
+            )
+        )
+    _mb_ordered([(c.operation_id, c.sequence, c.record_digest) for c in credits])
+    if (
+        number == 0
+        and (credits or not isinstance(genesis, FreshGenesis))
+        or (number > 0 and (not credits))
+    ):
+        raise _mb_bad()
+    return KnownEpochFloor("KNOWN", number, tuple(credits))
+
+
+def _mb_entry(value: Any) -> BindingEntry:
+    obj = _mb_object(
+        value,
+        "db_id dataset_id state current history roles primary genesis operation_ref epoch_floor",
+    )
+    if obj["state"] not in {"PREPARED", "BOUND", "RETIRED"}:
+        raise _mb_bad()
+    genesis = _mb_genesis(obj["genesis"])
+    current = _mb_object(obj["current"], "name identity")
+    if current["identity"] is None:
+        if obj["state"] != "PREPARED" or not isinstance(genesis, FreshGenesis):
+            raise _mb_bad()
+        identity = None
+    else:
+        identity = _mb_identity(current["identity"], "FILE")
+    history = []
+    history_keys = []
+    for item in _mb_array(obj["history"]):
+        history_keys.append(_mb_canonical(item))
+        item = _mb_object(item, "name identity retired_by")
+        history.append(
+            HistoricalBinding(
+                _mb_name(item["name"]),
+                _mb_identity(item["identity"], "FILE"),
+                _mb_ref(item["retired_by"]),
+            )
+        )
+    _mb_ordered(history_keys)
+    floor = _mb_floor(obj["epoch_floor"], genesis)
+    if identity is None and isinstance(floor, KnownEpochFloor):
+        raise _mb_bad()
+    return BindingEntry(
+        _mb_hex(obj["db_id"]),
+        _mb_hex(obj["dataset_id"]),
+        obj["state"],
+        CurrentBinding(_mb_name(current["name"]), identity),
+        tuple(history),
+        _mb_roles(obj["roles"]),
+        _mb_primary(obj["primary"]),
+        genesis,
+        None if obj["operation_ref"] is None else _mb_ref(obj["operation_ref"]),
+        floor,
+    )
+
+
+def _mb_document(value: Any) -> BindingsDocument:
+    obj = _mb_object(
+        value, "format version catalog_id generation anchor_identity namespace_identity entries"
+    )
+    if obj["format"] != "recoryn-management-bindings-v1" or _mb_integer(obj["version"]) != 1:
+        raise _mb_bad()
+    entries = tuple(_mb_entry(item) for item in _mb_array(obj["entries"]))
+    _mb_ordered([(entry.dataset_id, entry.db_id) for entry in entries])
+    if len({entry.db_id for entry in entries}) != len(entries):
+        raise _mb_bad()
+    physical = [
+        (e.current.identity.volume_hex, e.current.identity.file_id_hex)
+        for e in entries
+        if e.current.identity is not None
+    ]
+    if len(set(physical)) != len(physical):
+        raise _mb_bad()
+    return BindingsDocument(
+        "recoryn-management-bindings-v1",
+        obj["version"],
+        _mb_hex(obj["catalog_id"]),
+        _mb_integer(obj["generation"]),
+        _mb_identity(obj["anchor_identity"], "DIR"),
+        _mb_identity(obj["namespace_identity"], "DIR"),
+        entries,
+    )
+
+
+def _mb_pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for name, value in items:
+        if name in result:
+            raise _mb_bad()
+        result[name] = value
+    return result
+
+
+def _mb_no_number(token: str) -> Any:
+    raise _mb_bad()
+
+
+def _mb_depth(value: Any, depth: int = 0) -> None:
+    if type(value) in {dict, list}:
+        if depth >= _mb_MAX_DEPTH:
+            raise SchemaWireError("LIMIT_EXCEEDED")
+        if type(value) is dict:
+            for name, child in value.items():
+                _mb_text(name)
+                _mb_depth(child, depth + 1)
+        else:
+            for child in value:
+                _mb_depth(child, depth + 1)
+    elif type(value) is str:
+        _mb_text(value)
+
+
+def _mb_scan_depth(text: str) -> None:
+    depth = 0
+    quoted = escaped = False
+    for char in text:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "{[":
+            depth += 1
+            if depth > _mb_MAX_DEPTH:
+                raise SchemaWireError("LIMIT_EXCEEDED")
+        elif char in "}]":
+            depth -= 1
+
+
+def _mb_decode_bindings(raw: bytes) -> BindingsDocument:
+    """Validate bytes into immutable data. No identity or authority is established."""
+    if type(raw) is not bytes:
+        raise _mb_bad()
+    if len(raw) > _mb_MAX_BYTES:
+        raise SchemaWireError("LIMIT_EXCEEDED")
+    if raw.startswith(b"\xef\xbb\xbf") or raw.endswith(b"\n"):
+        raise _mb_bad()
+    failed = False
+    try:
+        text = raw.decode("utf-8")
+        _mb_scan_depth(text)
+        value = json.loads(
+            text,
+            object_pairs_hook=_mb_pairs,
+            parse_float=_mb_no_number,
+            parse_constant=_mb_no_number,
+        )
+    except SchemaWireError:
+        raise
+    except (UnicodeError, ValueError, RecursionError):
+        failed = True
+    if failed:
+        raise _mb_bad()
+    _mb_depth(value)
+    try:
+        document = _mb_document(value)
+        canonical = _mb_canonical(_mb_plain(document))
+    except (KeyError, TypeError, UnicodeError, RecursionError):
+        failed = True
+    if failed:
+        raise _mb_bad()
+    if len(canonical) > _mb_MAX_BYTES:
+        raise SchemaWireError("LIMIT_EXCEEDED")
+    if raw != canonical:
+        raise _mb_bad()
+    return document
+
+
+def _mb_encode_bindings(document: BindingsDocument) -> bytes:
+    """Revalidate frozen data and return the exact canonical wire, without I/O."""
+    if type(document) is not BindingsDocument:
+        raise _mb_bad()
+    failed = False
+    try:
+        plain = _mb_plain(document)
+        _mb_depth(plain)
+        checked = _mb_document(plain)
+        raw = _mb_canonical(_mb_plain(checked))
+    except (KeyError, TypeError, UnicodeError, RecursionError):
+        failed = True
+    if failed:
+        raise _mb_bad()
+    if len(raw) > _mb_MAX_BYTES:
+        raise SchemaWireError("LIMIT_EXCEEDED")
+    return raw
+
+
+def _mp_record_digest(value: object) -> str:
+    if type(value) is not str or re.fullmatch("[0-9a-f]{64}", value) is None:
+        raise _mb_bad()
+    return value
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class ProgressDocument(_FrozenWireData):
+    format: _mc_Literal["recoryn-maintenance-progress-v1"]
+    version: int
+    operation_id: str
+    plan_digest: str
+    sequence: int
+    record_digest: str
+
+    def __post_init__(self) -> None:
+        if type(self.format) is not str or self.format != "recoryn-maintenance-progress-v1":
+            raise _mb_bad()
+        if type(self.version) is not int or self.version != 1:
+            raise _mb_bad()
+        _mb_hex(self.operation_id, 32)
+        _mb_hex(self.plan_digest, 64)
+        _mb_integer(self.sequence)
+        _mp_record_digest(self.record_digest)
+        _FrozenWireData.__post_init__(self)
+
+
+def _mp_document(value: Any) -> ProgressDocument:
+    obj = _mb_object(value, "format version operation_id plan_digest sequence record_digest")
+    return ProgressDocument(
+        obj["format"],
+        obj["version"],
+        obj["operation_id"],
+        obj["plan_digest"],
+        obj["sequence"],
+        obj["record_digest"],
+    )
+
+
+def _mp_plain(document: ProgressDocument) -> dict[str, object]:
+    return {
+        "format": document.format,
+        "version": document.version,
+        "operation_id": document.operation_id,
+        "plan_digest": document.plan_digest,
+        "sequence": document.sequence,
+        "record_digest": document.record_digest,
+    }
+
+
+def _mp_parse_integer(token: str) -> int:
+    if len(token) > 20:
+        raise _mb_bad()
+    return int(token)
+
+
+def _mp_parse(raw: bytes) -> Any:
+    failed = False
+    value: Any = None
+    try:
+        text = raw.decode("utf-8")
+        _mb_scan_depth(text)
+        value = json.loads(
+            text,
+            object_pairs_hook=_mb_pairs,
+            parse_int=_mp_parse_integer,
+            parse_float=_mb_no_number,
+            parse_constant=_mb_no_number,
+        )
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        failed = True
+    if failed:
+        raise _mb_bad()
+    _mb_depth(value)
+    return value
+
+
+def _mp_decode_progress(raw: bytes) -> ProgressDocument:
+    """Return immutable validated wire data, without file or authority checks."""
+    if type(raw) is not bytes:
+        raise _mb_bad()
+    if len(raw) > _mb_MAX_BYTES:
+        raise SchemaWireError("LIMIT_EXCEEDED")
+    if raw.startswith(b"\xef\xbb\xbf") or raw.endswith(b"\n"):
+        raise _mb_bad()
+    document = _mp_document(_mp_parse(raw))
+    canonical = _mb_canonical(_mp_plain(document))
+    if len(canonical) > _mb_MAX_BYTES:
+        raise SchemaWireError("LIMIT_EXCEEDED")
+    if raw != canonical:
+        raise _mb_bad()
+    return document
+
+
+def _mp_encode_progress(document: ProgressDocument) -> bytes:
+    """Revalidate a directly constructed DTO and return exact canonical bytes."""
+    if type(document) is not ProgressDocument:
+        raise _mb_bad()
+    checked = _mp_document(_mp_plain(document))
+    raw = _mb_canonical(_mp_plain(checked))
+    if len(raw) > _mb_MAX_BYTES:
+        raise SchemaWireError("LIMIT_EXCEEDED")
+    return raw
+
+
+WireOperationKind: _mgmt_TypeAlias = _mc_Literal["APPLY", "ROLLBACK"]
+_mn_ROOT_KEYS = (
+    "format operation_id kind dataset_id reverses_operation_id targets approval_digest commit_order"
+)
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class AbsentPointer(_FrozenWireData):
+    kind: _mc_Literal["ABSENT"]
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class FreshPointer(_FrozenWireData):
+    kind: _mc_Literal["FRESH"]
+    dataset_id: str
+    epoch: int
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class CommitPointer(_FrozenWireData):
+    kind: _mc_Literal["COMMIT"]
+    dataset_id: str
+    operation_id: str
+    epoch: int
+    input_digest: str
+
+
+WirePointer: _mgmt_TypeAlias = AbsentPointer | FreshPointer | CommitPointer
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class PhysicalBinding(_FrozenWireData):
+    anchor_identity: ManagementIdentity
+    parent_identity: ManagementIdentity
+    name: str
+    identity: ManagementIdentity
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class LocalBinding(_FrozenWireData):
+    anchor_identity: ManagementIdentity
+    namespace_identity: ManagementIdentity
+    catalog_id: str
+    db_id: str
+    link_nonce: str
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class PostComponent(_FrozenWireData):
+    component: str
+    version: int
+    fingerprint: str
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class PostContract(_FrozenWireData):
+    profile_id: str
+    physical_version: int
+    components: tuple[PostComponent, ...]
+    pointer: WirePointer
+    preservation_digest: str
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class PlannedSlot(_FrozenWireData):
+    operation_id: str
+    db_id: str
+    kind: _mc_Literal["DB_IMAGE", "COST_WITNESS"]
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class PlanTarget(_FrozenWireData):
+    db_id: str
+    roles: tuple[str, ...]
+    physical_binding: PhysicalBinding
+    local_binding: LocalBinding
+    pre_profile: str
+    pre_pointer: WirePointer
+    pre_state_digest: str
+    target_profile: str
+    target_epoch: int
+    input_digest: str
+    post_contract: PostContract
+    pre_image_slot: PlannedSlot
+    sidecar_slots: tuple[PlannedSlot, ...]
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class PlanDocument(_FrozenWireData):
+    format: _mc_Literal["recoryn-maintenance-plan-v1"]
+    operation_id: str
+    kind: WireOperationKind
+    dataset_id: str
+    reverses_operation_id: str | None
+    targets: tuple[PlanTarget, ...]
+    approval_digest: str
+    commit_order: tuple[str, ...]
+
+
+_mn_RECORDS = frozenset(
+    {
+        ManagementIdentity,
+        AbsentPointer,
+        FreshPointer,
+        CommitPointer,
+        PhysicalBinding,
+        LocalBinding,
+        PostComponent,
+        PostContract,
+        PlannedSlot,
+        PlanTarget,
+        PlanDocument,
+    }
+)
+
+
+def _mn_plain(value: object, depth: int = 0) -> Any:
+    if type(value) in _mn_RECORDS:
+        if depth >= 16:
+            raise SchemaWireError("LIMIT_EXCEEDED")
+        return {
+            field.name: _mn_plain(getattr(value, field.name), depth + 1)
+            for field in _mc_fields(_mc_cast(Any, value))
+        }
+    if type(value) is tuple:
+        if depth >= 16:
+            raise SchemaWireError("LIMIT_EXCEEDED")
+        return [_mn_plain(item, depth + 1) for item in value]
+    if type(value) is str:
+        return _mb_text(value)
+    if type(value) in {int, type(None)}:
+        return value
+    raise _mb_bad()
+
+
+def _mn_positive_epoch(value: Any) -> int:
+    number = _mb_integer(value)
+    if number == 0:
+        raise _mb_bad()
+    return number
+
+
+def _mn_label(value: Any) -> str:
+    result = _mb_text(value)
+    if not result:
+        raise _mb_bad()
+    return result
+
+
+def _mn_pointer(value: Any) -> WirePointer:
+    if type(value) is not dict:
+        raise _mb_bad()
+    if value.get("kind") == "ABSENT":
+        _mb_object(value, "kind")
+        return AbsentPointer("ABSENT")
+    if value.get("kind") == "FRESH":
+        obj = _mb_object(value, "kind dataset_id epoch")
+        epoch = _mb_integer(obj["epoch"])
+        if epoch != 0:
+            raise _mb_bad()
+        return FreshPointer("FRESH", _mb_hex(obj["dataset_id"]), epoch)
+    obj = _mb_object(value, "kind dataset_id operation_id epoch input_digest")
+    if obj["kind"] != "COMMIT":
+        raise _mb_bad()
+    return CommitPointer(
+        "COMMIT",
+        _mb_hex(obj["dataset_id"]),
+        _mb_hex(obj["operation_id"]),
+        _mn_positive_epoch(obj["epoch"]),
+        _mb_hex(obj["input_digest"], 64),
+    )
+
+
+def _mn_post(value: Any) -> PostContract:
+    obj = _mb_object(value, "profile_id physical_version components pointer preservation_digest")
+    physical_version = _mb_integer(obj["physical_version"])
+    if physical_version not in {0, 1, 2}:
+        raise _mb_bad()
+    components = []
+    for value in _mb_array(obj["components"]):
+        item = _mb_object(value, "component version fingerprint")
+        fingerprint = _mb_text(item["fingerprint"])
+        prefix = "recoryn-shape-v1:"
+        if not fingerprint.startswith(prefix):
+            raise _mb_bad()
+        _mb_hex(fingerprint[len(prefix) :], 64)
+        components.append(
+            PostComponent(
+                _mn_label(item["component"]), _mn_positive_epoch(item["version"]), fingerprint
+            )
+        )
+    _mb_ordered([component.component for component in components])
+    if not components:
+        raise _mb_bad()
+    return PostContract(
+        _mn_label(obj["profile_id"]),
+        physical_version,
+        tuple(components),
+        _mn_pointer(obj["pointer"]),
+        _mb_hex(obj["preservation_digest"], 64),
+    )
+
+
+def _mn_slot(value: Any, operation: str, db_id: str, kind: str) -> PlannedSlot:
+    obj = _mb_object(value, "operation_id db_id kind")
+    if obj["operation_id"] != operation or obj["db_id"] != db_id or obj["kind"] != kind:
+        raise _mb_bad()
+    return PlannedSlot(operation, db_id, _mc_cast(_mc_Literal["DB_IMAGE", "COST_WITNESS"], kind))
+
+
+def _mn_target(value: Any, operation: str, dataset: str, kind: WireOperationKind) -> PlanTarget:
+    obj = _mb_object(
+        value,
+        "db_id roles physical_binding local_binding pre_profile pre_pointer pre_state_digest target_profile target_epoch input_digest post_contract pre_image_slot sidecar_slots",
+    )
+    db_id = _mb_hex(obj["db_id"])
+    physical = _mb_object(obj["physical_binding"], "anchor_identity parent_identity name identity")
+    physical_fact = PhysicalBinding(
+        _mb_identity(physical["anchor_identity"], "DIR"),
+        _mb_identity(physical["parent_identity"], "DIR"),
+        _mb_name(physical["name"]),
+        _mb_identity(physical["identity"], "FILE"),
+    )
+    local = _mb_object(
+        obj["local_binding"], "anchor_identity namespace_identity catalog_id db_id link_nonce"
+    )
+    local_fact = LocalBinding(
+        _mb_identity(local["anchor_identity"], "DIR"),
+        _mb_identity(local["namespace_identity"], "DIR"),
+        _mb_hex(local["catalog_id"]),
+        _mb_hex(local["db_id"]),
+        _mb_hex(local["link_nonce"]),
+    )
+    if local_fact.db_id != db_id or local_fact.anchor_identity != physical_fact.anchor_identity:
+        raise _mb_bad()
+    pre = _mn_pointer(obj["pre_pointer"])
+    if isinstance(pre, (FreshPointer, CommitPointer)) and pre.dataset_id != dataset:
+        raise _mb_bad()
+    epoch = _mn_positive_epoch(obj["target_epoch"])
+    if isinstance(pre, CommitPointer) and (epoch <= pre.epoch or pre.operation_id == operation):
+        raise _mb_bad()
+    input_digest = _mb_hex(obj["input_digest"], 64)
+    target_profile = _mn_label(obj["target_profile"])
+    post = _mn_post(obj["post_contract"])
+    if post.profile_id != target_profile or (kind == "APPLY" and post.physical_version != 2):
+        raise _mb_bad()
+    if post.physical_version == 2:
+        ptr = post.pointer
+        if not isinstance(ptr, CommitPointer) or (
+            ptr.dataset_id != dataset
+            or ptr.operation_id != operation
+            or ptr.epoch != epoch
+            or (ptr.input_digest != input_digest)
+        ):
+            raise _mb_bad()
+    elif kind != "ROLLBACK" or not isinstance(post.pointer, AbsentPointer):
+        raise _mb_bad()
+    image = _mn_slot(obj["pre_image_slot"], operation, db_id, "DB_IMAGE")
+    sidecars = tuple(
+        _mn_slot(value, operation, db_id, "COST_WITNESS")
+        for value in _mb_array(obj["sidecar_slots"])
+    )
+    _mb_ordered([(slot.operation_id, slot.db_id, slot.kind) for slot in sidecars])
+    return PlanTarget(
+        db_id,
+        _mb_roles(obj["roles"]),
+        physical_fact,
+        local_fact,
+        _mn_label(obj["pre_profile"]),
+        pre,
+        _mb_hex(obj["pre_state_digest"], 64),
+        target_profile,
+        epoch,
+        input_digest,
+        post,
+        image,
+        sidecars,
+    )
+
+
+def _mn_permutation(order: tuple[str, ...], target_ids: list[str]) -> None:
+    if len(order) != len(target_ids) or set(order) != set(target_ids):
+        raise _mb_bad()
+
+
+def _mn_document(value: Any) -> PlanDocument:
+    obj = _mb_object(value, _mn_ROOT_KEYS)
+    if obj["format"] != "recoryn-maintenance-plan-v1" or obj["kind"] not in ("APPLY", "ROLLBACK"):
+        raise _mb_bad()
+    operation, dataset = (_mb_hex(obj["operation_id"]), _mb_hex(obj["dataset_id"]))
+    kind = _mc_cast(WireOperationKind, obj["kind"])
+    reverse = obj["reverses_operation_id"]
+    if kind == "APPLY":
+        if reverse is not None:
+            raise _mb_bad()
+    else:
+        reverse = _mb_hex(reverse)
+        if reverse == operation:
+            raise _mb_bad()
+    targets = tuple(
+        _mn_target(item, operation, dataset, kind) for item in _mb_array(obj["targets"])
+    )
+    target_ids = [target.db_id for target in targets]
+    _mb_ordered(target_ids)
+    physical = [
+        (t.physical_binding.identity.volume_hex, t.physical_binding.identity.file_id_hex)
+        for t in targets
+    ]
+    if not targets or len(physical) != len(set(physical)):
+        raise _mb_bad()
+    order = tuple(_mb_hex(item) for item in _mb_array(obj["commit_order"]))
+    _mn_permutation(order, target_ids)
+    return PlanDocument(
+        "recoryn-maintenance-plan-v1",
+        operation,
+        kind,
+        dataset,
+        reverse,
+        targets,
+        _mb_hex(obj["approval_digest"], 64),
+        order,
+    )
+
+
+def _mn_decode_plan(raw: bytes) -> PlanDocument:
+    """Decode only PLAN data. Never open a source, image, namespace or service."""
+    if type(raw) is not bytes:
+        raise _mb_bad()
+    if len(raw) > 8388608:
+        raise SchemaWireError("LIMIT_EXCEEDED")
+    if raw.startswith(b"\xef\xbb\xbf") or raw.endswith(b"\n"):
+        raise _mb_bad()
+    try:
+        text = raw.decode("utf-8")
+        _mb_scan_depth(text)
+        value = json.loads(
+            text,
+            object_pairs_hook=_mb_pairs,
+            parse_float=_mb_no_number,
+            parse_constant=_mb_no_number,
+        )
+        _mb_depth(value)
+        document = _mn_document(value)
+        canonical = _mb_canonical(_mn_plain(document))
+    except SchemaWireError:
+        raise
+    except (UnicodeError, ValueError, KeyError, TypeError, RecursionError):
+        raise _mb_bad() from None
+    if len(canonical) > 8388608:
+        raise SchemaWireError("LIMIT_EXCEEDED")
+    if raw != canonical:
+        raise _mb_bad()
+    return document
+
+
+def _mn_encode_plan(document: PlanDocument) -> bytes:
+    """Recheck immutable PLAN facts and emit canonical bytes, without I/O."""
+    if type(document) is not PlanDocument:
+        raise _mb_bad()
+    try:
+        plain = _mn_plain(document)
+        _mb_depth(plain)
+        checked = _mn_document(plain)
+        raw = _mb_canonical(_mn_plain(checked))
+    except SchemaWireError:
+        raise
+    except (UnicodeError, ValueError, KeyError, TypeError, RecursionError):
+        raise _mb_bad() from None
+    if len(raw) > 8388608:
+        raise SchemaWireError("LIMIT_EXCEEDED")
+    return raw
+
+
+_mr_SchemaWireError = SchemaWireError
+_mr_MAX_BYTES = 8388608
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class ArtifactRef(_FrozenWireData):
+    operation_id: str
+    db_id: str
+    kind: _mc_Literal["DB_IMAGE", "COST_WITNESS"]
+    digest: str
+    identity: ManagementIdentity
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class BindingLink(_FrozenWireData):
+    db_id: str
+    anchor_identity: ManagementIdentity
+    namespace_identity: ManagementIdentity
+    catalog_id: str
+    link_nonce: str
+    binding_digest: str
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class RecordTarget(_FrozenWireData):
+    db_id: str
+    source_cut: _mc_Literal["PRE", "IMAGE_UNREBOUND", "POST", "UNRESOLVED"]
+    source_pointer: AbsentPointer | FreshPointer | CommitPointer | None
+    source_digest: str | None
+    pre_image: ArtifactRef | None
+    sidecars: tuple[ArtifactRef, ...]
+    credited_epoch: int | None
+    restore_effect: RestoreEffect
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class RecordDocument(_FrozenWireData):
+    format: _mc_Literal["recoryn-maintenance-record-v1"]
+    version: int
+    operation_id: str
+    plan_digest: str
+    sequence: int
+    prior_digest: str | None
+    phase: _mc_Literal["PREPARING", "IMAGE_VERIFIED", "APPLYING", "VERIFYING", "VERIFIED"]
+    disposition: _mc_Literal["RUNNING", "NEEDS_RESUME", "QUARANTINED", "RECONCILIATION_REQUIRED"]
+    targets: tuple[RecordTarget, ...]
+    binding_links: tuple[BindingLink, ...] | None
+    output_digest: str | None
+
+
+_mr_RECORD_TYPES = frozenset(
+    {
+        AbsentPointer,
+        FreshPointer,
+        CommitPointer,
+        ArtifactRef,
+        BindingLink,
+        RecordTarget,
+        RecordDocument,
+        ManagementIdentity,
+    }
+)
+
+
+def _mr_plain(value: object, depth: int = 0) -> Any:
+    if type(value) in _mr_RECORD_TYPES:
+        if depth >= 16:
+            raise _mr_SchemaWireError("LIMIT_EXCEEDED")
+        return {
+            field.name: _mr_plain(getattr(value, field.name), depth + 1)
+            for field in _mc_fields(_mc_cast(Any, value))
+        }
+    if type(value) is tuple:
+        if depth >= 16:
+            raise _mr_SchemaWireError("LIMIT_EXCEEDED")
+        return [_mr_plain(item, depth + 1) for item in value]
+    if type(value) in {str, int, type(None)}:
+        return value
+    raise _mb_bad()
+
+
+def _mr_pointer(value: Any) -> AbsentPointer | FreshPointer | CommitPointer:
+    if type(value) is not dict:
+        raise _mb_bad()
+    if value.get("kind") == "ABSENT":
+        _mb_object(value, "kind")
+        return AbsentPointer("ABSENT")
+    if value.get("kind") == "FRESH":
+        obj = _mb_object(value, "kind dataset_id epoch")
+        return FreshPointer("FRESH", _mb_hex(obj["dataset_id"]), _mb_integer(obj["epoch"]))
+    obj = _mb_object(value, "kind dataset_id operation_id epoch input_digest")
+    if obj["kind"] != "COMMIT":
+        raise _mb_bad()
+    return CommitPointer(
+        "COMMIT",
+        _mb_hex(obj["dataset_id"]),
+        _mb_hex(obj["operation_id"]),
+        _mb_integer(obj["epoch"]),
+        _mb_hex(obj["input_digest"], 64),
+    )
+
+
+def _mr_artifact(value: Any) -> ArtifactRef:
+    obj = _mb_object(value, "operation_id db_id kind digest identity")
+    return ArtifactRef(
+        _mb_hex(obj["operation_id"]),
+        _mb_hex(obj["db_id"]),
+        obj["kind"],
+        _mb_hex(obj["digest"], 64),
+        _mb_identity(obj["identity"], "FILE"),
+    )
+
+
+def _mr_link(value: Any) -> BindingLink:
+    obj = _mb_object(
+        value, "db_id anchor_identity namespace_identity catalog_id link_nonce binding_digest"
+    )
+    return BindingLink(
+        _mb_hex(obj["db_id"]),
+        _mb_identity(obj["anchor_identity"], "DIR"),
+        _mb_identity(obj["namespace_identity"], "DIR"),
+        _mb_hex(obj["catalog_id"]),
+        _mb_hex(obj["link_nonce"]),
+        _mb_hex(obj["binding_digest"], 64),
+    )
+
+
+def _mr_target(value: Any) -> RecordTarget:
+    obj = _mb_object(
+        value,
+        "db_id source_cut source_pointer source_digest pre_image sidecars credited_epoch restore_effect",
+    )
+    return RecordTarget(
+        _mb_hex(obj["db_id"]),
+        obj["source_cut"],
+        None if obj["source_pointer"] is None else _mr_pointer(obj["source_pointer"]),
+        None if obj["source_digest"] is None else _mb_hex(obj["source_digest"], 64),
+        None if obj["pre_image"] is None else _mr_artifact(obj["pre_image"]),
+        tuple(_mr_artifact(x) for x in _mb_array(obj["sidecars"])),
+        None if obj["credited_epoch"] is None else _mb_integer(obj["credited_epoch"]),
+        obj["restore_effect"],
+    )
+
+
+def _mr_document(value: Any) -> RecordDocument:
+    obj = _mb_object(
+        value,
+        "format version operation_id plan_digest sequence prior_digest phase disposition targets binding_links output_digest",
+    )
+    return RecordDocument(
+        obj["format"],
+        _mb_integer(obj["version"]),
+        _mb_hex(obj["operation_id"]),
+        _mb_hex(obj["plan_digest"], 64),
+        _mb_integer(obj["sequence"]),
+        None if obj["prior_digest"] is None else _mb_hex(obj["prior_digest"], 64),
+        obj["phase"],
+        obj["disposition"],
+        tuple(_mr_target(x) for x in _mb_array(obj["targets"])),
+        None
+        if obj["binding_links"] is None
+        else tuple(_mr_link(x) for x in _mb_array(obj["binding_links"])),
+        None if obj["output_digest"] is None else _mb_hex(obj["output_digest"], 64),
+    )
+
+
+def _mr_check_pointer(pointer: AbsentPointer | FreshPointer | CommitPointer) -> None:
+    if type(pointer) is FreshPointer:
+        if pointer.epoch != 0:
+            raise _mb_bad()
+    elif type(pointer) is CommitPointer and pointer.epoch == 0:
+        raise _mb_bad()
+
+
+def _mr_check_ref(ref: ArtifactRef, operation_id: str, db_id: str, kind: str) -> None:
+    if ref.operation_id != operation_id or ref.db_id != db_id or ref.kind != kind:
+        raise _mb_bad()
+
+
+def _mr_check(document: RecordDocument) -> None:
+    if document.version != 1:
+        raise _mb_bad()
+    if document.sequence == 0 and document.prior_digest is not None:
+        raise _mb_bad()
+    if document.sequence > 0 and document.prior_digest is None:
+        raise _mb_bad()
+    if (document.phase == "VERIFIED") != (document.output_digest is not None):
+        raise _mb_bad()
+    ids = [target.db_id for target in document.targets]
+    _mb_ordered(ids)
+    if document.binding_links is None:
+        if document.phase != "PREPARING":
+            raise _mb_bad()
+    else:
+        links = [link.db_id for link in document.binding_links]
+        _mb_ordered(links)
+        if links != ids:
+            raise _mb_bad()
+    for target in document.targets:
+        if target.source_pointer is None or target.source_digest is None:
+            if target.source_cut != "UNRESOLVED" or document.disposition not in {
+                "QUARANTINED",
+                "RECONCILIATION_REQUIRED",
+            }:
+                raise _mb_bad()
+        if target.source_pointer is not None:
+            _mr_check_pointer(target.source_pointer)
+        if target.source_cut == "POST":
+            if target.credited_epoch is None or target.credited_epoch == 0:
+                raise _mb_bad()
+        elif target.credited_epoch is not None:
+            raise _mb_bad()
+        if target.pre_image is not None:
+            _mr_check_ref(target.pre_image, document.operation_id, target.db_id, "DB_IMAGE")
+        elif document.phase != "PREPARING":
+            raise _mb_bad()
+        for ref in target.sidecars:
+            _mr_check_ref(ref, document.operation_id, target.db_id, "COST_WITNESS")
+        _mb_ordered([(ref.operation_id, ref.db_id, ref.kind) for ref in target.sidecars])
+        if document.phase in {"VERIFYING", "VERIFIED"} and target.source_cut != "POST":
+            raise _mb_bad()
+
+
+def _mr_parse_integer(token: str) -> int:
+    if len(token) > 20:
+        raise _mb_bad()
+    return int(token)
+
+
+def _mr_parse(raw: bytes) -> Any:
+    failed = False
+    value: Any = None
+    try:
+        text = raw.decode("utf-8")
+        _mb_scan_depth(text)
+        value = json.loads(
+            text,
+            object_pairs_hook=_mb_pairs,
+            parse_int=_mr_parse_integer,
+            parse_float=_mb_no_number,
+            parse_constant=_mb_no_number,
+        )
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        failed = True
+    if failed:
+        raise _mb_bad()
+    _mb_depth(value)
+    return value
+
+
+def _mr_decode_record(raw: bytes) -> RecordDocument:
+    """Validate local wire facts only; no actual chain or authority is established."""
+    if type(raw) is not bytes:
+        raise _mb_bad()
+    if len(raw) > _mr_MAX_BYTES:
+        raise _mr_SchemaWireError("LIMIT_EXCEEDED")
+    if raw.startswith(b"\xef\xbb\xbf") or raw.endswith(b"\n"):
+        raise _mb_bad()
+    document = _mr_document(_mr_parse(raw))
+    _mr_check(document)
+    canonical = _mb_canonical(_mr_plain(document))
+    if len(canonical) > _mr_MAX_BYTES:
+        raise _mr_SchemaWireError("LIMIT_EXCEEDED")
+    if raw != canonical:
+        raise _mb_bad()
+    return document
+
+
+def _mr_encode_record(document: RecordDocument) -> bytes:
+    """Revalidate typed data; constructor return is not a semantic receipt."""
+    if type(document) is not RecordDocument:
+        raise _mb_bad()
+    checked = _mr_document(_mr_plain(document))
+    _mr_check(checked)
+    raw = _mb_canonical(_mr_plain(checked))
+    if len(raw) > _mr_MAX_BYTES:
+        raise _mr_SchemaWireError("LIMIT_EXCEEDED")
+    return raw
+
+
+_mo_SchemaWireError = SchemaWireError
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class ComponentFact(_FrozenWireData):
+    name: str
+    version: int
+    fingerprint: str
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class SourceSidecar(_FrozenWireData):
+    kind: _mc_Literal["COST_WITNESS"]
+    digest: str
+    identity: ManagementIdentity
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class OutputTarget(_FrozenWireData):
+    db_id: str
+    profile_id: str
+    physical_version: int
+    components: tuple[ComponentFact, ...]
+    source_pointer: AbsentPointer | FreshPointer | CommitPointer
+    data_digest: str
+    media_digest: str | None
+    sidecar_digests: tuple[SourceSidecar, ...]
+    deletion_digest: str | None
+    health_digest: str | None
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class OutputDocument(_FrozenWireData):
+    format: _mc_Literal["recoryn-maintenance-output-v1"]
+    operation_id: str
+    plan_digest: str
+    targets: tuple[OutputTarget, ...]
+
+
+@_mc_dataclass(frozen=True, slots=True)
+class CompleteDocument(_FrozenWireData):
+    format: _mc_Literal["recoryn-maintenance-complete-v1"]
+    operation_id: str
+    plan_digest: str
+    record_digest: str
+    output_digest: str
+
+
+_mo_RECORDS = frozenset(
+    {
+        ComponentFact,
+        AbsentPointer,
+        FreshPointer,
+        CommitPointer,
+        SourceSidecar,
+        OutputTarget,
+        OutputDocument,
+        CompleteDocument,
+        ManagementIdentity,
+    }
+)
+
+
+def _mo_plain(value: object, depth: int = 0) -> Any:
+    if type(value) in _mo_RECORDS:
+        if depth >= _mb_MAX_DEPTH:
+            raise _mo_SchemaWireError("LIMIT_EXCEEDED")
+        _FrozenWireData.__post_init__(_mc_cast(Any, value))
+        return {
+            f.name: _mo_plain(getattr(value, f.name), depth + 1)
+            for f in _mc_fields(_mc_cast(Any, value))
+        }
+    if type(value) is tuple:
+        if depth >= _mb_MAX_DEPTH:
+            raise _mo_SchemaWireError("LIMIT_EXCEEDED")
+        return [_mo_plain(item, depth + 1) for item in value]
+    if type(value) in {str, int, type(None)}:
+        return value
+    raise _mb_bad()
+
+
+def _mo_nonempty(value: Any) -> str:
+    value = _mb_text(value)
+    if not value:
+        raise _mb_bad()
+    return _mc_cast(str, value)
+
+
+def _mo_digest(value: Any) -> str:
+    return _mb_hex(value, 64)
+
+
+def _mo_component(value: Any) -> ComponentFact:
+    obj = _mb_object(value, "name version fingerprint")
+    fingerprint = _mb_text(obj["fingerprint"])
+    prefix = "recoryn-shape-v1:"
+    if not fingerprint.startswith(prefix):
+        raise _mb_bad()
+    _mb_hex(fingerprint[len(prefix) :], 64)
+    name = _mo_nonempty(obj["name"])
+    version = _mb_integer(obj["version"])
+    if version == 0:
+        raise _mb_bad()
+    return ComponentFact(name, version, fingerprint)
+
+
+def _mo_pointer(value: Any) -> AbsentPointer | FreshPointer | CommitPointer:
+    if type(value) is not dict:
+        raise _mb_bad()
+    kind = value.get("kind")
+    if kind == "ABSENT":
+        _mb_object(value, "kind")
+        return AbsentPointer("ABSENT")
+    if kind == "FRESH":
+        obj = _mb_object(value, "kind dataset_id epoch")
+        if _mb_integer(obj["epoch"]) != 0:
+            raise _mb_bad()
+        return FreshPointer("FRESH", _mb_hex(obj["dataset_id"]), 0)
+    obj = _mb_object(value, "kind dataset_id operation_id epoch input_digest")
+    if kind != "COMMIT" or _mb_integer(obj["epoch"]) == 0:
+        raise _mb_bad()
+    return CommitPointer(
+        "COMMIT",
+        _mb_hex(obj["dataset_id"]),
+        _mb_hex(obj["operation_id"]),
+        _mb_integer(obj["epoch"]),
+        _mo_digest(obj["input_digest"]),
+    )
+
+
+def _mo_sidecar(value: Any) -> SourceSidecar:
+    obj = _mb_object(value, "kind digest identity")
+    if obj["kind"] != "COST_WITNESS":
+        raise _mb_bad()
+    return SourceSidecar(
+        "COST_WITNESS", _mo_digest(obj["digest"]), _mb_identity(obj["identity"], "FILE")
+    )
+
+
+def _mo_optional_digest(value: Any, required: bool) -> str | None:
+    if required:
+        return _mo_digest(value)
+    if value is not None:
+        raise _mb_bad()
+    return None
+
+
+def _mo_target(value: Any) -> OutputTarget:
+    obj = _mb_object(
+        value,
+        "db_id profile_id physical_version components source_pointer data_digest media_digest sidecar_digests deletion_digest health_digest",
+    )
+    profile = _mo_nonempty(obj["profile_id"])
+    if profile not in _mb_PROFILES:
+        raise _mb_bad()
+    version = _mb_integer(obj["physical_version"])
+    pointer = _mo_pointer(obj["source_pointer"])
+    if version != 2 or type(pointer) is not CommitPointer:
+        raise _mb_bad()
+    components = tuple(_mo_component(item) for item in _mb_array(obj["components"]))
+    _mb_ordered([c.name for c in components])
+    if not components:
+        raise _mb_bad()
+    sidecars = tuple(_mo_sidecar(item) for item in _mb_array(obj["sidecar_digests"]))
+    _mb_ordered([s.kind for s in sidecars])
+    has_library = profile.startswith("F2_L")
+    return OutputTarget(
+        _mb_hex(obj["db_id"]),
+        profile,
+        version,
+        components,
+        pointer,
+        _mo_digest(obj["data_digest"]),
+        _mo_optional_digest(obj["media_digest"], has_library),
+        sidecars,
+        _mo_optional_digest(obj["deletion_digest"], has_library),
+        _mo_optional_digest(obj["health_digest"], has_library),
+    )
+
+
+def _mo_output(value: Any) -> OutputDocument:
+    obj = _mb_object(value, "format operation_id plan_digest targets")
+    if obj["format"] != "recoryn-maintenance-output-v1":
+        raise _mb_bad()
+    operation = _mb_hex(obj["operation_id"])
+    targets = tuple(_mo_target(t) for t in _mb_array(obj["targets"]))
+    _mb_ordered([target.db_id for target in targets])
+    if not targets:
+        raise _mb_bad()
+    for target in targets:
+        if type(target.source_pointer) is CommitPointer:
+            if target.source_pointer.operation_id != operation:
+                raise _mb_bad()
+    return OutputDocument(
+        "recoryn-maintenance-output-v1", operation, _mo_digest(obj["plan_digest"]), targets
+    )
+
+
+def _mo_complete(value: Any) -> CompleteDocument:
+    obj = _mb_object(value, "format operation_id plan_digest record_digest output_digest")
+    if obj["format"] != "recoryn-maintenance-complete-v1":
+        raise _mb_bad()
+    return CompleteDocument(
+        "recoryn-maintenance-complete-v1",
+        _mb_hex(obj["operation_id"]),
+        _mo_digest(obj["plan_digest"]),
+        _mo_digest(obj["record_digest"]),
+        _mo_digest(obj["output_digest"]),
+    )
+
+
+def _mo_load(raw: bytes) -> Any:
+    if type(raw) is not bytes:
+        raise _mb_bad()
+    if len(raw) > _mb_MAX_BYTES:
+        raise _mo_SchemaWireError("LIMIT_EXCEEDED")
+    if raw.startswith(b"\xef\xbb\xbf") or raw.endswith(b"\n"):
+        raise _mb_bad()
+    try:
+        text = raw.decode("utf-8")
+        _mb_scan_depth(text)
+        value = json.loads(
+            text,
+            object_pairs_hook=_mb_pairs,
+            parse_float=_mb_no_number,
+            parse_constant=_mb_no_number,
+        )
+    except _mo_SchemaWireError:
+        raise
+    except (UnicodeError, ValueError, RecursionError):
+        raise _mb_bad() from None
+    _mb_depth(value)
+    return value
+
+
+def _mo_decode(
+    raw: bytes, kind: _mc_Literal["OUTPUT", "COMPLETE"]
+) -> OutputDocument | CompleteDocument:
+    value = _mo_load(raw)
+    try:
+        document: OutputDocument | CompleteDocument = (
+            _mo_output(value) if kind == "OUTPUT" else _mo_complete(value)
+        )
+        canonical = _mb_canonical(_mo_plain(document))
+    except (KeyError, TypeError, UnicodeError, RecursionError):
+        raise _mb_bad() from None
+    if len(canonical) > _mb_MAX_BYTES:
+        raise _mo_SchemaWireError("LIMIT_EXCEEDED")
+    if raw != canonical:
+        raise _mb_bad()
+    return document
+
+
+def _mo_decode_output(raw: bytes) -> OutputDocument:
+    return _mc_cast(OutputDocument, _mo_decode(raw, "OUTPUT"))
+
+
+def _mo_decode_complete(raw: bytes) -> CompleteDocument:
+    return _mc_cast(CompleteDocument, _mo_decode(raw, "COMPLETE"))
+
+
+def _mo_encode_output(document: OutputDocument) -> bytes:
+    if type(document) is not OutputDocument:
+        raise _mb_bad()
+    checked = _mo_output(_mo_plain(document))
+    raw = _mb_canonical(_mo_plain(checked))
+    if len(raw) > _mb_MAX_BYTES:
+        raise _mo_SchemaWireError("LIMIT_EXCEEDED")
+    return raw
+
+
+def _mo_encode_complete(document: CompleteDocument) -> bytes:
+    if type(document) is not CompleteDocument:
+        raise _mb_bad()
+    checked = _mo_complete(_mo_plain(document))
+    raw = _mb_canonical(_mo_plain(checked))
+    if len(raw) > _mb_MAX_BYTES:
+        raise _mo_SchemaWireError("LIMIT_EXCEEDED")
+    return raw
+
+
+BindingGenesis: _mgmt_TypeAlias = OperationGenesis | FreshGenesis
+EpochFloor: _mgmt_TypeAlias = UncommittedFloor | KnownEpochFloor
+RestoreEffect: _mgmt_TypeAlias = _mc_Literal[
+    "NOT_STARTED",
+    "INTENT_RECORDED",
+    "BACKUP_RETURNED",
+    "BACKUP_FAILED",
+    "NO_COPY_VERIFIED",
+    "UNKNOWN",
+    None,
+]
+WireDisposition: _mgmt_TypeAlias = _mc_Literal[
+    "RUNNING", "NEEDS_RESUME", "QUARANTINED", "RECONCILIATION_REQUIRED"
+]
+WirePhase: _mgmt_TypeAlias = _mc_Literal[
+    "PREPARING", "IMAGE_VERIFIED", "APPLYING", "VERIFYING", "VERIFIED"
+]
+
+
+class ManagementObjectKind(_mgmt_Enum):
+    BINDINGS = "BINDINGS"
+    PLAN = "PLAN"
+    RECORD = "RECORD"
+    PROGRESS = "PROGRESS"
+    OUTPUT = "OUTPUT"
+    COMPLETE = "COMPLETE"
+
+
+ManagementDocument: _mgmt_TypeAlias = (
+    BindingsDocument
+    | PlanDocument
+    | RecordDocument
+    | ProgressDocument
+    | OutputDocument
+    | CompleteDocument
+)
+_mgmt_MAX_RAW_BYTES = 8388608
+
+
+def decode_management(raw: bytes, *, kind: ManagementObjectKind) -> ManagementDocument:
+    if type(kind) is not ManagementObjectKind:
+        raise SchemaWireError("MALFORMED")
+    if type(raw) is not bytes:
+        raise SchemaWireError("MALFORMED")
+    if len(raw) > _mgmt_MAX_RAW_BYTES:
+        raise SchemaWireError("LIMIT_EXCEEDED")
+    if kind is ManagementObjectKind.BINDINGS:
+        return _mb_decode_bindings(raw)
+    if kind is ManagementObjectKind.PLAN:
+        return _mn_decode_plan(raw)
+    if kind is ManagementObjectKind.RECORD:
+        return _mr_decode_record(raw)
+    if kind is ManagementObjectKind.PROGRESS:
+        return _mp_decode_progress(raw)
+    if kind is ManagementObjectKind.OUTPUT:
+        return _mo_decode_output(raw)
+    if kind is ManagementObjectKind.COMPLETE:
+        return _mo_decode_complete(raw)
+    raise SchemaWireError("MALFORMED")
+
+
+def encode_management(document: ManagementDocument) -> bytes:
+    if type(document) is BindingsDocument:
+        return _mb_encode_bindings(document)
+    if type(document) is PlanDocument:
+        return _mn_encode_plan(document)
+    if type(document) is RecordDocument:
+        return _mr_encode_record(document)
+    if type(document) is ProgressDocument:
+        return _mp_encode_progress(document)
+    if type(document) is OutputDocument:
+        return _mo_encode_output(document)
+    if type(document) is CompleteDocument:
+        return _mo_encode_complete(document)
+    raise SchemaWireError("MALFORMED")

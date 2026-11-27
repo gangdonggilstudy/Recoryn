@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import builtins
+import ctypes
+import dataclasses
+import functools
 import hashlib
+import inspect
+import io
 import json
+import os
+import socket
 import sqlite3
+import subprocess
+import sys
+import threading
+from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from recoryn import schema as s
 from recoryn.schema import component_shape_wire, expected_shape_wire
 
 _DDL: dict[str, str] = {
@@ -265,3 +279,294 @@ def test_schema_catalog_id_audit() -> None:
     assert set(ids) == expected
     assert len([row for row in _CASES if row[2] is None]) == 12
     assert len([row for row in _CASES if row[2] is not None]) == 8
+
+
+# Shared test instrumentation is copied into each owned test module; no build dependency.
+def _wire_data():
+    return json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "fixtures/g09_management_wire_literals_v1.json"
+        ).read_text(encoding="utf8")
+    )
+
+
+@contextmanager
+def _management_no_io(events):
+    def denied(name):
+        def stop(*args, **kwargs):
+            events.append(name)
+            raise AssertionError("MANAGEMENT_IO_ATTEMPT:" + name)
+
+        return stop
+
+    with pytest.MonkeyPatch.context() as patch:
+        targets = [
+            (builtins, "open"),
+            (io, "open"),
+            (sqlite3, "connect"),
+            (socket, "socket"),
+            (socket, "create_connection"),
+            (socket, "getaddrinfo"),
+            (socket, "gethostbyname"),
+            (subprocess, "Popen"),
+            (threading.Thread, "start"),
+            (ctypes, "CDLL"),
+            (ctypes, "PyDLL"),
+            (ctypes.LibraryLoader, "LoadLibrary"),
+        ]
+        targets += [
+            (os, name)
+            for name in (
+                "open",
+                "fdopen",
+                "read",
+                "write",
+                "stat",
+                "lstat",
+                "listdir",
+                "scandir",
+                "mkdir",
+                "remove",
+                "unlink",
+                "rename",
+                "replace",
+                "system",
+            )
+        ]
+        targets += [(ctypes, name) for name in ("WinDLL", "OleDLL") if hasattr(ctypes, name)]
+        for module, names in (
+            ("win32cred", ("CredRead", "CredWrite", "CredDelete")),
+            ("keyring", ("get_password", "set_password", "delete_password")),
+        ):
+            if module in sys.modules:
+                targets += [
+                    (sys.modules[module], name)
+                    for name in names
+                    if hasattr(sys.modules[module], name)
+                ]
+        for owner, name in targets:
+            patch.setattr(owner, name, denied(owner.__name__ + "." + name))
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _management_selected_audit(request):
+    if hasattr(request.config, "_g09_management_audit"):
+        yield request.config._g09_management_audit
+        return
+    owned = (
+        "tests/unit/test_schema_catalog.py::",
+        "tests/unit/test_management_wire_api.py::",
+        "tests/property/test_management_wire_case_space.py::",
+    )
+    state = {
+        "selected": [
+            item.nodeid for item in request.session.items if item.nodeid.startswith(owned)
+        ],
+        "reports": [],
+        "calls": [],
+        "IO_attempts": [],
+        "active": request.session.items[0].nodeid if request.session.items else None,
+    }
+    selected_set = set(state["selected"])
+    request.config._g09_management_audit = state
+    patch = pytest.MonkeyPatch()
+
+    def protect(real, name):
+        @functools.wraps(real)
+        def observed(*args, **kwargs):
+            event = {"node": state["active"], "name": name, "status": "ENTERED"}
+            actual = inspect.unwrap(real)
+            event["actual_file"] = actual.__code__.co_filename
+            event["actual_globals_schema"] = actual.__globals__ is vars(s)
+            state["calls"].append(event)
+            try:
+                with _management_no_io(state["IO_attempts"]):
+                    value = real(*args, **kwargs)
+            except BaseException as error:
+                event.update(
+                    status="RAISED",
+                    error_type=type(error).__name__,
+                    kind=getattr(error, "kind", None),
+                )
+                raise
+            event["status"] = "RETURNED"
+            return value
+
+        return observed
+
+    for name in ("decode_management", "encode_management"):
+        patch.setattr(s, name, protect(getattr(s, name), name))
+    for cls in (s._FrozenWireData, s.ProgressDocument):
+        patch.setattr(
+            cls, "__post_init__", protect(cls.__post_init__, cls.__name__ + ".__post_init__")
+        )
+
+    class Audit:
+        def pytest_runtest_setup(self, item):
+            state["active"] = item.nodeid
+
+        def pytest_runtest_logreport(self, report):
+            if report.nodeid in selected_set:
+                state["reports"].append(
+                    {"node": report.nodeid, "when": report.when, "outcome": report.outcome}
+                )
+
+        def pytest_sessionfinish(self, session, exitstatus):
+            state["exitstatus"] = int(exitstatus)
+            expected = set(state["selected"])
+            counts = Counter(r["node"] for r in state["reports"] if r["when"] == "call")
+            state["call_counts"] = {n: counts[n] for n in expected}
+            state["selected_call_once"] = all(n == 1 for n in state["call_counts"].values())
+            state["nonselected_call_nodes"] = sorted(
+                {r["node"] for r in state["reports"] if r["when"] == "call"} - expected
+            )
+            if exitstatus == 0:
+                assert state["selected_call_once"] and not state["nonselected_call_nodes"]
+                assert not state["IO_attempts"]
+            destination = os.environ.get("RECORYN_MANAGEMENT_AUDIT")
+            if destination:
+                Path(destination).write_text(
+                    json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf8"
+                )
+
+    request.config.pluginmanager.register(Audit(), "g09_management_selected_audit")
+    yield state
+    patch.undo()
+
+
+def _wire_capture(call):
+    try:
+        return call(), None
+    except Exception as error:
+        return None, error
+
+
+def _wire_closed(error, goal="WIRE_EXPECTED_MALFORMED_AFTER_ACTUAL_API", kind="MALFORMED"):
+    assert error is not None, goal
+    assert type(error) is s.SchemaWireError
+    assert (
+        error.kind == kind
+        and str(error) == kind
+        and repr(error) == "SchemaWireError(" + kind + ")"
+        and error.args == (kind,)
+    )
+
+
+_WIRE_FIXTURE = _wire_data()
+_WIRE_CAW = _WIRE_FIXTURE["caw"]
+_WIRE_CAN = _WIRE_FIXTURE["can"]
+
+
+def _wire_plain(value):
+    if dataclasses.is_dataclass(value):
+        return {
+            field.name: _wire_plain(getattr(value, field.name))
+            for field in dataclasses.fields(value)
+        }
+    if type(value) is tuple:
+        return [_wire_plain(x) for x in value]
+    return value
+
+
+@pytest.mark.parametrize("row", _WIRE_CAW, ids=[row["id"] for row in _WIRE_CAW])
+def test_management_wire_types(row, tmp_path, monkeypatch):
+    raw = bytes.fromhex(row["raw_hex"])
+    if row["id"] == "G09a-X-CAW-01":
+        caller = tmp_path / "caller-bindings-hand.json"
+        caller.write_bytes(raw)
+        assert caller.read_bytes() == raw
+    digest_events = []
+    if row["id"] == "G09a-X-CAW-12":
+        positive = _WIRE_FIXTURE["hand6"]["PROGRESS"]["raw_utf8"].encode()
+        with _management_no_io([]):
+            good = s.decode_management(positive, kind=s.ManagementObjectKind.PROGRESS)
+            assert s.encode_management(good) == positive
+        real = s._mp_record_digest
+
+        @functools.wraps(real)
+        def observe(value):
+            digest_events.append(
+                {
+                    "length": len(value),
+                    "file": real.__code__.co_filename,
+                    "globals_schema": real.__globals__ is vars(s),
+                }
+            )
+            return real(value)
+
+        monkeypatch.setattr(s, "_mp_record_digest", observe)
+        assert (
+            len(raw) == 282
+            and hashlib.sha256(raw).hexdigest()
+            == "e5c5016fe2f1fefd627e9341986573fcf5045e98e6924fb3741ab4d2a4ec9ba0"
+        )
+    with _management_no_io([]):
+        document, error = _wire_capture(
+            lambda: s.decode_management(raw, kind=getattr(s.ManagementObjectKind, row["kind"]))
+        )
+        if row["expected"] == "MALFORMED":
+            goal = (
+                "CAW12_MUST_REJECT_AFTER_ACTUAL_PROGRESS"
+                if row["id"] == "G09a-X-CAW-12"
+                else "CANONICAL_RAW_MUST_REJECT_AFTER_ACTUAL_BINDINGS"
+                if row["id"] in {"G09a-X-CAW-25", "G09a-X-CAW-26"}
+                else "CAW_HAND_MUST_REJECT_AFTER_ACTUAL_API"
+            )
+            _wire_closed(error, goal)
+            assert error.__cause__ is None and error.__context__ is None
+        else:
+            assert error is None, "CAW_HAND_NORMAL_MUST_RETURN"
+            assert type(document) is s.BindingsDocument
+            assert _wire_plain(document) == json.loads(raw)
+            assert s.encode_management(document) == raw
+            assert (
+                len(raw) == 1726
+                and hashlib.sha256(raw).hexdigest()
+                == "83bb6f081d0c9f86854da76644fae5127c22dd733cd64eb1f1c72bdd28c289e6"
+            )
+            with pytest.raises(dataclasses.FrozenInstanceError):
+                document.generation = 1
+            assert not any(hasattr(document, n) for n in ("permit", "proof", "owner", "complete"))
+    if row["id"] == "G09a-X-CAW-12":
+        assert (
+            len(digest_events) == 1
+            and digest_events[0]["length"] == 63
+            and digest_events[0]["globals_schema"]
+        ), "CAW12_ACTUAL_DIGEST63_GUARD_REACHED"
+
+
+@pytest.mark.parametrize("row", _WIRE_CAN, ids=[row["id"] for row in _WIRE_CAN])
+def test_management_tagged_null(row):
+    positive = row["positive_raw"].encode()
+    raw = row["raw_utf8"].encode()
+    with _management_no_io([]):
+        good, error = _wire_capture(
+            lambda: s.decode_management(positive, kind=getattr(s.ManagementObjectKind, row["kind"]))
+        )
+        assert error is None, "CAN_COMPLETE_NORMAL_COUNTERPART_MUST_RETURN"
+        assert _wire_plain(good) == json.loads(positive)
+        assert s.encode_management(good) == positive
+        if row["expected"] == "MALFORMED":
+            _, error = _wire_capture(
+                lambda: s.decode_management(raw, kind=getattr(s.ManagementObjectKind, row["kind"]))
+            )
+            _wire_closed(error, "CAN_ONE_FIELD_NEGATIVE_MUST_REJECT_AFTER_ACTUAL_API")
+        else:
+            assert positive == raw
+            if row["id"] == "G09a-X-CAN-01":
+                assert type(good.targets[0].source_pointer) is s.AbsentPointer
+            if row["id"] == "G09a-X-CAN-04":
+                assert (
+                    good.targets[0].source_cut == "UNRESOLVED"
+                    and good.targets[0].source_pointer is None
+                    and good.targets[0].source_digest is None
+                )
+                assert good.disposition == "RECONCILIATION_REQUIRED"
+            if row["id"] == "G09a-X-CAN-05":
+                assert (
+                    type(good.targets[0].source_pointer) is s.FreshPointer
+                    and good.targets[0].source_pointer.epoch == 0
+                )
+            if row["id"] == "G09a-X-CAN-16":
+                assert good.binding_links is None and good.phase == "PREPARING"
