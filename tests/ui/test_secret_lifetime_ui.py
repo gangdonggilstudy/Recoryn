@@ -382,6 +382,8 @@ def test_save_admission(
         with ui_entry_spy(world, monkeypatch) as (forbidden, worker):
             try:
                 panel._action("stt", "save")
+                command_nonce = panel._command_nonces["stt"]
+                command_generation = panel._selection_generation
                 if outcome == 0:
                     assert control.key.text() == K_B
                     assert control.status.text() == "RESOURCE_EXHAUSTED"
@@ -402,6 +404,16 @@ def test_save_admission(
             finally:
                 release.set()
             spin_privacy(lambda: world.credentials.idle)
+            if outcome:
+                spin_privacy(
+                    lambda: any(
+                        reply.kind == "stt"
+                        and reply.tag == "key"
+                        and reply.nonce == command_nonce
+                        and reply.generation == command_generation
+                        for reply in callbacks
+                    )
+                )
             if not panel._closed:
                 settle_privacy(panel)
             assert forbidden == []

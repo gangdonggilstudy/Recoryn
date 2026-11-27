@@ -890,3 +890,34 @@ coverage의 combined 지표는92.7015%이며 line/branch 예산과 구분한다.
 기존 GS05 R1/R2와 별도로 pB의 d127 교차 독립 검토 report LF `a60d09ec863ec92b564eef10d3255b689aa19fca1ace6af6a8ed42120c7e341a`, evidence LF `94e0e228855dd4607ec596b1730112dae1d296fd018c5b69f259613b4c847a5e`는 제품 OPEN0이다. 독립435 입력 일치, 실제 선택30/API3 PASS·단일부정2 목표 FAIL/INVALID0을 확인했다. 이 제한된 독립 실행을 전체30145 실행으로 합산하지 않는다.
 
 선행 복구 [CI45845073225](https://github.com/gangdonggilstudy/Recoryn/actions/runs/45845073225)의 core3.11·core3.13·optional-runtime은 모두 실제 success다. 이는 d127 기준의 선행 게이트이며 GS05 통합판 자체의 원격 성공은 아니다. 정확 통합 후보는 실효32와 이 결과 덧붙임, 공식 리뷰, GS05 배정만의 assignments 총34파일이다. 최종 문서·후보의 독립 대조, 정확 tree·부모/ref·실제 전체 commit 메시지/trailer0, 정상 push와 GS05 원격 CI를 별도 확인한다. 실제 Windows vault/서비스 인증·실장비·실음성·모델·유료 호출·메모리 완전 소거·전원 장애는 미검증이다.
+
+
+## 14. CI864: 저장 시험의 native idle과 GUI reply 완료 구분
+
+이 절은 앞의 계약·결과 bytes를 보존하는 덧붙임이다. 기준은 공개 `864e238961dc00807114d3dd6ce14f2e2eb5ee79`이며 원격 [CI45914988082](https://github.com/gangdonggilstudy/Recoryn/actions/runs/45914988082)의 core3.11은 `test_save_admission[GS05-S-2-0]`에서 1 FAIL/30,165 PASS였다. 기대는 VAULT_WRITE_FAILED, 관측은 키 변경 접수됨·실제 완료 확인 중이었다. 같은 HEAD의 core3.13과 optional-runtime은 성공했다. 이전 GS05·S1·규범 검증 결과와 이 새 실패를 구분한다.
+
+### 14.1 기존 의미와 수정 범위
+
+CredentialService는 실제 native 작업 뒤 queue/pending을 내리고 나서 KeyResult callback을 호출한다. idle과 backend.idle은 해당 key reply가 Qt GUI slot에 전달·소비됐다는 확인이 아니다. 기존 spin/settle이 idle과 view_pending을 확인해도 아직 emit하지 않은 key reply를 보장하지 않는다.
+
+수정은 `test_save_admission` 한 함수뿐이다. save 접수 직후 원 command nonce·selection generation을 캡처하고, 접수 성공 outcome에서만 callbacks 중 kind=stt/tag=key/같은 nonce·generation인 reply를 기존 bounded spin으로 기다린다. 그 뒤 원 settle과 모든 단언을 그대로 수행한다. 접수 거부 outcome0은 ACK를 기다리지 않는다. view1/2/3의 이전 reply 수신과 선택 변경·refresh·close 뒤 화면 반영 거부는 별도다.
+
+제품·공통 helper·timeout·sleep·정확 오류 문구·원16 tuple/ID·즉시 비밀 지움·native 비차단·pending·stale 거부·비밀 비노출을 변경하지 않는다. 모든 기존 Assert AST와 다른 top-level AST는 동일하다. GS05 의미781/기존 감사1 및 전체 선언 분모는 유지하며 새로운 formal ID·고유 fault를 추가하지 않는다.
+
+### 14.2 직접 검증과 반례
+
+작성자 p8은 원 archive864+시험 한 파일 후보의 사본에서 계측 없는 모듈124행+기존 감사1, 총125 PASS/오류·skip0을 확인했다. command14.196381초이며 60초 이하다. 원781 primary 수집 누락·중복0, 기존 ID와 실행을 대조했다. Ruff check/format은 통과했다.
+
+그 전 조사에서는 로컬3.13 원S16이 자연 실패 없이 통과했다. 실제 native 오류 후 emit 직전만 event로 유보하면 idle=True이고 GUI 문구가 pending인 상태에서 원412행 표시 assertion이 실패했다. 같은 실제 KeyResult/slot을 진행시키면 VAULT_WRITE_FAILED가 표시됐다. preview의 S16과 같은 barrier target은 통과했다. 조사34선택은17.785297초이고 목표 실패와 teardown error0을 분리했다.
+
+수정 비작성자 pB는 자기 사건 순서를 고정한 별도 event/barrier로 원S16 정상16·수정 target1 PASS, original target의 원표시 assertion FAIL1, 추가 ACK 한site만 비활성화한 target assertion FAIL1을 확인했다. 직접19선택/17.887189초, error·skip·MASKED·INVALID0이다. 동일 반례·같은 ACK site의 재확인을 고유 fault 여러 개로 더하지 않는다. 실행 출처·부모/실제 spawn·정확 source·동일 KeyResult와 실제 GUI slot을 확인했고 원제품/다른시험은 byte 그대로다.
+
+시험 파일까지 확장한 임의 mypy 선택은 원본에도 있던 오류5건으로 실패했고 동일 메시지/새 오류0을 보존한다. 이는 PASS가 아니다. 저장소 CI의 mypy 대상은 src/recoryn·scripts·packaging이며 해당 실제 gate 및 정확 통합 tree를 별도로 확인한다. 최초 EOL/경로/후처리 가정 오류는 원 로그와 함께 인프라·정적 실패로 보존하고 목표 assertion 검출과 구분한다.
+
+### 14.3 결론의 범위와 공개 게이트
+
+관측된 시험 완료 대기의 공백을 보강한 것이며 원격3.11 당시 상세 스케줄은 미확정이다. 로컬 결정적 반례가 그 당시 사건 순서를 직접 증명하지 않는다. 실제 로컬3.11·실vault·실장비·음성·모델·유료 호출·전원 장애는 미검증이다. 제품 source의 새 full/coverage/wheel 성공을 이 시험 수정의 결과로 발명하지 않는다.
+
+X00의 정확 파일/tree·독립 검토·실제 commit 전체 메시지/trailer0·원격 ref 확인 및 복구판 원격3.11/3.13/optional 전체 CI 성공은 별도 게이트다. 현재 실패와 관련한 복구 단위 외 후속 G09 기능 공개는 복구 원격 성공 전까지 보류한다. private API/codec 후보는 이 단위에 포함하지 않는다.
+
+X00는 위 동일 시험 blob와 복구 문서4파일의 별도 archive864 사본에서 실제 CI 대상 Ruff check/format 및 mypy src/recoryn·scripts·packaging을 실행해 모두 통과했다. 근거는 `build/ci864-exact4-static/result.json`이다. source·비소유 파일 raw 불변이며, 이후 문서 상태 전사의 차이는 runtime source·시험과 분리해 최종 tree에서 대조한다. 기존 시험 mypy 오류5는 숨기지 않고 추가 범위로 확장하지 않는다. 이 결과는 새 로컬 full/coverage/wheel 또는 복구 원격 성공이 아니다.
