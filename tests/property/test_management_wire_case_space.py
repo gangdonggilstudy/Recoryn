@@ -259,6 +259,35 @@ def _private_current_profile_nodes():
     }
 
 
+def _private_schema_read_error_nodes():
+    base = "tests/unit/test_schema_catalog.py::"
+    labels = (
+        "READ_OK",
+        "UNKNOWN_COMPONENT",
+        "MISSING_REQUIRED",
+        "CURSOR_ERROR",
+        "ROW_FACTORY_ERROR",
+        "EXECUTE_ERROR",
+        "FETCH_ERROR",
+        "CLOSE_ONLY",
+        "OTHER_SQLITE_ERROR",
+        "DUAL_SQLITE",
+        "CLOSE_NONSQLITE",
+        "DUAL_CLOSE_NONSQLITE",
+        "NONSQLITE_VALUEERROR",
+        "INTERRUPT",
+        "EXPECTED_OUTSIDE",
+        "INDEX_READ_ERROR",
+        "TABLE_READ_ERROR",
+        "PRIVATE_WIRE_OK",
+        "LAST_STAMP_ERROR",
+        "LAST_STAMP_CHANGED",
+    )
+    return {base + "test_private_schema_read_error_seam[" + label + "]" for label in labels} | {
+        base + "test_private_schema_read_error_seam_literal_audit",
+    }
+
+
 def test_management_wire_selected_scope(request):
     own = (
         "tests/unit/test_schema_catalog.py::",
@@ -269,7 +298,11 @@ def test_management_wire_selected_scope(request):
     state = request.config._g09_management_audit
     assert selected == state["selected"]
     assert len(selected) == len(set(selected))
-    assert set(selected) <= set(_WIRE_FIXTURE["planned_nodes"]) | _private_current_profile_nodes()
+    assert set(selected) <= (
+        set(_WIRE_FIXTURE["planned_nodes"])
+        | _private_current_profile_nodes()
+        | _private_schema_read_error_nodes()
+    )
     assert not any(
         item.get_closest_marker("skip") or item.get_closest_marker("xfail")
         for item in request.session.items

@@ -565,6 +565,56 @@ def _verify_table(connection: sqlite3.Connection, obj: _Shape) -> None:
         raise _invalid()
 
 
+def _component_shape_wire_read(connection: sqlite3.Connection, expected: _Shape) -> bytes:
+    stamp = _read(connection, "PRAGMA main.schema_version")
+    rows = _read(connection, "SELECT type,name,tbl_name,sql FROM main.sqlite_schema")
+    required = {obj["name"]: obj for obj in expected["objects"]}
+    all_objects = {obj["name"]: obj for name in _CATALOG for obj in _expected(name)["objects"]}
+    by_name = {str(row[1]).lower(): row for row in rows}
+    selected_tables = {name for name, obj in required.items() if obj["kind"] == "table"}
+    for kind, raw_name, raw_table, _ in rows:
+        name, table = (str(raw_name).lower(), str(raw_table).lower())
+        if table in selected_tables and kind in {"index", "trigger"}:
+            if name.startswith("sqlite_autoindex_") and kind == "index":
+                continue
+            known = all_objects.get(name)
+            if known is None or known.get("table") != table or known["kind"] != kind:
+                raise _invalid()
+    observed: dict[str, _Shape] = {}
+    for name, obj in required.items():
+        row = by_name.get(name)
+        if row is None or row[0] != obj["kind"] or (not isinstance(row[3], str)):
+            raise _invalid()
+        if obj["kind"] == "table":
+            parsed = _objects(row[3])
+            if len(parsed) != 1 or parsed[0]["name"] != name:
+                raise _invalid()
+            observed[name] = parsed[0]
+            _verify_table(connection, parsed[0])
+    for name, obj in required.items():
+        if obj["kind"] == "table":
+            continue
+        parsed = _objects(by_name[name][3], observed)
+        if len(parsed) != 1 or parsed[0]["name"] != name or parsed[0]["table"] != obj["table"]:
+            raise _invalid()
+        observed[name] = parsed[0]
+        if obj["kind"] == "index":
+            info = _read(connection, f"PRAGMA main.index_list({_quote(obj['table'])})")
+            found = [row for row in info if str(row[1]).lower() == name]
+            if (
+                len(found) != 1
+                or bool(found[0][2]) != parsed[0]["unique"]
+                or bool(found[0][4]) != (parsed[0]["where"] is not None)
+                or (_index_keys(connection, name) != parsed[0]["keys"])
+            ):
+                raise _invalid()
+    if stamp != _read(connection, "PRAGMA main.schema_version"):
+        raise _invalid()
+    return _wire(
+        {**expected, "objects": sorted(observed.values(), key=lambda o: (o["name"], o["kind"]))}
+    )
+
+
 def component_shape_wire(connection: sqlite3.Connection, component: str) -> bytes:
     """Describe one component on a caller-owned connection using schema reads only.
 
@@ -573,53 +623,7 @@ def component_shape_wire(connection: sqlite3.Connection, component: str) -> byte
     """
     expected = _expected(component)
     try:
-        stamp = _read(connection, "PRAGMA main.schema_version")
-        rows = _read(connection, "SELECT type,name,tbl_name,sql FROM main.sqlite_schema")
-        required = {obj["name"]: obj for obj in expected["objects"]}
-        all_objects = {obj["name"]: obj for name in _CATALOG for obj in _expected(name)["objects"]}
-        by_name = {str(row[1]).lower(): row for row in rows}
-        selected_tables = {name for name, obj in required.items() if obj["kind"] == "table"}
-        for kind, raw_name, raw_table, _ in rows:
-            name, table = (str(raw_name).lower(), str(raw_table).lower())
-            if table in selected_tables and kind in {"index", "trigger"}:
-                if name.startswith("sqlite_autoindex_") and kind == "index":
-                    continue
-                known = all_objects.get(name)
-                if known is None or known.get("table") != table or known["kind"] != kind:
-                    raise _invalid()
-        observed: dict[str, _Shape] = {}
-        for name, obj in required.items():
-            row = by_name.get(name)
-            if row is None or row[0] != obj["kind"] or (not isinstance(row[3], str)):
-                raise _invalid()
-            if obj["kind"] == "table":
-                parsed = _objects(row[3])
-                if len(parsed) != 1 or parsed[0]["name"] != name:
-                    raise _invalid()
-                observed[name] = parsed[0]
-                _verify_table(connection, parsed[0])
-        for name, obj in required.items():
-            if obj["kind"] == "table":
-                continue
-            parsed = _objects(by_name[name][3], observed)
-            if len(parsed) != 1 or parsed[0]["name"] != name or parsed[0]["table"] != obj["table"]:
-                raise _invalid()
-            observed[name] = parsed[0]
-            if obj["kind"] == "index":
-                info = _read(connection, f"PRAGMA main.index_list({_quote(obj['table'])})")
-                found = [row for row in info if str(row[1]).lower() == name]
-                if (
-                    len(found) != 1
-                    or bool(found[0][2]) != parsed[0]["unique"]
-                    or bool(found[0][4]) != (parsed[0]["where"] is not None)
-                    or (_index_keys(connection, name) != parsed[0]["keys"])
-                ):
-                    raise _invalid()
-        if stamp != _read(connection, "PRAGMA main.schema_version"):
-            raise _invalid()
-        return _wire(
-            {**expected, "objects": sorted(observed.values(), key=lambda o: (o["name"], o["kind"]))}
-        )
+        return _component_shape_wire_read(connection, expected)
     except sqlite3.Error:
         raise _invalid() from None
 

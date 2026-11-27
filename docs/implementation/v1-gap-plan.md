@@ -128,3 +128,23 @@ source의 새 Spec/helper는 private이며 inspect_schema/SchemaInspection CURRE
 앞선 D14의 작성 전·CI 대기 문구는 해당 문단 작성 당시의 사실이다. 이후 선행 공개7cdf의 실제 원격 CI45962375807에서 optional-runtime·core3.11·core3.13 성공과 원격 ref/tree·전체 메시지/trailer0을 확인했다. 작성자 private53/5.403초·정확3 결합402·원S1 r2 21/관리349/관련45·원4개 목표 assertion FAIL을 인수했다. 비작성자의 새 직접53·독립 손12·결합402·독립2개 site 목표3 FAIL/15.508초도 별도 인수했다. CPR-01의 catalog 모순 경로 증거 공백과 초기 후처리 INVALID 이력은 보존했으며, 후속 고정 정상6/fault6의 실제 RuntimeError·raise 도달·I/O0 및 registry 직접 구성 근거를 원 수집 분모와 구분해 검토했다. [private logical 독립 검토](../reviews/g09a-current-profile-logical-review.md)는 공급된 논리 목록의 명명 후보·고정 expected 반환과 결속에 한정한다.
 
 원 관리349/formal70/4105/명시245와 기존 공개 codec/S1·fixture는 보존했다. 신규 private semantic51+감사1+property1=53이므로 세 파일 선택은402이며, catalog fault 보완12는 별도 내부 결함 주입 증거로 제품 수집 증가가 아니다. 최종 정확7 tree·전체 수집 기대30547/core/coverage7/offline wheel·새 공개/새SHA CI3은 이 스냅샷 시점에는 실행하지 않았다. helper5의 새 실제 private origin/smoke3도 후속 전체 gate에서 검증한다. 실제 결과는 동결 tree/commit/ref/원격 run과 X00 인수 증거로 별도 결속한다. raw SQLite/engine 투영·실제 shape/metadata/pointer/단일DB 완전성·CURRENT·reader/owner/ACK/입장·금융/삭제·전체 G09a/v1·실장비 완료로 확대하지 않는다.
+
+
+## G09a D15: S1 읽기 오류 경계의 한정 증분
+
+앞선 D14 검증 전 스냅샷은 그 시점의 사실로 보존한다. 이후 정확 tree16f4da1f8489c963b027c4bfc21752a834687828에서 로컬30,547건·coverage7·offline wheel Python87·copy/wheel 부모와 실제 spawn 출처/원 smoke3를 인수했다. 같은 tree를 공개 da02c88ca1a6a1aa8e744372fa965c7f4defad60으로 통합했고 CI45981847846의 core3.11/core3.13/optional 세 작업 실제 성공·fresh remote=HEAD=tracking/tree·유일 부모·전체 메시지/trailer0을 재확인했다. 이 완료는 공급된 논리 객체 목록의 private current 후보 선택에 한정한다.
+
+D15는 기존 S1 public 동작을 유지하면서 원 try 몸체를 private 읽기 함수로 분리하는 증분이다. public expected lookup의 catch 밖 위치·닫힌 ValueError·caller connection/transaction·원 cleanup 우선순위·기존 S1/codec/DTO/fixture는 보존한다. 새 classifier/reason/inspect_schema·retry·최초 오류 보존/native cleanup 보장·운영 권위를 추가하지 않는다.
+
+원 planned349/private53=402에 로컬 seam 의미20+literal audit1=21을 별도 유한 allow하여 정확3의 예상 선택은423이다. caller route35와 node21·기존 S1 21의 중복 포함을 구분하고 formal70/4105/명시245·보류10은 변하지 않는다. 수락 조건은 고정 손 정상7read·wire490/오류·context/cleanup/마지막 stamp 도달·원 단언/역 AST·실제 선택/phase/XML·6개 단일 site 및 M04 control 정정의 보존·비작성자 제품 검토다. 작성자 PASS나 준비 도구를 전체 검증 완료로 확대하지 않는다.
+
+최종 정확7 tree의 수집 기대30568/core 단일 실행·coverage7/offline wheel87·copy/wheel 부모/실spawn 함수5와 원 smoke3+seam 정상2·실제 선행/새SHA CI3은 별도로 닫아야 한다. 이 절은 범위와 완료 조건이며 D15 전체 검증·공개·새 CI 성공 선언이 아니다. [D15 한정 계약](../testing/g09-migration-backup-cases.md)과 작업 배정표의 실제 실행/독립 인수 근거를 따른다. readonly/whole-file/실제 shape·metadata·driver mapping·engine/owner/ACK/C1/CR/권위 및 전체 G09a/v1·Windows 실장비는 여전히 후속이다.
+
+
+### D15 통합 준비 상태 갱신(전체 검증 전 스냅샷)
+
+D15의 앞선 완료 조건은 유지한다. 이후 고정 source50baf4ac/unit eaabc9f8/root property9388dded에서 작성자 신규21/route35·준비포함4.448초, 원402 및 결합423·단일6목표 assertion FAIL·정적3종을 인수했다. 작성자175봉인+final176과 실제 phase/XML 각1·오류/skip/xfail0·source 역 module AST/원 unit prefix를 X00이 직접 대조했다. 준비와 종료감사에서 서로 다른 archive raw/Git-show LF·공유 raw/archive raw 가정 오류2가 있었고 원본/정정 증거를 보존했다. 제품·시험·손 기대 변경이나 해당 오류로 인한 시험 재실행은 없었다.
+
+비작성자 p8의 원21/35·준비포함4.760초와 결합423·5.140초·독립6가족/11관측 및 원 M02/M06 재적용의 실제 목표 assertion FAIL2·MASKED/변이INVALID0·제품OPEN0을 별도 인수했다. 독립 fake의 최초4관측은 marker 문자열2개가 봉인 값과 달랐으며 원 코드/결과를 보존한 뒤 해당4만 정정 재확인했다. 유효11의 계보는 원7+정정4이고 최초 변형4를 exact literal 성공으로 소급하지 않는다. [독립 제품 검토](../reviews/g09a-sqlite-read-error-seam-review.md)는 이 좁은 읽기 경계에 한정한다. X00은 검토봉인75/고정입력197과 정상·두 mutant의 실제 파일 각449/비overlay446 raw를 재해시했다.
+
+원 common 계약과 이 상태 전사, H03 snapshot·공식 review를 정확7에 묶어 검증한다. helper5의 정적 변경 인수는 실행 성공이 아니다. 정확 최종 tree의 수집 기대30568·단일 core/full·coverage7·offline wheel87·copy/wheel 부모와 실제 spawn의 함수5/원 smoke3+seam 정상2·통합/공개/새SHA CI3은 이 스냅샷 시점에 아직 실행하지 않았다. 후속 결론은 실제 tree/commit/ref/run 및 X00의 별도 인수로 결속하며 전체 observer/G09a/v1·권위·Windows 실장비 완료로 확대하지 않는다.

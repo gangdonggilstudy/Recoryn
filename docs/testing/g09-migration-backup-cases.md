@@ -1698,3 +1698,55 @@ PRIVATE-CP34는 원 손자료의 중복 입력 계약 미결 기대를 D14의 �
 검증은 고정BASE+정확overlay·TEMP cwd/rootdir/config/PYTHONPATH·부모/실spawn actual function source/hash·새helper call SQL/I-O0·선택/unique/call/XML각1 및 독립 제품 검토를 요구한다. 원S1 회귀는 실제 기존 TEMP fixture(SQLite 파일)를 원함수/기대 그대로 사본에서 사용한다. 초기 memory-only 지시가 이를 차단한 실패와 metadata 직렬화 오류는 원본/새 시도 이름으로 보존하며 성공으로 소급하지 않는다. 사용자/서비스DB·실제 readonly/WAL probe·실음성/모델/유료 호출은 별도다.
 
 X00의 명시 activation은 같은 immutable BASE에서 격리 후보 작성만 선행CI대기 중 병행하도록 했다. 공유 통합/commit/push 전 실제 같은SHA 선행CI3 성공을 확인하며, source/문서/독립결과가 닫힌 정확tree에서 full/coverage7/offline wheel을 직렬 검증한다. 공개 후 새SHA CI3도 별도다. 작성자는 자기 결과를 최종 승인하지 않는다.
+
+
+## D15: S1 private 읽기 오류 경계와 공개 호환
+
+이 증분은 기존 `component_shape_wire(connection, component)`의 읽기/검증 몸체를 private `_component_shape_wire_read(connection, expected)`로 분리한다. public 서명·docstring·catch 밖 `_expected(component)`와 기존 sqlite3.Error→정확 ValueError('Unsupported component shape')/from None은 보존한다. private는 내부 trusted expected model을 받으며 현재 cleanup을 거쳐 밖에 남은 SQLite 오류를 직접 전파한다. 다른 public API/DTO·inspect_schema·오류 classifier/reason·retry/rollback/connection 소유권을 추가하지 않는다. 새 frame/줄 번호까지 원본과 같다고 주장하지 않는다.
+
+`_read`의 cursor 생성은 try 전이며 실패하면 close 시도0이다. 생성 뒤 row_factory/execute/fetch는 finally close1을 시도한다. close 오류가 앞 오류나 반환을 가리는 원 우선순위를 보존하며 최초 오류 보존/native 자원 회수 성공을 새로 보장하지 않는다. from None은 표시 억제이며 __context__/traceback/비밀 삭제가 아니다. 숨은 context를 정식 classifier API로 쓰거나 raw SQL/path/오류 객체를 출력하는 기능은 없다.
+
+### 유한 손 입력과 primary
+
+다음20은 관리 fixture/formal70·전체4105/명시245와 구분되는 로컬 seam 입력이다. primary는 모두 `tests/unit/test_schema_catalog.py::test_private_schema_read_error_seam[<label>]`이다. 원 S1/golden/관리 wire 입력·단언·private current53을 고치지 않는다.
+
+| label | 발생 경계·독립 손 기대 |
+| --- | --- |
+| READ_OK | 직접 _read rows 정상 반환·close 정상1 |
+| UNKNOWN_COMPONENT | public lookup의 정확 shape 오류·cursor0 |
+| MISSING_REQUIRED | 두 번째 schema rows=[] 뒤 shape 오류·close 정상2 |
+| CURSOR_ERROR | 첫 cursor 생성의 SQLite E·close0 |
+| ROW_FACTORY_ERROR | 첫 setter의 E 뒤 close 정상1 |
+| EXECUTE_ERROR | 첫 execute의 E 뒤 close 정상1 |
+| FETCH_ERROR | 첫 fetch의 E 뒤 close 정상1 |
+| CLOSE_ONLY | 첫 rows 성공 뒤 close C·정상반환0 |
+| OTHER_SQLITE_ERROR | OperationalError 외 DatabaseError E도 private identity/public 닫힌 오류 |
+| DUAL_SQLITE | execute E 뒤 close C가 생존·C.context E·public closed.context C |
+| CLOSE_NONSQLITE | RuntimeError C를 원 identity로 전파 |
+| DUAL_CLOSE_NONSQLITE | SQLite E 뒤 RuntimeError C/context E를 전파 |
+| NONSQLITE_VALUEERROR | 주입 ValueError E identity 유지·새 shape 오류로 덮지 않음 |
+| INTERRUPT | 실제 case call 내부 KeyboardInterrupt E·close 정상1 |
+| EXPECTED_OUTSIDE | public actual lookup의 subclass hash E·catch 밖 전파/cursor0 |
+| INDEX_READ_ERROR | _index_keys 첫 index_xinfo execute E·close 정상1 |
+| TABLE_READ_ERROR | _verify_table 첫 table_xinfo execute E·close 정상1 |
+| PRIVATE_WIRE_OK | 정상7read 뒤 private/public wire490·close 정상7 |
+| LAST_STAMP_ERROR | 정상6read 뒤 마지막 fetch E·close 정상7·최종 wire0 |
+| LAST_STAMP_CHANGED | 마지막 rows7→8·read/close 정상7 뒤 shape 오류·최종 wire0 |
+
+READ_OK·UNKNOWN_COMPONENT·EXPECTED_OUTSIDE·INDEX_READ_ERROR·TABLE_READ_ERROR는 각 단일 caller route다. 나머지15는 private/public 각 route를 새 fake/cursor/expected model·E/C·counter로 실행하므로 caller 관측35다. 같은20 parameter를35 pytest node로 바꾸지 않는다. 별도 `test_private_schema_read_error_seam_literal_audit`1은 손 literal/hash/목록을 감사하며 제품 call0이다. 의미20·node21·caller35와 재관측/변이 control은 서로 다른 수치다.
+
+정상 counterpart는 원 SC06 jobs.checkpoints DDL와 고정 golden306337B/SHA8b3611904a5db6371d2ebef831f7477a9cd8fa2c6b13ad55f0774417911dedbb의 hand model/wire490/FP를 재사용한다. 기대값을 제품 parser/catalog/encoder에서 생성하지 않는다. fake는 stamp7→sqlite_schema table/autoindex→table_xinfo→foreign_key_list→index_list→index_xinfo→stamp7의 고정 SQL/rows를 공급하고 실제 DB를 열지 않는다. fake DDL cell은 원 입력 literal이며 SQLite가 저장한 bytes나 referenced jobs의 실재·whole DB를 인증하지 않는다.
+
+주입 E/C 생성 초기 cause/context None·suppress False와 call 후 chain을 구분한다. E/C는 동일 객체 identity로, 제품이 생성한 SHAPE/PUBLIC_CLOSED는 실제 capture한 exact type/args/str/repr/cause/context/suppress로 검사한다. expected 예외를 미리 만들거나 context를 심지 않는다. 활성 except 밖의 새 route로 context 오염을 막으며 subclass hash/KeyboardInterrupt를 setup/수집에서 실행하지 않는다. 마지막 오류/변화는 실제 read7/cleanup 이후를 확인하고 선행 내부 canonical _wire까지0으로 요구하지 않는다.
+
+### 원402 결속·단일 site·검증 경계
+
+기존 planned349/private53=402와 신규21은 교집합0이고 허용 union은423이다. property 보조는 새 exact21만 유한 allow한다. wildcard/파일 전체 허용·unknown label 수락은 하지 않으며 원 selected==state·unique·skip/xfail/actual call 감사와 fixture349를 유지한다. S1 21은402 안에 이미 포함되므로 다시 더하지 않는다. 예상 전체30568=기존30547+새21은 실제 collect 전 산술이다.
+
+단일 site6은 private SQLite catch 삽입, public handler 제거, public handler Exception 확대, _read close 제거, public expected lookup을 try 안으로 이동, 마지막 stamp 비교 뒤 거부만 생략이다. 실제 source/span·정상 control·목표 assertion을 사본별로 고정하고 import/setup/teardown/timeout INVALID·앞 guard MASKED·생존을 목표 FAIL과 분리한다. public handler 제거를 Error→DatabaseError 축소 전수 검증으로 표현하지 않는다.
+
+M04의 close 제거는 정상7read/full trace에도 영향을 준다. 정상 사본 PRIVATE_WIRE_OK 양 route와 READ_OK PASS를 먼저 보존하고, mutant의 영향 없는 기존 UNKNOWN_COMPONENT control PASS 뒤 READ_OK의 실제 rows 반환/close event 단언 FAIL을 검출한다. mutant PRIVATE_WIRE_OK 단언을 완화해 control PASS를 만들지 않는다. 다른 site의 정상 PRIVATE_WIRE_OK control은 유지한다. 원 계획의 M04 control 모순 정정은 별도 이력으로 보존한다.
+
+작성 source/unit2와 root property1은 별도 소유이며 정확3 입력·원 archive449/비overlay446 raw·부모/실spawn actual source·기존 단언/역 AST를 확인한다. archive raw와 Git-show LF를 혼동한 준비/종료감사 오류를 원본/새 감사 이름으로 보존하며 LF 일치로 비소유 raw 불일치를 숨기지 않는다. 신규21 준비 포함60초·combined423 wall·전체/core 시간을 별도로 측정한다. 선택/unique/phase/XML 각1·route35·신규 fake call 실제 I/O0과 기존 S1의 자기 격리 TEMP 파일DB 회귀를 구분한다.
+
+비작성자 제품 검토·정확 최종7 tree의 단일 full/core·coverage7·offline wheel·copy/wheel 부모/실spawn 함수5 출처와 원 smoke3+seam 정상2, 선행/새 SHA 실제 CI3은 별도 gate다. 계약·허용 node·작성자 보고·정적 검토만으로 PASS를 선언하지 않는다. 실제 SQLite busy/corrupt/permission·원 driver 오류 mapping·raw engine/WAL/readonly cut·whole-file/current·metadata/pointer·owner/ACK/입장/C1/CR·금융/삭제/실장비·전체 G09a/v1은 이 seam으로 닫히지 않는다.
