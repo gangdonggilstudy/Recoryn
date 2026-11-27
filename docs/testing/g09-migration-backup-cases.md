@@ -1608,3 +1608,93 @@ MW1은 legacy physical membership에2만 추가한 단일 site를 N01이 검출�
 필수 gate는 준비 포함 선택349 wall60초·단독 legacy/property/not-ui 및 실제 selected call/XML 각1·부모/실spawn의 source/공개 함수/공유 identity·관리 API I/O0·S1 readonly SQLite/연결 보존, 정적3종·관련 회귀·두 단일site, 동결 새 제품 결속 독립 검토와 공용 append 독립 검토다. X00가 최종 정확8 tree full core/coverage7/offline wheel87 raw·실제 wheel 부모/spawn·실제 commit/tree/메시지/trailer0·normal push/ref·새 SHA CI3을 종결한다. 선행60f4의 세 CI 실제 성공 전 의존 공개는 금지한다. 검증 실패·예산 초과 시 원 반례와 결과를 보존하고 분모/단언/게이트를 낮추지 않는다.
 
 이 조합의 ABSENT/NULL/빈 sidecars/profile/digest는 실제 SQLite 표·metadata/receipt/checkpoint·media/삭제/건강·내용/현재성/권한의 부재 또는 일치를 증명하지 않는다. LOP01/02·다른 R/K/physical·nonempty/post·actual inspector/profile·plan/chain/FILE/owner/receipt/witness/ACK/등록/복원·실장비는 미종결이다. 이 codec 수락은 어떤 I/O·등록·삭제·복구 허가도 발급하지 않는다. rollback은 순수 코드/문서 단위이며 DB/data/grant 복원을 섞지 않는다.
+
+## D14: private logical current profile 후보의 유한 계약
+
+이 단위는 `_current_profile_candidate`가 공급된 **논리 owned-object 목록**에서 명명 current30 후보와 고정 expected를 제공하는 범위다. actual 파일/SQLite reader·engine 투영·schema CURRENT·입장 권위의 완성이 아니다. 공개7cdf/tree316fc를 고정 BASE로 삼고, 작성2와 root 선택감사 보조1을 격리 검증한다. 이 계약의 기술만으로 제품/시험 통과나 새 공개를 주장하지 않는다.
+
+### domain·타입·오류
+
+`schema._current_profile_candidate(logical_objects: tuple[tuple[str,str],...]) -> _CurrentProfileSpec | None`은 private다. caller profile/FP·complete/required·catalog override·Path/connection/owner 인자를 추가하지 않는다. `_CurrentProfileSpec`은 frozen/slots/repr=False이며 필드 순서는 `profile_id`, `components`, `owned_objects`, `registry_rows`다. components는(name,version,고정FP) tuple, owned_objects는(name,kind) tuple, registry_rows는(component,version,FP,profile) tuple이며 정렬/중첩 불변을 유지한다.
+
+outer/pair는 exact tuple, pair 길이는2, name/kind는 exact str, name은 nonempty, kind는 table/index/view/trigger다. 잘못된 typed 입력·빈 이름·같은 name 중복(같은/다른kind)은 정확 builtin ValueError다. unknown의 유효 이름·명명형과 다른 전체 목록·빈 tuple은 None이다. catalog의 중복 profile/name/signature·row/component 모순은 닫힌 RuntimeError이며 NO_MATCH로 숨기지 않는다. raw 입력/path/SQL을 오류/repr에 붙이지 않는다. subclass/duck getter/coercion/strip/casefold/dedup을 허용하지 않고 실제 call 구간 getter/iteration/hash/equality/string/coercion0을 확인한다.
+
+고정 생산 literal12 component/정확30 구성만 사용하며 fixture/build/observed profile·FP를 expected로 되돌려 인증하지 않는다. 시험 expected는 versioned golden306337B와 별도 hand model/literal에서 얻고 제품 parser/catalog/encoder에서 생성하지 않는다. 정상30의 전체 component/version/FP/owned pair/registry rows를 비교한다. 원S1 두 공개 함수/기존 함수·데코레이터/parser/catalog·codec API6/DTO34/alias8과 원SC12/FP8·관리349/raw fixture를 보존한다.
+
+### private51의 정확 primary
+
+private51은 실제 DB/workflow primary와 다른 직접 함수 입력이다. formal70/4105/명시245 증분0이며 같은 입력의 재관측과 실제 운영 PASS를 혼합하지 않는다. 정상30/spec, 유효불일치8/None, typed부정13/ValueError다. 아래 primary는 `tests/unit/test_schema_catalog.py::test_private_current_profile_candidate[ID]`에 대응한다. 정상 순서는 독립 hand의 명명30 배열이고, 이후 입력은 정상 F2_J의 명시 한 차원만 바꾼다(vector3은 별도 component-vector 변화다).
+
+PRIVATE-CP34는 원 손자료의 중복 입력 계약 미결 기대를 D14의 정확 builtin ValueError로 명시 적응하며, 원 hand bytes/oracle와 미결 이력은 보존한다.
+
+| ID | explicit supplied input | expected |
+| --- | --- | --- |
+| PRIVATE-CP01 | F2_J | spec: F2_J |
+| PRIVATE-CP02 | F2_L | spec: F2_L |
+| PRIVATE-CP03 | F2_LC | spec: F2_LC |
+| PRIVATE-CP04 | F2_LC_CONS | spec: F2_LC_CONS |
+| PRIVATE-CP05 | F2_LC_CONS_COST1 | spec: F2_LC_CONS_COST1 |
+| PRIVATE-CP06 | F2_LC_CONS_COST2 | spec: F2_LC_CONS_COST2 |
+| PRIVATE-CP07 | F2_LC_COST1 | spec: F2_LC_COST1 |
+| PRIVATE-CP08 | F2_LC_COST2 | spec: F2_LC_COST2 |
+| PRIVATE-CP09 | F2_LJ | spec: F2_LJ |
+| PRIVATE-CP10 | F2_LJC | spec: F2_LJC |
+| PRIVATE-CP11 | F2_LJC_CONS | spec: F2_LJC_CONS |
+| PRIVATE-CP12 | F2_LJC_CONS_COST1 | spec: F2_LJC_CONS_COST1 |
+| PRIVATE-CP13 | F2_LJC_CONS_COST2 | spec: F2_LJC_CONS_COST2 |
+| PRIVATE-CP14 | F2_LJC_COST1 | spec: F2_LJC_COST1 |
+| PRIVATE-CP15 | F2_LJC_COST2 | spec: F2_LJC_COST2 |
+| PRIVATE-CP16 | F2_LJ_CONS | spec: F2_LJ_CONS |
+| PRIVATE-CP17 | F2_LJ_CONS_COST1 | spec: F2_LJ_CONS_COST1 |
+| PRIVATE-CP18 | F2_LJ_CONS_COST2 | spec: F2_LJ_CONS_COST2 |
+| PRIVATE-CP19 | F2_LJ_COST1 | spec: F2_LJ_COST1 |
+| PRIVATE-CP20 | F2_LJ_COST2 | spec: F2_LJ_COST2 |
+| PRIVATE-CP21 | F2_L_CONS | spec: F2_L_CONS |
+| PRIVATE-CP22 | F2_L_CONS_COST1 | spec: F2_L_CONS_COST1 |
+| PRIVATE-CP23 | F2_L_CONS_COST2 | spec: F2_L_CONS_COST2 |
+| PRIVATE-CP24 | F2_L_COST1 | spec: F2_L_COST1 |
+| PRIVATE-CP25 | F2_L_COST2 | spec: F2_L_COST2 |
+| PRIVATE-CP26 | F2_S_CONS | spec: F2_S_CONS |
+| PRIVATE-CP27 | F2_S_CONS_COST1 | spec: F2_S_CONS_COST1 |
+| PRIVATE-CP28 | F2_S_CONS_COST2 | spec: F2_S_CONS_COST2 |
+| PRIVATE-CP29 | F2_S_COST1 | spec: F2_S_COST1 |
+| PRIVATE-CP30 | F2_S_COST2 | spec: F2_S_COST2 |
+| PRIVATE-CP31 | catalog-delta/extra | None |
+| PRIVATE-CP32 | catalog-delta/missing | None |
+| PRIVATE-CP33 | catalog-delta/kind | None |
+| PRIVATE-CP34 | catalog-delta/duplicate | builtin ValueError |
+| PRIVATE-CP35 | catalog-delta/foreign-component-object | None |
+| PRIVATE-CP36 | catalog-role/jobs-with-security-no-library | None |
+| PRIVATE-CP37 | catalog-role/bare-content | None |
+| PRIVATE-CP38 | catalog-role/cost2-without-v1 | None |
+| PRIVATE-CP39 | outer list | builtin ValueError |
+| PRIVATE-CP40 | pair list | builtin ValueError |
+| PRIVATE-CP41 | pair length1 | builtin ValueError |
+| PRIVATE-CP42 | name int | builtin ValueError |
+| PRIVATE-CP43 | kind bool | builtin ValueError |
+| PRIVATE-CP44 | unregistered kind string | builtin ValueError |
+| PRIVATE-CP45 | empty tuple | None |
+| PRIVATE-CP46 | empty name | builtin ValueError |
+| PRIVATE-CP47 | duplicate name different kind | builtin ValueError |
+| PRIVATE-CP48 | outer tuple subclass | builtin ValueError |
+| PRIVATE-CP49 | pair tuple subclass | builtin ValueError |
+| PRIVATE-CP50 | name str subclass | builtin ValueError |
+| PRIVATE-CP51 | kind str subclass | builtin ValueError |
+
+별도 node `test_private_current_profile_literal_audit`와 `test_private_current_profile_order_and_immutability`는 semantic51에서 분리한다. 알려진 private 선택은53이다. bounded permutation은 같은primary의 순서/불변성 관측이며 새 미명시 literal을 param loop에 숨기지 않는다. subclass constructor/준비와 실제 call window를 나누고 직전 counter reset·call 뒤 getter/coercion0을 관측한다. 예기치 않은 getter/fixture 예외를 ValueError 성공으로 세지 않는다.
+
+### 원349와 sibling53의 결속
+
+관리 fixture의 planned349·formal70·활성/보류/원primary는 그대로다. 기존 세 시험 파일을 함께 추적하는 property 감사에는 원349와 **exact sibling53**만 union으로 허용한다. 다른 path/함수·CP00/CP54/자리수가 다른CP1 등 unknown은 불허다. 기존 selected==state·unique·skip/xfail 금지·actual call각1·codec I/O guard는 유지한다. 이 보조파일의 새pytest node는0이다. known union402는 실제 수집/PASS가 아니며 정확 입력으로 collect/actual phase/XML각1을 따로 확인한다.
+
+작성2는 schema.py/test_schema_catalog.py, root 보조1은 test_management_wire_case_space.py로 소유를 분리한다. 최종 product/test 입력은 정확3으로 명시하고 다른 fixture/module/원oracle를 자동 포함하지 않는다. 원53의 준비 포함60초와 combined402의 실제 wall/누락·중복·source hash를 구분한다. full 신규 기대30547=기준30494+53은 수집 전 산술이며 실제 full PASS가 아니다.
+
+### 변이·순서·한계
+
+우선4 site는 equality→subset/extra, kind 무시/valid kind변경, duplicate guard 제거/중복입력, fixed FP 한 곳 변조/완전spec 비교다. 정상 control 뒤 같은 source hash 사본에서 한 site만 바꾸고 실제 private call/capture 후 목표 assertion FAIL만 검출로 센다. 앞 guard MASKED·setup/import/선택/timeout INVALID를 분리한다. source/span/목표 line을 고정하기 전 kill을 선언하지 않는다.
+
+실제 collector가 공급하지 않은 사실·두 DB를 합친 값은 pure 함수가 알아낼 수 없다. raw sqlite_*를 몰래 제거하거나 engine 미검증을 CURRENT로 올리지 않는다. autoindex/sequence/stat·CPC02/03·CPH-ENGINE-01·public observer/EMPTY/readonly cut/오류 mapping은 후속 OPEN이다. metadata DDL·내부 행 version·actual S1 FP·observed registry 전체·pointer/identity/WAL·owner/ACK·금융/삭제/journal/floor·입장권위는 이 후보로 검증되지 않는다. None은 public INVALID/UNSUPPORTED나 정상 legacy 거부가 아니다.
+
+검증은 고정BASE+정확overlay·TEMP cwd/rootdir/config/PYTHONPATH·부모/실spawn actual function source/hash·새helper call SQL/I-O0·선택/unique/call/XML각1 및 독립 제품 검토를 요구한다. 원S1 회귀는 실제 기존 TEMP fixture(SQLite 파일)를 원함수/기대 그대로 사본에서 사용한다. 초기 memory-only 지시가 이를 차단한 실패와 metadata 직렬화 오류는 원본/새 시도 이름으로 보존하며 성공으로 소급하지 않는다. 사용자/서비스DB·실제 readonly/WAL probe·실음성/모델/유료 호출은 별도다.
+
+X00의 명시 activation은 같은 immutable BASE에서 격리 후보 작성만 선행CI대기 중 병행하도록 했다. 공유 통합/commit/push 전 실제 같은SHA 선행CI3 성공을 확인하며, source/문서/독립결과가 닫힌 정확tree에서 full/coverage7/offline wheel을 직렬 검증한다. 공개 후 새SHA CI3도 별도다. 작성자는 자기 결과를 최종 승인하지 않는다.

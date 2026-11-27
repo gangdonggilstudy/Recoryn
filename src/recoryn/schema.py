@@ -2310,3 +2310,508 @@ def encode_management(document: ManagementDocument) -> bytes:
     if type(document) is CompleteDocument:
         return _mo_encode_complete(document)
     raise SchemaWireError("MALFORMED")
+
+
+# Logical supplied-object candidates only; no raw engine filtering or admission.
+@_mc_dataclass(frozen=True, slots=True, repr=False)
+class _CurrentProfileSpec:
+    profile_id: str
+    components: tuple[tuple[str, int, str], ...]
+    owned_objects: tuple[tuple[str, str], ...]
+    registry_rows: tuple[tuple[str, int, str, str], ...]
+
+
+_CP_COMPONENTS: tuple[tuple[str, int, str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "capture.health",
+        2,
+        "recoryn-shape-v1:5f180b67a914f29c7d55a131978d5807fc7f42ac19d477bc7a960ad1f5073622",
+        (
+            ("capture_health_event_order", "index"),
+            ("capture_health_events", "table"),
+            ("capture_health_gap_phase", "index"),
+            ("capture_health_runs", "table"),
+            ("capture_health_tracks", "table"),
+        ),
+    ),
+    (
+        "content.core",
+        1,
+        "recoryn-shape-v1:03fff360eba1dc0649b608b7211124650705e1cd065993648f933e83470dc731",
+        (
+            ("content_events", "table"),
+            ("content_revision_immutable", "trigger"),
+            ("content_revisions", "table"),
+            ("content_selections", "table"),
+            ("content_session", "index"),
+        ),
+    ),
+    (
+        "content.summary_requests",
+        1,
+        "recoryn-shape-v1:4d3e4230d431ce3674ceb0aaf238720d273825fb9fb4202cf3c430eaec65ee6d",
+        (("content_summary_requests", "table"),),
+    ),
+    (
+        "g09.management",
+        1,
+        "recoryn-shape-v1:a9e56d69fe77d280595c42a2f18d64bc80b93b0c38c323942208e349cbbb1d1e",
+        (("recoryn_maintenance", "table"), ("recoryn_schema_components", "table")),
+    ),
+    (
+        "jobs.checkpoints",
+        1,
+        "recoryn-shape-v1:08ad04f16fc95966ba8c2c01a4c563500fab44faec263d2c7efdddd72d7c27d5",
+        (("job_checkpoints", "table"),),
+    ),
+    (
+        "jobs.core",
+        1,
+        "recoryn-shape-v1:2a9a2a799001d3377a969193eaed1955de89a9adfaf0a851a77af9811352de0a",
+        (
+            ("attempts", "table"),
+            ("events", "table"),
+            ("job_local_readers", "table"),
+            ("job_remote_intents", "table"),
+            ("job_session_lookup", "index"),
+            ("job_sessions", "table"),
+            ("jobs", "table"),
+            ("jobs_dedup", "index"),
+        ),
+    ),
+    (
+        "jobs.receipts",
+        1,
+        "recoryn-shape-v1:07e734ac1586231964d4236f8d90b812d5ddf8cdb038605115c6656828b69153",
+        (("job_create_receipts", "table"),),
+    ),
+    (
+        "library.core",
+        1,
+        "recoryn-shape-v1:582f0b08f997d875adecfb581a6f2c38de3056815c146f5d588f1e4d61ebda47",
+        (
+            ("chunks", "table"),
+            ("deleted_sessions", "table"),
+            ("sessions", "table"),
+            ("storage_events", "table"),
+        ),
+    ),
+    (
+        "security.consent",
+        2,
+        "recoryn-shape-v1:6a9f50c4185781c91dace5df925d6f4977d6c17499502db0b5531861dc5996e0",
+        (
+            ("security_consent_meta", "table"),
+            ("security_execution", "table"),
+            ("security_grants_v2", "table"),
+            ("security_local_endpoints", "table"),
+            ("security_sessions", "table"),
+        ),
+    ),
+    (
+        "security.cost",
+        2,
+        "recoryn-shape-v1:1cb2ff7b81b6a8545b28204f8308904678677e2dc7341e1755b93ac919be59aa",
+        (
+            ("security_cost_accounts_v2", "table"),
+            ("security_cost_meta_v2", "table"),
+            ("security_cost_requests_v2", "table"),
+            ("security_cost_usage_events", "table"),
+        ),
+    ),
+    (
+        "security.cost.legacy",
+        1,
+        "recoryn-shape-v1:d6b3887b884e0f2a3300c213c665ad44b7c649755328c8b165aa307a8fee874b",
+        (
+            ("security_cost_accounts", "table"),
+            ("security_cost_meta", "table"),
+            ("security_cost_requests", "table"),
+        ),
+    ),
+    (
+        "storage.projection",
+        1,
+        "recoryn-shape-v1:5e2e65aad65986131f63687f8f24a114c392ce16eda9a2e34856e3458bafd9b3",
+        (
+            ("storage_catalog_change", "trigger"),
+            ("storage_catalog_delete", "trigger"),
+            ("storage_catalog_insert", "trigger"),
+            ("storage_catalog_meta", "table"),
+            ("storage_pending_deletions", "table"),
+            ("storage_visible_delete", "trigger"),
+            ("storage_visible_insert", "trigger"),
+            ("storage_visible_sessions", "table"),
+        ),
+    ),
+)
+_CP_PROFILES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("F2_J", ("g09.management", "jobs.checkpoints", "jobs.core", "jobs.receipts")),
+    ("F2_L", ("capture.health", "g09.management", "library.core", "storage.projection")),
+    (
+        "F2_LC",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "library.core",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LC_CONS",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "library.core",
+            "security.consent",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LC_CONS_COST1",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "library.core",
+            "security.consent",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LC_CONS_COST2",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "library.core",
+            "security.consent",
+            "security.cost",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LC_COST1",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "library.core",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LC_COST2",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "library.core",
+            "security.cost",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJ",
+        (
+            "capture.health",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJC",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJC_CONS",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "security.consent",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJC_CONS_COST1",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "security.consent",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJC_CONS_COST2",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "security.consent",
+            "security.cost",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJC_COST1",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJC_COST2",
+        (
+            "capture.health",
+            "content.core",
+            "content.summary_requests",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "security.cost",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJ_CONS",
+        (
+            "capture.health",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "security.consent",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJ_CONS_COST1",
+        (
+            "capture.health",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "security.consent",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJ_CONS_COST2",
+        (
+            "capture.health",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "security.consent",
+            "security.cost",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJ_COST1",
+        (
+            "capture.health",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_LJ_COST2",
+        (
+            "capture.health",
+            "g09.management",
+            "jobs.checkpoints",
+            "jobs.core",
+            "jobs.receipts",
+            "library.core",
+            "security.cost",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_L_CONS",
+        (
+            "capture.health",
+            "g09.management",
+            "library.core",
+            "security.consent",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_L_CONS_COST1",
+        (
+            "capture.health",
+            "g09.management",
+            "library.core",
+            "security.consent",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_L_CONS_COST2",
+        (
+            "capture.health",
+            "g09.management",
+            "library.core",
+            "security.consent",
+            "security.cost",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_L_COST1",
+        (
+            "capture.health",
+            "g09.management",
+            "library.core",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    (
+        "F2_L_COST2",
+        (
+            "capture.health",
+            "g09.management",
+            "library.core",
+            "security.cost",
+            "security.cost.legacy",
+            "storage.projection",
+        ),
+    ),
+    ("F2_S_CONS", ("g09.management", "security.consent")),
+    ("F2_S_CONS_COST1", ("g09.management", "security.consent", "security.cost.legacy")),
+    (
+        "F2_S_CONS_COST2",
+        ("g09.management", "security.consent", "security.cost", "security.cost.legacy"),
+    ),
+    ("F2_S_COST1", ("g09.management", "security.cost.legacy")),
+    ("F2_S_COST2", ("g09.management", "security.cost", "security.cost.legacy")),
+)
+
+
+def _current_profile_candidate(
+    logical_objects: tuple[tuple[str, str], ...],
+) -> _CurrentProfileSpec | None:
+    """Match supplied logical pairs, without reading or certifying their source."""
+    if type(logical_objects) is not tuple:
+        raise ValueError("INVALID_CURRENT_PROFILE_INPUT")
+    input_names: set[str] = set()
+    for pair in logical_objects:
+        if type(pair) is not tuple or len(pair) != 2:
+            raise ValueError("INVALID_CURRENT_PROFILE_INPUT")
+        name, kind = pair
+        if type(name) is not str or type(kind) is not str:
+            raise ValueError("INVALID_CURRENT_PROFILE_INPUT")
+        if not name or kind not in ("table", "index", "view", "trigger"):
+            raise ValueError("INVALID_CURRENT_PROFILE_INPUT")
+        if name in input_names:
+            raise ValueError("INVALID_CURRENT_PROFILE_INPUT")
+        input_names.add(name)
+    supplied = frozenset(logical_objects)
+    fixed = {entry[0]: entry for entry in _CP_COMPONENTS}
+    if len(fixed) != len(_CP_COMPONENTS) or len(fixed) != 12 or len(_CP_PROFILES) != 30:
+        raise RuntimeError("INVALID_CURRENT_PROFILE_CATALOG")
+    specs: list[_CurrentProfileSpec] = []
+    profile_names: set[str] = set()
+    signatures: set[frozenset[tuple[str, str]]] = set()
+    for profile_id, component_names in _CP_PROFILES:
+        if profile_id in profile_names or len(set(component_names)) != len(component_names):
+            raise RuntimeError("INVALID_CURRENT_PROFILE_CATALOG")
+        profile_names.add(profile_id)
+        try:
+            chosen = tuple(fixed[name] for name in component_names)
+        except KeyError:
+            raise RuntimeError("INVALID_CURRENT_PROFILE_CATALOG") from None
+        components = tuple(sorted((entry[0], entry[1], entry[2]) for entry in chosen))
+        owned = tuple(sorted(pair for entry in chosen for pair in entry[3]))
+        if len({name for name, _ in owned}) != len(owned):
+            raise RuntimeError("INVALID_CURRENT_PROFILE_CATALOG")
+        signature = frozenset(owned)
+        if signature in signatures:
+            raise RuntimeError("INVALID_CURRENT_PROFILE_CATALOG")
+        signatures.add(signature)
+        registry = tuple(
+            (name, version, fingerprint, profile_id) for name, version, fingerprint in components
+        )
+        if tuple(row[:3] for row in registry) != components or any(
+            row[3] != profile_id for row in registry
+        ):
+            raise RuntimeError("INVALID_CURRENT_PROFILE_CATALOG")
+        specs.append(_CurrentProfileSpec(profile_id, components, owned, registry))
+    for spec in specs:
+        if frozenset(spec.owned_objects) == supplied:
+            return spec
+    return None

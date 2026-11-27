@@ -114,3 +114,17 @@ G-P04와 G-P05는 둘 다 `storage/library.py`와 `ui/main.py`를 바꾼다. 동
 ### D13 통합 준비 상태 갱신(전체 검증 전 스냅샷)
 
 앞선 D13의 ‘구현 전 준비’와 D12 CI 진행 중 문구는 그 문단 작성 시점의 사실이다. 이후 D12 공개60f4의 실제 원격 CI45944181518 세 작업 성공·ref/tree/message/trailer0을 재확인해 선행 게이트를 닫았다. D13 후보4의 작성349건/7.431초·단일목표2·정적3종과 비작성자의 새 제품결속 직접349건·독립 손27건·기존 control2건·실제목표2/control3·17.103초·OPEN0을 인수했다. 원27/기존322·formal70/보류10/4105/245는 보존했다. [제품 결속 독립 검토](../reviews/g09a-legacy-output-integration-review.md)는 local OUTPUT 조합과 실제 pytest/fixture 결속의 한정 판정이다. 이 스냅샷의 최종 정확8 tree·전체수집 예상30494/core/coverage7/offline wheel·공개/새SHA CI는 아직 실행하지 않았다. 후속 결과는 실제 tree/commit/ref/원격 run과 X00 인수 증거로 별도 결속하며 실제 whole-file/LOP/권위·전체 G09a/v1·실장비 완료로 확대하지 않는다.
+
+## G09a private logical profile 후보 단위의 완료 경계
+
+D14의 다음 단위는 공급된 논리 owned-object 집합에서 명명 current30 후보와 fixed expected를 제공하는 private helper다. source/test 작성2 및 root 선택감사 보조1을 정확3으로 묶고, semantic51+감사/property2의 private53과 원관리349의 결속을 검증한다. 관리 fixture/formal70·전체4105/명시245·원 S1/codec/API/DTO 의미는 이 private 선택으로 증가/완화하지 않는다.
+
+완료 인수에는 현재 source hash의 실제53/준비포함60초·기존회귀/정적·single-site 실제목표와 MASKED/INVALID 분리·원349+private53=known402의 실제선정/phase/XML·비작성자 제품 검토·정확범위/tree full/coverage7/wheel 및 선행/새SHA 실제CI가 필요하다. 계약/허용목록·예상수집수·작성자PASS를 최종 통합/실제권위 완료로 바꾸지 않는다. 원 지시/하네스오류와 수정 시도·hash를 보존한다.
+
+source의 새 Spec/helper는 private이며 inspect_schema/SchemaInspection CURRENT/public reader/facade/actual resource·DB권위가 아니다. 실제 engine 투영·schema내부version/DDL·고정FP/registry검증·단일물리 DB 전체사실·EMPTY/readonly/WAL·owner/ACK/입장/금융/삭제/operation 권위와 CPC02/03·CPH-ENGINE-01·기존ISD는 별도다. 격리 후보 작성 병행의 root 운영 지시와 실제 선행CI3 성공 후 공유 통합/푸시 gate를 구분한다. 전체G09a/v1 및 실장비 완료를 이 단위로 선언하지 않는다.
+
+### D14 통합 준비 상태 갱신(전체 검증 전 스냅샷)
+
+앞선 D14의 작성 전·CI 대기 문구는 해당 문단 작성 당시의 사실이다. 이후 선행 공개7cdf의 실제 원격 CI45962375807에서 optional-runtime·core3.11·core3.13 성공과 원격 ref/tree·전체 메시지/trailer0을 확인했다. 작성자 private53/5.403초·정확3 결합402·원S1 r2 21/관리349/관련45·원4개 목표 assertion FAIL을 인수했다. 비작성자의 새 직접53·독립 손12·결합402·독립2개 site 목표3 FAIL/15.508초도 별도 인수했다. CPR-01의 catalog 모순 경로 증거 공백과 초기 후처리 INVALID 이력은 보존했으며, 후속 고정 정상6/fault6의 실제 RuntimeError·raise 도달·I/O0 및 registry 직접 구성 근거를 원 수집 분모와 구분해 검토했다. [private logical 독립 검토](../reviews/g09a-current-profile-logical-review.md)는 공급된 논리 목록의 명명 후보·고정 expected 반환과 결속에 한정한다.
+
+원 관리349/formal70/4105/명시245와 기존 공개 codec/S1·fixture는 보존했다. 신규 private semantic51+감사1+property1=53이므로 세 파일 선택은402이며, catalog fault 보완12는 별도 내부 결함 주입 증거로 제품 수집 증가가 아니다. 최종 정확7 tree·전체 수집 기대30547/core/coverage7/offline wheel·새 공개/새SHA CI3은 이 스냅샷 시점에는 실행하지 않았다. helper5의 새 실제 private origin/smoke3도 후속 전체 gate에서 검증한다. 실제 결과는 동결 tree/commit/ref/원격 run과 X00 인수 증거로 별도 결속한다. raw SQLite/engine 투영·실제 shape/metadata/pointer/단일DB 완전성·CURRENT·reader/owner/ACK/입장·금융/삭제·전체 G09a/v1·실장비 완료로 확대하지 않는다.

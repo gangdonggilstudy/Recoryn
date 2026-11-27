@@ -248,6 +248,17 @@ def test_management_wire_primary_inventory():
         assert not any("[" + ident + "]" in n for n in nodes)
 
 
+def _private_current_profile_nodes():
+    base = "tests/unit/test_schema_catalog.py::"
+    return {
+        base + "test_private_current_profile_candidate[PRIVATE-CP" + str(i).zfill(2) + "]"
+        for i in range(1, 52)
+    } | {
+        base + "test_private_current_profile_literal_audit",
+        base + "test_private_current_profile_order_and_immutability",
+    }
+
+
 def test_management_wire_selected_scope(request):
     own = (
         "tests/unit/test_schema_catalog.py::",
@@ -258,7 +269,7 @@ def test_management_wire_selected_scope(request):
     state = request.config._g09_management_audit
     assert selected == state["selected"]
     assert len(selected) == len(set(selected))
-    assert set(selected) <= set(_WIRE_FIXTURE["planned_nodes"])
+    assert set(selected) <= set(_WIRE_FIXTURE["planned_nodes"]) | _private_current_profile_nodes()
     assert not any(
         item.get_closest_marker("skip") or item.get_closest_marker("xfail")
         for item in request.session.items
