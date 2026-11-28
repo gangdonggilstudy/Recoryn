@@ -32,6 +32,7 @@ from tests.ui.test_secret_lifetime_ui import (
     privacy_context,
     privacy_gateway,
     settle_privacy,
+    spin_privacy,
 )
 from tests.unit.test_cost_cap import fixture_wire
 
@@ -233,6 +234,7 @@ def test_credentials_are_endpoint_bound_fail_closed_and_never_in_config_key(
     backend.fail = True
     control.key.setText("B14-CANARY-PRIVATE")
     click(control.save_key)
+    spin_privacy(lambda: control.status.text() == "VAULT_WRITE_FAILED")
     assert control.status.text() == "VAULT_WRITE_FAILED"
     assert "CANARY" not in control.status.text()
     assert not widget.consents.allowed(
