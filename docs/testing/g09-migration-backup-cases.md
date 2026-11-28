@@ -1750,3 +1750,60 @@ M04의 close 제거는 정상7read/full trace에도 영향을 준다. 정상 사
 작성 source/unit2와 root property1은 별도 소유이며 정확3 입력·원 archive449/비overlay446 raw·부모/실spawn actual source·기존 단언/역 AST를 확인한다. archive raw와 Git-show LF를 혼동한 준비/종료감사 오류를 원본/새 감사 이름으로 보존하며 LF 일치로 비소유 raw 불일치를 숨기지 않는다. 신규21 준비 포함60초·combined423 wall·전체/core 시간을 별도로 측정한다. 선택/unique/phase/XML 각1·route35·신규 fake call 실제 I/O0과 기존 S1의 자기 격리 TEMP 파일DB 회귀를 구분한다.
 
 비작성자 제품 검토·정확 최종7 tree의 단일 full/core·coverage7·offline wheel·copy/wheel 부모/실spawn 함수5 출처와 원 smoke3+seam 정상2, 선행/새 SHA 실제 CI3은 별도 gate다. 계약·허용 node·작성자 보고·정적 검토만으로 PASS를 선언하지 않는다. 실제 SQLite busy/corrupt/permission·원 driver 오류 mapping·raw engine/WAL/readonly cut·whole-file/current·metadata/pointer·owner/ACK/입장/C1/CR·금융/삭제/실장비·전체 G09a/v1은 이 seam으로 닫히지 않는다.
+
+
+## D16: 공급된 SQLite inventory의 순수 검증·engine 분할(실행 전 계약)
+
+이 증분은 이미 공급된 immutable tuple의 형식·참조·좁은 engine descriptor를 확인해 논리 이름 집합을 기존 current-profile 후보 matcher에 연결한다. 실제 DB 수집, snapshot 완전성·실재·shape/FK/data·CURRENT/EMPTY·readonly/WAL/cut·owner/ACK·복구/삭제/비용 권위는 입증하지 않는다. 새 공개 inspector/API는 만들지 않는다. `_project_supplied_inventory(objects, evidence, /)`와 private 결과/보조만 추가하며 원 S1 parser/catalog·D14 matcher·D15 읽기/cleanup·wire API6/DTO34/alias8의 기존 AST/계약을 보존한다.
+
+### 입력·판정·독립 oracle
+
+입력의 모든 깊이는 exact builtin tuple이며 str/int도 exact builtin이다. bool-as-int·subclass/list/dict/coercion/getter를 허용하지 않는다. ObjectRow는(kind,name,tbl_name,sql), TableEvidence는(raw_table_name,table_xinfo,index_list,index_infos)다. 전체 domain·ordinal/중복·raw 참조·canonical 충돌을 먼저 확인한 뒤 semantic 지원을 판정한다. unknown engine를 먼저 발견했다고 뒤의 malformed를 검사하지 않고 None을 반환하지 않는다. 구조 오류는 정확 builtin ValueError와 args/str `INVALID_SUPPLIED_INVENTORY_INPUT`이며, 지원 밖 또는 미입증 engine는 None이다. 원 matcher의 catalog RuntimeError는 전파한다. None은 실제 파일 INVALID 판정이 아니다.
+
+self/owner/evidence/index name/cid-name 참조는 D16 FIX1의 raw exact identity 결속을 적용한다. known canonical 대응은 모델/출력·충돌 판정에만 사용하며 raw alias 참조를 보수하지 않는다. unknown ordinary 객체는 보존하고 전역 Unicode fold/strip/dedup를 추가하지 않는다. 알려진 owner SQL는 기존 closed parser 어휘/문법을 사용한다. SQLite에서 합법인 임의 DDL을 이 좁은 parser의 지원 양성으로 간주하지 않는다.
+
+autoindex suffix는 raw owner에 결속된 양수 문법·signed64 상한과 supplied schema/PRAGMA 및 obligation multiset 결속을 검사한다. descriptor 정렬 rank·index_list seq·객체 개수로 suffix를 추정하거나 연속1..N을 강제하지 않는다. 양수 suffix 교환/비연속은 이 단계의 양성이며 생성 역사 인증이 아니다. rowid auxiliary와 좁은 WR PK/UNIQUE 조합, INTEGER PK 이름 비소비를 구분한다. sequence/stat1은 exact raw name/DDL/xinfo와 명시 index evidence를 요구한다. AI 삭제 뒤 sequence 잔존은 허용하며 stat2/3/4·미래 내부 객체는 미입증 None이다. 내부 row 내용·전체 파일은 읽지 않는다.
+
+결과는 frozen/slots/repr=False의5필드(logical_objects,logical_object_rows,engine_object_rows,table_evidence,profile_candidate)다. 원 SQL/셀·깊은 불변을 보존하고 원 ObjectRow는 두 분할을 합쳐 정확1회 포함한다(중복·누락0). ordinal은 입력 순서와 구별해 정렬하고 PRAGMA-only WR PK를 schema row로 발명하지 않는다. Projection에서 실제 기존 matcher를 정확1회 호출하며 profile_candidate는 기존 Spec 또는 None이다. 입력이 비어도 반환은 이름 후보일 뿐 EMPTY/true-fresh를 뜻하지 않는다.
+
+독립 손자료는 원 관측8/별도 보정 관측4를 구분하고 재사용4를 새 실행으로 더하지 않는다. 원 HANDR OPEN2의 어휘 밖 양성6·aux before alias 오류, 원 기대/준비·감사 실패는 보존한다. 새 손자료는 별도 비작성자 검토에서 CLOSED2/새OPEN0이며 실제 parser/guard PASS가 아니다. 과거6 입력은 현재 None 경계로 별도 보존됐다. 현재151의 완전 input/construction/expected와 before/after가 권위 자료이며 남은 Note/k/payload 설명 잔재에서 시험 값을 추출하지 않는다. source/parser/matcher 반환으로 expected를 생성하지 않는다.
+
+### 유한 선택·실행 및 통합 게이트
+
+선택 manifest0fe2e427의151행을 PRIVATE-INV001~151로 일대일 전사한다. Projection17/ValueError91/None43과 비semantic literal 감사1·순서/불변 property1을 분리하여 새153노드다. 각 행 core SHA는 descriptive_label/input/construction/expected 네 키의 ensure_ascii=True·sort_keys=True·compact JSON UTF8/BOM0/끝LF0에 결속한다. 파일 전체 core SHA0050f3bb는 별도의 raw 파일 hash다. 순서 property는 정상17에 identity/reverse/고정seed permutation을 적용하고 ordinal/cid/셀 값은 바꾸지 않는다. 반복은 추가 semantic 분모가 아니다.
+
+기존349/current53/seam21=423과 새153의 exact union은 예정576이다. formal70/4105/명시245·보류10은 변하지 않는다. property companion은 정확153 allow와 새 private 함수의 기존 I/O/source 관측 wrapper 적용만 추가하며 기존 skip/phase/실call/계수·원 fixture/golden을 보존한다. 새153의 준비 포함60초·exact setup/call/teardown/XML/출처/I/O0와 원423 회귀를 확인한다. 원 S1 지정 TEMP 파일DB와 신규 pure API I/O0를 혼동하지 않는다.
+
+변이는 실제 source site·정상 control·목표 assertion을 X00가 고정한 뒤만 실행한다. 작성자 최대8/독립 최대2 제안과 실제 채택·검출을 구분하며 선행guard MASKED·setup/import/constructor/timeout INVALID·실제 목표call FAIL을 별도 보존한다. 다중guard 삭제나 oracle 약화로 검출을 만들지 않는다. 최초 실패는 수정 전 source/test/log/XML/입력 계보로 남긴다.
+
+이 절은 선택과 수락 기준이며 실행 완료 선언이 아니다. source/unit2+root property1+공용2+H03 snapshot1+비작성자 공식 review1의 예정 정확7을 독립 검토한 뒤 X00가 최종 tree에서 예상30721 수집·전체 단일 실행·coverage7/offline wheel87·copy/wheel parent와 실제 spawn의 새 함수 출처까지 확인한다. 정확 tree/전체 commit 메시지·trailer0·실제 선행CI3 성공을 확인한 뒤 범위 commit/일반 push·실remote/newSHA CI3를 직렬로 닫는다. 실제 결과는 후속 tree/commit/ref/run과 별도 인수 증거로 결속하며 whole observer/G09a/v1·Windows 실장비 완료로 확대하지 않는다.
+
+
+### D16 제품 R1 지적과 별도 FIX1 회귀 선택(수정 검증 전)
+
+앞선 실행 전 계약의151행/153노드·예정576/30721은 당시 계획과 원 부분집합으로 보존한다. source156bc69b/unitc7802264/root companionce017166의 작성 정상153·원423·결합576과 실제 각phase/XML, 별도 비작성자 결합576 PASS를 인수했다. 작성 신규153의 copy/probe/collect 포함 시간은5.142592초다. root는 정상167+final168·변이141+final142와 비작성자 run44를 재해시했다. 작성자 peerTEMP 직접 읽기는 root에서 권한 거부돼 비소유 runtime 전체 직접 재해시는 주장하지 않으며 작성자 기록·공유된 실행사본·출처/phase/XML 대조와 후속 root 최종 검증을 구분한다.
+
+비작성자 독립8은7PASS/1실제제품call FAIL이다. P08은 정상 R08의 raw table/owner `Sessions`·SQL/열은 보존하고 autoindex 이름 owner부분만 `sessions`로 바꾸되 schema/list/info의 이름은 서로 동일하게 결속했다. 원 `_project_supplied_inventory`의 re.IGNORECASE 때문에 actual ENTER→RETURN Projection5필드·matcher1이 발생해 계약의 None/matcher0와 달랐다. I/O0·입력불변·실제 반환/인자·실패XML을 보존했다. D16PR-01은 제품 지적 OPEN으로 남고, 같은 literal을 바꾸거나 expected를 느슨하게 하지 않는다. 독립 결합의 최초 selector2모듈/291수집은 exact576 preflight에서 제품call0으로 중단한 INVALID1이며, 누락된 management_wire_api 모듈만 보완한 r2가 첫 실제576 실행이다. 최초 오류를 제품 실패나 성공으로 바꾸지 않는다.
+
+원8 단일site는 control8PASS/지정목표7assertFAIL/INV065 targetPASS1·INVALID0이다. BOOL_AS_INT를 isinstance로 넓혀도 INV065의 `[True,1]` cid가 후속ordinal 불변식에 걸리는 정적 masking 근거를 남겼고 실제예외stack을 별도 캡처했다고 주장하지 않는다. 원 고정목표 PASS를 kill로 세거나 다중guard를 지우지 않았다. 새source에서 기존 INV078 unique-bool 목표를 별도 채택할 계획과 원 INV065 MASKED를 구분한다.
+
+root master scope-r2 58dbfb86은 원 선택0fe2e427/core0050f3bb·151행/153부분집합을 그대로 참조하고 local PRIVATE-INV-OWNERCASE의 exact node `test_private_supplied_inventory_raw_autoindex_owner_case` 하나만 추가한다. P08 raw literal a5c62c6a와 기존 INV008 전체 정상R08을 손입력/반례 쌍으로 재사용한다. 정상 counterpart를 새 분모로 더하지 않는다. 현재 계획은 semantic152+nonsemantic2=154, 원423과합577, full예상30722다. formal70/4105/명시245·보류10·fixture/golden·예정scope7은 변하지 않는다. 원 audit의153은 원부분집합 감사로 유지하며 새master와 혼동하지 않는다. 새companion10f94f32는 원ce017의 finite helper에 새node 한 줄만 추가했고 별도 비작성자 전사검토에서 CLOSED/새OPEN0이다.
+
+PRODUCT-FIX1은 원source156의 autoindex fullmatch 한span에서 re.IGNORECASE만 제거한 기대source1bf8d792와 원unitc780 전체prefix 뒤의 literal/회귀1 추가다. raw owner 결속을 복구하고 모델의 제한 canonical 대응·기존 parser/API/조건은 바꾸지 않는다. 같은회귀를 원156에서 실제FAIL로 재현·보존한 뒤 새source에서PASS를 확인하고 신규154/원423/정확3결합577·정적·실출처/IO·phase/XML 및 비작성자 재확인으로 닫는다. 이 절은 그 수정 검증 결과나 D16PR-01 종결 선언이 아니다.
+
+최종 공용 상태와 공식review가 닫힌 정확7/예정451파일·비소유444에서 root가 마지막 tree의 전체30722 수집/단일full·coverage7·wheel87과 copy/wheel 각각 parent/실spawn 함수6(기존5+새project)·원smoke3+seam2+공급inventory2를 확인한다. 준비도구·현재source 예상hash·원 정상/변이 결과를 새tree의 성공으로 소급하지 않는다. 전체메시지/trailer0·실제 선행CI3·범위commit/일반push/실remote·새SHA CI3는 별도 gate다.
+
+
+### D16 FIX1 통합 준비 상태(최종 전체 검증 전 스냅샷)
+
+PRODUCT-FIX1의 source1bf8d792/unit a8716f58/root property10f94f32를 인수했다. 원156+동일새unit 회귀1은 실제 반환 뒤 목표 assertion FAIL, 수정1bf8+같은unit은PASS였다. 같은최종hash에서 작성자 신규154·기존423·결합577이각setup/call/teardown/XML1·오류skip0으로통과했고 신규154는복사/probe/collect포함5.328266초였다. 작성자95+final96과 원정상168/원변이142, 원P08실패·사용량제한/재개/format이력은root가직접재해시했다. peerTEMP전체직접재hash의root권한거부한계는당시인수대로남는다.
+
+비작성자FIX1검토의 정확577PASS(준비5.856878초)·독립8PASS(0.760102초, 공통copy준비포함4.088875초)와 root최종후보의3제품/시험파일은byte동일하다. 정상P08은actualNone/matcher0·입력불변/I/O0이고 INV008의정상Projection/matcher1은유지됐다. 승인된별도flag역변이1의raw는원156과정확히같았으며, controlINV008PASS뒤 독립P08이actualProjection/matcher1을반환해지정assertionFAIL1·MASKED/INVALID0이었다. 원R1 OPEN1과본FIX1 CLOSED1/잔여0·새OPEN0을구분한다. [공식독립검토](../reviews/g09a-supplied-inventory-projection-review.md)는새증분에한정하며본인옛S1/codec/body의재승인이아니다.
+
+정상결합의inventory 구간204는 Projection69/의도된ValueError91/None44이고 구간내actual matcher69와각해당Projection1회가결속됐다. 기존fixture의legacywrapper2686·구간밖matcher·pytest577노드와합쳐새분모로세지않는다. root는비작성자56artifact+report/final58·고정8·4XML/각phase·실제unwrap구간/sourceglobals와parent/spawn을대조했다. P08개별actual파일의code_file은계측wrapper를가리키므로 실제source결속은별도unwrap구간과origin으로확인했다. 원R1 selector291/call0 INVALID1과actualP08FAIL·준비오류는보존된다.
+
+작성자새source1bf8의고정8site는control8PASS→실제목표assertionFAIL8·MASKED/INVALID0이었다. source2-only계보의각사본한span·새previewSHA·단일목표/48phase·16XML과I/O0을인수했다. root는161artifact+final162와지정goal을직접대조했고peerTEMP직접재hash를주장하지않는다. 원source156의INV065 PASS/MASKED는그대로남고새site7은명시채택된기존INV078이다. 독립flag역변이1은이8과별도다. 유한fault민감도를다른입력전수성/운영권위로확대하지않는다.
+
+QA도구5는BASE82a/최종예정451/비소유444·full예상30722에맞춰준비됐고root가비작성자로원/새도구5·고정10·contract/runner/origin역AST·원fullargv/env17/기존smoke보존·새고정hand2와부정guard를대조했다. root감사기의P08 label키·기존copy import가정오류2와정정은보존됐고제품/runner/full실행은없었다. 실제감시함수6의읽기경계이름은기존 `_component_shape_wire_read`를그대로쓴다.
+
+원공용prefix와정적문구FIX1, 이실제상태전사·H03 snapshot·공식review를정확7에결속한다. 이스냅샷시점에는최종tree의collect/full30722·coverage7/offlinewheel87·copy/wheel parent/actualspawn 함수6·원smoke3+seam2+공급inventory2·commit/push/새CI3를아직수행하지않았다. root의별도정확tree/검증/공개인수와실ref/run으로후속결론을닫으며전체G09a/v1·실장비·실제DB권위완료로확대하지않는다.

@@ -148,3 +148,32 @@ D15의 앞선 완료 조건은 유지한다. 이후 고정 source50baf4ac/unit e
 비작성자 p8의 원21/35·준비포함4.760초와 결합423·5.140초·독립6가족/11관측 및 원 M02/M06 재적용의 실제 목표 assertion FAIL2·MASKED/변이INVALID0·제품OPEN0을 별도 인수했다. 독립 fake의 최초4관측은 marker 문자열2개가 봉인 값과 달랐으며 원 코드/결과를 보존한 뒤 해당4만 정정 재확인했다. 유효11의 계보는 원7+정정4이고 최초 변형4를 exact literal 성공으로 소급하지 않는다. [독립 제품 검토](../reviews/g09a-sqlite-read-error-seam-review.md)는 이 좁은 읽기 경계에 한정한다. X00은 검토봉인75/고정입력197과 정상·두 mutant의 실제 파일 각449/비overlay446 raw를 재해시했다.
 
 원 common 계약과 이 상태 전사, H03 snapshot·공식 review를 정확7에 묶어 검증한다. helper5의 정적 변경 인수는 실행 성공이 아니다. 정확 최종 tree의 수집 기대30568·단일 core/full·coverage7·offline wheel87·copy/wheel 부모와 실제 spawn의 함수5/원 smoke3+seam 정상2·통합/공개/새SHA CI3은 이 스냅샷 시점에 아직 실행하지 않았다. 후속 결론은 실제 tree/commit/ref/run 및 X00의 별도 인수로 결속하며 전체 observer/G09a/v1·권위·Windows 실장비 완료로 확대하지 않는다.
+
+
+### D16 공급 inventory pure projection(실행 전 범위)
+
+D14 이름 집합 후보와 D15 SQLite 읽기 경계를 보존하고, 공급된 immutable tuple의 구조/raw 참조·좁은 engine descriptor 검증 및 분할을 기존 실제 matcher에 연결한다. 작성 source/unit2와 root property companion1이 제품/시험 후보 범위이며 공용2·H03 snapshot1·비작성자 review1을 포함한 정확7을 예정한다. 공유 Git과 최종 통합은 X00만 수행한다.
+
+별도 독립 손 FIX1 CLOSED2/새OPEN0 및 root 선택·companion 전사 CLOSED6/OPEN0은 정적 인수 사실이다. 새 PRIVATE-INV151+비semantic2=153, 기존423과의 예정 합집합576·예상 full30721은 실제 실행 PASS가 아니다. formal70/4105/명시245·보류10·원fixture/golden은 유지한다. 원 OPEN/기대 오류·준비/감사 실패 및 새 source의 최초 실패를 보존하며 손 관측과 actual API 실행을 혼동하지 않는다.
+
+완료 조건은 exact domain/오류/None/반환5·깊은 불변/분할 계수·실제 matcher1회와 인자·I/O0·원 AST/SQL 보존·유한 선택/phase/XML·실제 source site 단일 변이·비작성자 제품 검토다. 이후 최종 정확 tree에서 전체 단일 실행/coverage7/wheel87·copy/wheel parent/spawn 출처, 전체 메시지/trailer0·범위 commit/push/실remote·새SHA CI3를 별도로 닫는다. 이 스냅샷은 해당 완료를 선언하지 않는다.
+
+실제 collector/단일 DB 완전성·shape/FK/data·readonly/WAL/cut·metadata/journal/pointer·CURRENT/EMPTY·owner/ACK/복구/삭제/금융 권위와 전체 G09a/v1·실장비는 후속이다. [D16 유한 계약](../testing/g09-migration-backup-cases.md)과 배정표의 실제 증거/인수를 따른다.
+
+
+### D16 R1 실제 실패와 PRODUCT-FIX1(검증 전 계획 갱신)
+
+원source156/unitc780의 정상153/원423/결합576과 별도 비작성자 결합576 PASS는 고정 증거로 보존한다. 독립8 중 P08이 actual Projection/matcher1을 반환해 계약 None/0와 다른 제품FAIL로 인수됐으므로 D16PR-01은 OPEN이다. 최초 결합selector291/call0 INVALID와 실제P08 FAIL, 정상 실행/준비·raw전사/encoding 오류와 peerTEMP root직접읽기 한계를 구분한다. 원8mutation의7목표FAIL/BOOL_AS_INT INV065 MASKED도 그대로 보존한다.
+
+별도 PRODUCT-FIX1은 raw autoindex owner fullmatch에서 대소문자무시를 없애는 한span과 회귀1만 추가한다. 원151/core/153부분집합·formal70/4105/245/보류10·제품source/unit2 범위와 최종정확7은 유지한다. 새 local1로154/원423과합577·full예상30722가 현재계획이다. 원153/576/30721 문서와 실행은 역사적 증거로 남는다. 원/수정 source의 같은회귀 actualFAIL→PASS·새정상/정적·단일site·비작성자 제품 재확인 전에는 성공/OPEN종결로 바꾸지 않는다.
+
+원 공용prefix/문구정정은 보존하고 실제새hash/반례재현·원source보존·정확최종tree의단일full/coverage7/wheel87·부모/spawn출처6와원3+2/새2·메시지/trailer0·범위commit/push·실remote/newCI3를 별도 닫는다. 이 스냅샷은 실행성공이나전체observer/G09a/v1·Windows실장비/운영권위 완료를 선언하지 않는다.
+
+
+### D16 FIX1 통합 준비 상태(최종 전체 검증 전 스냅샷)
+
+source1bf8/unit a871/property10f에서작성자회귀actualFAIL→PASS·신규154/원423/결합577·정적3종을인수했다. 비작성자의577/독립8PASS와flag역변이1의지정actualP08 assertionFAIL로D16PR-01이FIX1 CLOSED1/잔여0·새OPEN0이됐으며 원R1 OPEN1/FAIL·selector INVALID와모든원증거는보존된다. 작성자새8site의controlPASS→목표FAIL8도원INV065 MASKED와명시INV078재매핑을구분해인수했다. rootpeerTEMP직접읽기한계와wrapper code_file/actualunwrap출처의구분은별도기록한다.
+
+원151/153부분집합에회귀1을추가한154·원423과합577·full예상30722·formal70/4105/245/보류10불변을유지한다. [현재독립제품검토](../reviews/g09a-supplied-inventory-projection-review.md)의3파일은최종제품/시험후보와byte동일하다. QA도구5의정적인수는완료됐지만실행성공이아니다. 도구검토의root키/import가정오류2도제품/full실패로합치지않고보존했다.
+
+공용상태·H03snapshot·공식review를포함한정확7의451파일/비소유444와단일full30722/coverage7/wheel87·부모/spawn함수6/원3+2·새2·전체메시지/trailer0·범위commit/일반push/실remote/newSHA CI3는이스냅샷시점의후속gate다. 최종tree와실행/인수/실ref/run으로결론을결속하며전체observer/G09a/v1·실장비·운영권위완료는아직아니다.

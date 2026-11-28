@@ -2819,3 +2819,360 @@ def _current_profile_candidate(
         if frozenset(spec.owned_objects) == supplied:
             return spec
     return None
+
+
+@_mc_dataclass(frozen=True, slots=True, repr=False)
+class _SuppliedInventoryProjection:
+    logical_objects: tuple[tuple[str, str], ...]
+    logical_object_rows: tuple[tuple[Any, ...], ...]
+    engine_object_rows: tuple[tuple[Any, ...], ...]
+    table_evidence: tuple[tuple[Any, ...], ...]
+    profile_candidate: _CurrentProfileSpec | None
+
+
+def _inv_need(condition: bool) -> None:
+    if not condition:
+        raise ValueError("INVALID_SUPPLIED_INVENTORY_INPUT")
+
+
+def _inv_text(value: Any, *, name: bool = False) -> None:
+    _inv_need(type(value) is str)
+    _inv_need((not name or bool(value)) and "\0" not in value)
+    _inv_need(not any(0xD800 <= ord(char) <= 0xDFFF for char in value))
+
+
+def _inv_number(value: Any, minimum: int = 0, maximum: int = 2**63 - 1) -> None:
+    _inv_need(type(value) is int)
+    _inv_need(minimum <= value <= maximum)
+
+
+def _inv_tuple(value: Any, width: int | None = None) -> None:
+    _inv_need(type(value) is tuple)
+    if width is not None:
+        _inv_need(len(value) == width)
+
+
+def _inv_ordinals(rows: tuple[Any, ...]) -> None:
+    _inv_need(sorted(row[0] for row in rows) == list(range(len(rows))))
+
+
+def _inv_structure(objects: Any, evidence: Any) -> None:
+    """Validate every supplied cell before any semantic unsupported branch."""
+    _inv_tuple(objects)
+    _inv_tuple(evidence)
+    for row in objects:
+        _inv_tuple(row, 4)
+        kind, name, owner, sql = row
+        _inv_text(kind)
+        _inv_need(kind in ("table", "index", "view", "trigger"))
+        _inv_text(name, name=True)
+        _inv_text(owner, name=True)
+        if sql is not None:
+            _inv_text(sql)
+    _inv_need(len({row[1] for row in objects}) == len(objects))
+    for bundle in evidence:
+        _inv_tuple(bundle, 4)
+        owner, columns, indexes, infos = bundle
+        _inv_text(owner, name=True)
+        _inv_tuple(columns)
+        _inv_tuple(indexes)
+        _inv_tuple(infos)
+        for row in columns:
+            _inv_tuple(row, 7)
+            _inv_number(row[0])
+            _inv_text(row[1], name=True)
+            _inv_text(row[2])
+            _inv_number(row[3], 0, 1)
+            if row[4] is not None:
+                _inv_text(row[4])
+            _inv_number(row[5])
+            _inv_number(row[6], 0, 3)
+        _inv_ordinals(columns)
+        _inv_need(len({row[1] for row in columns}) == len(columns))
+        ranks = sorted(row[5] for row in columns if row[5])
+        _inv_need(ranks == list(range(1, len(ranks) + 1)))
+        for row in indexes:
+            _inv_tuple(row, 5)
+            _inv_number(row[0])
+            _inv_text(row[1], name=True)
+            _inv_number(row[2], 0, 1)
+            _inv_text(row[3])
+            _inv_need(row[3] in ("c", "u", "pk"))
+            _inv_number(row[4], 0, 1)
+        _inv_ordinals(indexes)
+        _inv_need(len({row[1] for row in indexes}) == len(indexes))
+        for entry in infos:
+            _inv_tuple(entry, 2)
+            _inv_text(entry[0], name=True)
+            _inv_tuple(entry[1])
+            for row in entry[1]:
+                _inv_tuple(row, 6)
+                _inv_number(row[0])
+                _inv_number(row[1], -2)
+                if row[2] is not None:
+                    _inv_text(row[2], name=True)
+                _inv_number(row[3], 0, 1)
+                if row[4] is not None:
+                    _inv_text(row[4], name=True)
+                _inv_number(row[5], 0, 1)
+            _inv_ordinals(entry[1])
+        _inv_need(len({entry[0] for entry in infos}) == len(infos))
+    _inv_need(len({bundle[0] for bundle in evidence}) == len(evidence))
+
+
+def _inv_references(objects: tuple[Any, ...], evidence: tuple[Any, ...]) -> None:
+    """Identity joins use raw strings; canonical names never repair references."""
+    rows = {row[1]: row for row in objects}
+    tables = {row[1] for row in objects if row[0] == "table"}
+    for kind, name, owner, _ in objects:
+        if kind in ("table", "view"):
+            _inv_need(owner == name)
+        else:
+            _inv_need(owner in rows)
+            _inv_need(rows[owner][0] in (("table",) if kind == "index" else ("table", "view")))
+    _inv_need({bundle[0] for bundle in evidence} == tables)
+    for _, columns, indexes, infos in evidence:
+        _inv_need({row[1] for row in indexes} == {entry[0] for entry in infos})
+        by_cid = {row[0]: row for row in columns}
+        for _, info in infos:
+            for row in info:
+                if row[1] >= 0:
+                    _inv_need(row[1] in by_cid and row[2] == by_cid[row[1]][1])
+                else:
+                    _inv_need(row[2] is None)
+
+
+def _inv_fold(value: str) -> str:
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in value)
+
+
+def _inv_canonical(value: str, known: frozenset[str]) -> str:
+    folded = _inv_fold(value)
+    return folded if value.isascii() and folded in known else value
+
+
+def _inv_collation(value: str | None) -> str | None:
+    if value is not None and value.isascii() and value.upper() in _COLLATIONS:
+        return value.upper()
+    return None
+
+
+def _inv_parse_table(row: tuple[Any, ...], known: frozenset[str]) -> _Shape | None:
+    if row[3] is None:
+        return None
+    try:
+        parsed = _objects(row[3])
+    except ValueError as error:
+        if type(error) is ValueError and error.args == ("Unsupported component shape",):
+            return None
+        raise
+    if len(parsed) != 1 or parsed[0]["kind"] != "table":
+        return None
+    model = parsed[0]
+    if model["name"] != _inv_canonical(row[1], known):
+        return None
+    return model
+
+
+def _inv_columns_match(model: _Shape, columns: tuple[Any, ...]) -> bool:
+    if len(columns) != len(model["columns"]):
+        return False
+    indexed = any(index[0] == "pk" for index in model["autoindexes"])
+    implicit_nn = not model["rowid"] or (model["strict"] and indexed)
+    for actual, expected in zip(columns, model["columns"], strict=True):
+        if not actual[1].isascii() or not actual[2].isascii():
+            return False
+        try:
+            default = _tokens(actual[4]) if actual[4] is not None else None
+        except ValueError as error:
+            if type(error) is ValueError and error.args == ("Unsupported component shape",):
+                return False
+            raise
+        if (
+            actual[1].lower() != expected[0]
+            or actual[2].upper() != expected[1]
+            or bool(actual[3]) != (expected[2] or (implicit_nn and bool(expected[4])))
+            or default != _pragma_default(expected[3])
+            or actual[5] != expected[4]
+            or actual[6] != expected[5]
+        ):
+            return False
+    return True
+
+
+def _inv_auto_keys(info: tuple[Any, ...]) -> tuple[tuple[str, str, str], ...] | None:
+    keys = []
+    auxiliary_started = False
+    for row in info:
+        if not row[5]:
+            auxiliary_started = True
+            continue
+        if auxiliary_started or row[1] < 0 or row[2] is None or not row[2].isascii():
+            return None
+        collation = _inv_collation(row[4])
+        if collation is None:
+            return None
+        keys.append((row[2].lower(), "DESC" if row[3] else "ASC", collation))
+    return tuple(keys)
+
+
+def _inv_auxiliary_match(
+    model: _Shape, origin: str, info: tuple[Any, ...], columns: tuple[Any, ...]
+) -> bool:
+    aux = [row for row in info if not row[5]]
+    if model["rowid"]:
+        return (
+            len(aux) == 1 and aux[0][1:4] == (-1, None, 0) and _inv_collation(aux[0][4]) == "BINARY"
+        )
+    primary = [item for item in model["autoindexes"] if item[0] == "pk"]
+    if len(primary) != 1 or len(primary[0][1]) != 1:
+        return False
+    pk = primary[0][1][0][0]
+    if any(col[6] != "BINARY" for col in model["columns"]):
+        return False
+    for kind, keys in model["autoindexes"]:
+        if len(keys) != 1 or keys[0][1:] != ["ASC", "BINARY"]:
+            return False
+        if kind == "u" and keys[0][0] == pk:
+            return False
+    expected = [
+        row for row in columns if (row[1].lower() != pk if origin == "pk" else row[1].lower() == pk)
+    ]
+    return len(aux) == len(expected) and all(
+        actual[1:4] == (column[0], column[1], 0) and _inv_collation(actual[4]) == "BINARY"
+        for actual, column in zip(aux, expected, strict=True)
+    )
+
+
+def _inv_internal_table(row: tuple[Any, ...], bundle: tuple[Any, ...]) -> bool:
+    shapes = {
+        "sqlite_sequence": ("CREATE TABLE sqlite_sequence(name,seq)", ("name", "seq")),
+        "sqlite_stat1": ("CREATE TABLE sqlite_stat1(tbl,idx,stat)", ("tbl", "idx", "stat")),
+    }
+    if row[0] != "table" or row[1] not in shapes:
+        return False
+    sql, names = shapes[row[1]]
+    expected = tuple((i, name, "", 0, None, 0, 0) for i, name in enumerate(names))
+    return (
+        row[2] == row[1]
+        and row[3] == sql
+        and bundle[1] == expected
+        and not bundle[2]
+        and not bundle[3]
+    )
+
+
+def _project_supplied_inventory(
+    objects: Any, evidence: Any, /
+) -> _SuppliedInventoryProjection | None:
+    """Partition supplied immutable facts; certify neither their source nor authority."""
+    _inv_structure(objects, evidence)
+    _inv_references(objects, evidence)
+    known = frozenset(name for component in _CP_COMPONENTS for name, _ in component[3]) | frozenset(
+        ("sqlite_sequence", "sqlite_stat1", "sqlite_stat2", "sqlite_stat3", "sqlite_stat4")
+    )
+    names = [_inv_canonical(row[1], known) for row in objects]
+    _inv_need(len(set(names)) == len(names))
+    normalized = tuple(
+        sorted(
+            (
+                (
+                    owner,
+                    tuple(sorted(columns)),
+                    tuple(sorted(indexes)),
+                    tuple(sorted((name, tuple(sorted(info))) for name, info in infos)),
+                )
+                for owner, columns, indexes, infos in evidence
+            ),
+            key=lambda bundle: _inv_canonical(bundle[0], known),
+        )
+    )
+    bundles = {bundle[0]: bundle for bundle in normalized}
+    rows = {row[1]: row for row in objects}
+    engine: set[str] = set()
+    has_ai = False
+    for row in objects:
+        if row[0] == "table" and _inv_fold(row[1]).startswith("sqlite_"):
+            if not _inv_internal_table(row, bundles[row[1]]):
+                return None
+            engine.add(row[1])
+    for row in objects:
+        if row[0] != "table" or row[1] in engine:
+            continue
+        owner = row[1]
+        _, columns, indexes, infos = bundles[owner]
+        index_info = dict(infos)
+        implicit = [index for index in indexes if index[3] in ("pk", "u")]
+        null_schema = [
+            item for item in objects if item[0] == "index" and item[2] == owner and item[3] is None
+        ]
+        model = None
+        if _inv_canonical(owner, known) in known or implicit or null_schema:
+            model = _inv_parse_table(row, known)
+            if model is None or not _inv_columns_match(model, columns):
+                return None
+            has_ai = has_ai or model["autoincrement"]
+        actual_obligations = []
+        for index in indexes:
+            _, name, unique, origin, partial = index
+            schema_row = rows.get(name)
+            if schema_row is not None and (schema_row[0] != "index" or schema_row[2] != owner):
+                return None
+            if origin == "c":
+                if (
+                    schema_row is None
+                    or schema_row[3] is None
+                    or _inv_fold(name).startswith("sqlite_")
+                ):
+                    return None
+                continue
+            if model is None or unique != 1 or partial != 0:
+                return None
+            match = re.fullmatch(
+                "sqlite_autoindex_" + re.escape(owner) + r"_([1-9][0-9]*)",
+                name,
+                re.ASCII,
+            )
+            if match is None or len(match[1]) > 19 or int(match[1]) > 2**63 - 1:
+                return None
+            if not model["rowid"] and origin == "pk":
+                if schema_row is not None:
+                    return None
+            elif schema_row is None or schema_row[3] is not None:
+                return None
+            else:
+                engine.add(name)
+            info = index_info[name]
+            keys = _inv_auto_keys(info)
+            if keys is None or not _inv_auxiliary_match(model, origin, info, columns):
+                return None
+            actual_obligations.append((origin, keys))
+        if model is not None:
+            expected_obligations = [
+                (kind, tuple(tuple(key) for key in keys)) for kind, keys in model["autoindexes"]
+            ]
+            if sorted(actual_obligations) != sorted(expected_obligations):
+                return None
+        listed = {index[1] for index in indexes}
+        if any(
+            item[0] == "index" and item[2] == owner and item[1] not in listed for item in objects
+        ):
+            return None
+    if has_ai and "sqlite_sequence" not in engine:
+        return None
+    if any(_inv_fold(row[1]).startswith("sqlite_") and row[1] not in engine for row in objects):
+        return None
+    logical_rows = tuple(
+        sorted(
+            (row for row in objects if row[1] not in engine),
+            key=lambda row: (_inv_canonical(row[1], known), row[0]),
+        )
+    )
+    engine_rows = tuple(
+        sorted((row for row in objects if row[1] in engine), key=lambda row: (row[1], row[0]))
+    )
+    _inv_need(len(logical_rows) + len(engine_rows) == len(objects))
+    logical = tuple((_inv_canonical(row[1], known), row[0]) for row in logical_rows)
+    return _SuppliedInventoryProjection(
+        logical, logical_rows, engine_rows, normalized, _current_profile_candidate(logical)
+    )

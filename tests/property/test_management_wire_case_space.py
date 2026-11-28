@@ -136,7 +136,7 @@ def _management_selected_audit(request):
 
         return observed
 
-    for name in ("decode_management", "encode_management"):
+    for name in ("decode_management", "encode_management", "_project_supplied_inventory"):
         patch.setattr(s, name, protect(getattr(s, name), name))
     for cls in (s._FrozenWireData, s.ProgressDocument):
         patch.setattr(
@@ -288,6 +288,18 @@ def _private_schema_read_error_nodes():
     }
 
 
+def _private_supplied_inventory_nodes():
+    base = "tests/unit/test_schema_catalog.py::"
+    return {
+        base + "test_private_supplied_inventory[PRIVATE-INV" + str(i).zfill(3) + "]"
+        for i in range(1, 152)
+    } | {
+        base + "test_private_supplied_inventory_literal_audit",
+        base + "test_private_supplied_inventory_order_and_immutability",
+        base + "test_private_supplied_inventory_raw_autoindex_owner_case",
+    }
+
+
 def test_management_wire_selected_scope(request):
     own = (
         "tests/unit/test_schema_catalog.py::",
@@ -302,6 +314,7 @@ def test_management_wire_selected_scope(request):
         set(_WIRE_FIXTURE["planned_nodes"])
         | _private_current_profile_nodes()
         | _private_schema_read_error_nodes()
+        | _private_supplied_inventory_nodes()
     )
     assert not any(
         item.get_closest_marker("skip") or item.get_closest_marker("xfail")
