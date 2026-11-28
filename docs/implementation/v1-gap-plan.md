@@ -215,3 +215,29 @@ sourceec384a2a/root8beacd0e와 손 입력/분모를 보존하고 unitda9d3b71의
 D17TR-01 종결은 이 선정된 실제 CTracer/G·A·B·H→K 경계뿐이며 임의 tracer/모든frame·native driver/파일/WAL/snapshot/owner·ACK/운영입장 권위 승인이 아니다. 원source 검토/독립변이2는 과거조건 증거, 최종unit 독립실행은 기존2뿐이다.119+감사1/기존577/합697·formal70/4105/245/보류10·fixture/golden은 그대로이며 후속 native 후보4는 미실행/별도다.
 
 새 final7-trace-fix2의 정확scope·도구pin/비작성자 상태전사 검토 뒤 실제452/비소유445 tree를 만들고 full예상30842 단일실행·85%/coverage7/wheel87/origin8/smoke를 검증한다. 이 상태snapshot의 전체/게시승인은 아직 후속이며 실제 immutable state/final·commit/tree/message/trailer0·fresh 선행CI3·일반HTTPS push/새동일SHA CI3로 닫는다. 원scope·원자료·무관dirty4/최신H03를 보존하고 전체v1/실장비 완료로 확대하지 않는다.
+
+
+## G09a D18: 실제 native 메모리 연결의 유한 관측 보강
+
+앞 D17의 검증 전 상태·callback/coverage 실패와 원 CI3.11 실패는 각각 해당 시점의 기록으로 보존한다. 이후 D17 sourceec384a2a/unitda9d3b71의 정확 전체30,842건·coverage7/offline wheel87·copy/wheel 부모/실spawn 출처를 인수했고, CI3.11의 UI 비동기 완료 대기 시험만 별도 두 파일 단위로 보정했다. 공개 `6622c1f7c65f32cbfeff9eccb171d420ac6c8598` / tree06b8218c의 CI46123097168에서 core3.11·core3.13·optional-runtime 실제 성공3과 ref·전체 commit 메시지/trailer0을 확인했다. 이 결과는 전체 설계 v1.0·실장비 완료가 아니다.
+
+다음 D18은 제품/source를 바꾸지 않고 실제 SQLite `:memory:`의 private collector 시험4를 추가하는 한 단위다. 빈 입력은 builtin direct/forwarding을 별도 연결에서 비교하고, row quota·R08 Projection·R08 inner-text quota를 forwarding 각1로 관측한다. semantic4/node4/native5·고정 fixture181424B/a7285387을 채택하며 원697+4의 결합701/전체30846은 실제 수집 전 계획 수다. formal70/legacy4105/명시245·보류10·옛 source/fixture는 불변이다.
+
+직접 builtin의 native fetch/close/C-return identity UNOBSERVED와 read-helper 반환·계약 도출을 forwarding4의 실제 위임/실측과 구분한다. caller factory/TX·연결 생존·hook 동작·raw leaf11 동일성/negative prefix·실제 원 함수/호스트 래퍼·원본 복원·제품 I/O0을 검사한다. quota는 응답 행/UTF8 텍스트 비용이며 SQLite allocator 강제상한·readonly/WAL/안정 snapshot/단일DB 완전성/운영 권위의 증명이 아니다.
+
+원 단독4는 실제 native5/phase12·오류skip0·준비3.847초로 통과했다. 같은 결과를 결합/전체 PASS로 바꾸지 않는다. 이후 root가 property-first의 기존 D16 감사 wrapper와 직접 globals 출처 단언의 정적 충돌 D18INT01을 식별해 원 재현·metadata 최소 수정·같은 wrapper 실제 호출을 유지하는 유한 후속을 배정했다. 실제 후속 결과 인수 전에는 예측 실패/새 성공을 완료 선언하지 않는다.
+
+계획 단위는 시험/fixture/선택 감사3와 직접 case/gap·배정 snapshot·비작성자 신규 시험 검토4의 정확7, BASE453→최종455/비소유448이며 제품 source0이다. [D18 경우의 수·관측 계약](../testing/g09-migration-backup-cases.md)과 [작업 배정표](../collaboration/assignments.md)의 유한 실행/독립 검토를 따른다. 이 스냅샷에서는 새 정확 tree의 결합/독립 반례·민감도/full30846·coverage7/wheel87·새SHA CI3가 미완료이며 실제 state/final·tree/ref/run으로 후속 결론을 닫는다. 전체 observer/G09a/v1·Windows 실장비/실제 DB cut·CURRENT/EMPTY/입장/owner/ACK 권위는 별도다.
+
+
+### D18 정확7 통합 준비 상태 갱신(최종 전체 검증 전)
+
+앞 절은 단독4 뒤 원 호스트 충돌을 정적으로 식별한 당시 snapshot이다. 이후 원 property-first는 control1 PASS/시험 전제FAIL4·native0으로 실제 재현됐고 원 실패를 보존했다. 출처 판단 한 식만 unwrap해 원 wrapper 실제 호출을 유지한 unit9732ba45/fixturea728/root property6b44를 인수했다. 수정 단독4/hosted5는 각각 PASS·native5, 준비3.955/3.843초이며 원 source/입력/기대/prefix·AST는 그대로다.
+
+동일 정확3의 property-first701은 원697 포함 정확 집합/XML 각1·2103phase·오류skip0으로 통과했다(준비7.795초). 새 native5와 S1 TEMP 파일DB20/읽기20·관리 I/O0을 구분했다. source 단일 span3은 control3PASS→실제 목표 assertion FAIL3/MASKED·INVALID0이다. NM02의 뒤 header LIMIT는 query-prefix 단언으로 검출했고 reason만으로 kill이라 부르거나 첫 실패 뒤 usage/raise 단언을 실행했다고 쓰지 않았다. 도달은 실제 값/예외와 고정 CFG 근거이며 직접 line-hit trace는 아니다.
+
+비작성자의 같은3 hosted5 PASS/12.275초·독립 결과5/identity11·원 wrapped D16 RETURNED3와 leaf1 값동일 복제→identity 목표FAIL/P2 요청2·allocation1→단일 연결 목표FAIL을 별도 인수했다. 독립7/실native7·추가allocation0·원 source/부모spawn·복원/I/O0·정적3이다. source3 site와 독립 adapter2를 같은 고유 product fault5로 합치지 않는다. [공식 독립 검토](../reviews/g09a-native-memory-d18-review.md)는 report90404d82 raw 그대로 채택한 신규 시험 delta 한정 CLOSED/새OPEN0이다. 추정 경로/정적 alias/후처리 key 오류와 원 FAIL은 보존했고 정상 재실행0이다.
+
+공용 preliminary2·UNIT pin1·tree helper의 X00 delta는 p8 비작성자 검토를, QA 원5 적응은 X00 비작성자 검토를 거쳤다. root 저장 XML 도구 점검·인코딩/adapter literal count 오류와 정정은 실제 제품/전체 실행이 아니다. source0·semantic4/node4/native5·원70/4105/245/보류10은 유지한다.
+
+정확7/455파일·비소유448·전체 예상30846은 최종 snapshot으로 결속하되 이 갱신 작성 시 full1회/coverage7/offline wheel87·실제 copy/wheel 부모/spawn origin8·기존 smoke/새SHA CI3·commit/push는 아직 실행하지 않았다. 실제 immutable state/final·정확 tree·Git/CI에 후속 결론을 연결한다. 다음 기능 증분의 정적 준비와 별도 BASE/계약·실행 배정을 구분하며 전체 observer/G09a/v1·실제 DB cut·EMPTY/CURRENT/입장/owner/ACK·Windows 실장비 완료로 확대하지 않는다.

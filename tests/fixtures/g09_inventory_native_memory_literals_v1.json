@@ -1,0 +1,4896 @@
+{
+  "format": "recoryn.inventory-native-memory-literals.v1",
+  "literals": {
+    "format": "D18_DESCRIPTIVE_HAND_PREPARATION_NOT_PRODUCT_FIXTURE",
+    "state": "UNADOPTED_NOT_EXECUTED_INDEPENDENT_REVIEW_REQUIRED",
+    "source_root_contract_SHA256": "61cf1c3430e82ac5c1019e8d2ab2539e6e2553455fff3620a7200395b40e144e",
+    "candidate_counts": {
+      "semantic": 4,
+      "nodes": 4,
+      "fresh_native_connections": 5,
+      "collector_calls": 5,
+      "literal_audit_extra_node": 0,
+      "direct_calls": 1,
+      "forwarding_native_calls": 4,
+      "actual_calls": 0,
+      "adopted_increment": 0
+    },
+    "literal_language": {
+      "arrays": "independent expected values; construct expected builtin tuples only in later approved fixture; actual native objects never generated/coerced by proxy",
+      "relation_objects": "symbolic pre-read bindings, not SQL rows, numeric stamp values or None inserted into actual native response"
+    },
+    "provenance": {
+      "core7_original_case_canonical_SHA256": "e354f086cd7cd758de301d7478b55452569bfbd553cea9bc38ca5e395a5ef4c4",
+      "core12_original_case_canonical_SHA256": "6b8c89e371dfdfe14e6371c9f4d888e0e460d2bc2994e5bedfa04c48176e92e1",
+      "R08_original_input": {
+        "objects": [
+          [
+            "table",
+            "Sessions",
+            "Sessions",
+            "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)"
+          ],
+          [
+            "index",
+            "sqlite_autoindex_Sessions_1",
+            "Sessions",
+            null
+          ],
+          [
+            "index",
+            "sqlite_autoindex_Sessions_2",
+            "Sessions",
+            null
+          ]
+        ],
+        "evidence": [
+          [
+            "Sessions",
+            [
+              [
+                0,
+                "Session_ID",
+                "TEXT",
+                0,
+                null,
+                1,
+                0
+              ],
+              [
+                1,
+                "Input_Key",
+                "TEXT",
+                0,
+                null,
+                0,
+                0
+              ]
+            ],
+            [
+              [
+                0,
+                "sqlite_autoindex_Sessions_2",
+                1,
+                "u",
+                0
+              ],
+              [
+                1,
+                "sqlite_autoindex_Sessions_1",
+                1,
+                "pk",
+                0
+              ]
+            ],
+            [
+              [
+                "sqlite_autoindex_Sessions_2",
+                [
+                  [
+                    0,
+                    1,
+                    "Input_Key",
+                    0,
+                    "BINARY",
+                    1
+                  ],
+                  [
+                    1,
+                    -1,
+                    null,
+                    0,
+                    "BINARY",
+                    0
+                  ]
+                ]
+              ],
+              [
+                "sqlite_autoindex_Sessions_1",
+                [
+                  [
+                    0,
+                    0,
+                    "Session_ID",
+                    0,
+                    "BINARY",
+                    1
+                  ],
+                  [
+                    1,
+                    -1,
+                    null,
+                    0,
+                    "BINARY",
+                    0
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      },
+      "R08_original_expected": {
+        "kind": "Projection",
+        "matcher_calls": 1,
+        "fields_order": [
+          "logical_objects",
+          "logical_object_rows",
+          "engine_object_rows",
+          "table_evidence",
+          "profile_candidate"
+        ],
+        "fields": {
+          "logical_objects": [
+            [
+              "sessions",
+              "table"
+            ]
+          ],
+          "logical_object_rows": [
+            [
+              "table",
+              "Sessions",
+              "Sessions",
+              "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)"
+            ]
+          ],
+          "engine_object_rows": [
+            [
+              "index",
+              "sqlite_autoindex_Sessions_1",
+              "Sessions",
+              null
+            ],
+            [
+              "index",
+              "sqlite_autoindex_Sessions_2",
+              "Sessions",
+              null
+            ]
+          ],
+          "table_evidence": [
+            [
+              "Sessions",
+              [
+                [
+                  0,
+                  "Session_ID",
+                  "TEXT",
+                  0,
+                  null,
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  "Input_Key",
+                  "TEXT",
+                  0,
+                  null,
+                  0,
+                  0
+                ]
+              ],
+              [
+                [
+                  0,
+                  "sqlite_autoindex_Sessions_2",
+                  1,
+                  "u",
+                  0
+                ],
+                [
+                  1,
+                  "sqlite_autoindex_Sessions_1",
+                  1,
+                  "pk",
+                  0
+                ]
+              ],
+              [
+                [
+                  "sqlite_autoindex_Sessions_1",
+                  [
+                    [
+                      0,
+                      0,
+                      "Session_ID",
+                      0,
+                      "BINARY",
+                      1
+                    ],
+                    [
+                      1,
+                      -1,
+                      null,
+                      0,
+                      "BINARY",
+                      0
+                    ]
+                  ]
+                ],
+                [
+                  "sqlite_autoindex_Sessions_2",
+                  [
+                    [
+                      0,
+                      1,
+                      "Input_Key",
+                      0,
+                      "BINARY",
+                      1
+                    ],
+                    [
+                      1,
+                      -1,
+                      null,
+                      0,
+                      "BINARY",
+                      0
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ],
+          "profile_candidate": null
+        },
+        "original_row_identity_indices": {
+          "logical": [
+            0
+          ],
+          "engine": [
+            1,
+            2
+          ]
+        },
+        "all_input_rows_accounted_once": true,
+        "actual_shape_CURRENT_EMPTY_or_authority": false
+      },
+      "empty_original_input": {
+        "objects": [],
+        "evidence": []
+      },
+      "empty_original_expected": {
+        "kind": "Projection",
+        "matcher_calls": 1,
+        "fields_order": [
+          "logical_objects",
+          "logical_object_rows",
+          "engine_object_rows",
+          "table_evidence",
+          "profile_candidate"
+        ],
+        "fields": {
+          "logical_objects": [],
+          "logical_object_rows": [],
+          "engine_object_rows": [],
+          "table_evidence": [],
+          "profile_candidate": null
+        },
+        "original_row_identity_indices": {
+          "logical": [],
+          "engine": []
+        },
+        "all_input_rows_accounted_once": true,
+        "actual_shape_CURRENT_EMPTY_or_authority": false
+      },
+      "R08_original_input_SHA256": "1413d61b41d5b56d686aa3c5a78c8b9af105a87ba0f26f1c7ddea13e6e79b443",
+      "R08_permuted_input_SHA256": "fc7bacf7000691941a98fc75ef4194b0f0edf45b53bd4e9707e46ffd36ac77f1",
+      "R08_candidate_input": {
+        "objects": [
+          [
+            "table",
+            "Sessions",
+            "Sessions",
+            "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)"
+          ],
+          [
+            "index",
+            "sqlite_autoindex_Sessions_1",
+            "Sessions",
+            null
+          ],
+          [
+            "index",
+            "sqlite_autoindex_Sessions_2",
+            "Sessions",
+            null
+          ]
+        ],
+        "evidence": [
+          [
+            "Sessions",
+            [
+              [
+                0,
+                "Session_ID",
+                "TEXT",
+                0,
+                null,
+                1,
+                0
+              ],
+              [
+                1,
+                "Input_Key",
+                "TEXT",
+                0,
+                null,
+                0,
+                0
+              ]
+            ],
+            [
+              [
+                0,
+                "sqlite_autoindex_Sessions_2",
+                1,
+                "u",
+                0
+              ],
+              [
+                1,
+                "sqlite_autoindex_Sessions_1",
+                1,
+                "pk",
+                0
+              ]
+            ],
+            [
+              [
+                "sqlite_autoindex_Sessions_1",
+                [
+                  [
+                    0,
+                    0,
+                    "Session_ID",
+                    0,
+                    "BINARY",
+                    1
+                  ],
+                  [
+                    1,
+                    -1,
+                    null,
+                    0,
+                    "BINARY",
+                    0
+                  ]
+                ]
+              ],
+              [
+                "sqlite_autoindex_Sessions_2",
+                [
+                  [
+                    0,
+                    1,
+                    "Input_Key",
+                    0,
+                    "BINARY",
+                    1
+                  ],
+                  [
+                    1,
+                    -1,
+                    null,
+                    0,
+                    "BINARY",
+                    0
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      },
+      "reversible_patch": {
+        "pointer": "/evidence/0/3",
+        "before": [
+          [
+            "sqlite_autoindex_Sessions_2",
+            [
+              [
+                0,
+                1,
+                "Input_Key",
+                0,
+                "BINARY",
+                1
+              ],
+              [
+                1,
+                -1,
+                null,
+                0,
+                "BINARY",
+                0
+              ]
+            ]
+          ],
+          [
+            "sqlite_autoindex_Sessions_1",
+            [
+              [
+                0,
+                0,
+                "Session_ID",
+                0,
+                "BINARY",
+                1
+              ],
+              [
+                1,
+                -1,
+                null,
+                0,
+                "BINARY",
+                0
+              ]
+            ]
+          ]
+        ],
+        "after": [
+          [
+            "sqlite_autoindex_Sessions_1",
+            [
+              [
+                0,
+                0,
+                "Session_ID",
+                0,
+                "BINARY",
+                1
+              ],
+              [
+                1,
+                -1,
+                null,
+                0,
+                "BINARY",
+                0
+              ]
+            ]
+          ],
+          [
+            "sqlite_autoindex_Sessions_2",
+            [
+              [
+                0,
+                1,
+                "Input_Key",
+                0,
+                "BINARY",
+                1
+              ],
+              [
+                1,
+                -1,
+                null,
+                0,
+                "BINARY",
+                0
+              ]
+            ]
+          ]
+        ],
+        "inverse_swap_recovers_original": true,
+        "other_fields_changed": false
+      },
+      "quotedDDL_SHA256": "1d47005d9cd608860b9f0f0b40801f7c9b22b1ceac117f05c1844e6b3467164b",
+      "headers_from": "fixed H01 candidate query descriptions, not product templates/parser"
+    },
+    "observability": {
+      "proposed_real_wrappers": [
+        "_inventory_stamp: call actual function, record accepted int result/exception, no generated value",
+        "_inventory_read_rows: call actual function, record SQL+returned names/rows or caught original exception+scalar usage, preserve identity",
+        "_project_supplied_inventory: actual args/result/exception and row identities, call original real function",
+        "_current_profile_candidate: actual args/result/exception, call original real function"
+      ],
+      "binding_requirements": [
+        "pin actual future source and exact unwrapped code/globals",
+        "record real wrapper callees not only wrapper name/version",
+        "restore original callable identities in finally",
+        "no precomputed Projection/raise/return stub"
+      ],
+      "quota_observation": {
+        "method": "caught actual error __traceback__ frames/code/globals/raise line and scalar copies; release frame references after identity/close assertions",
+        "LIMIT_contract": {
+          "exact_class": "recoryn.schema._InventoryCollectionError",
+          "args": [
+            "LIMIT"
+          ],
+          "reason_attribute_assumed": false
+        }
+      },
+      "proxy_contract": {
+        "underlying": "fresh real native connection and cursors",
+        "forward_without_conversion": [
+          "cursor",
+          "row_factory assignment to actual native cursor",
+          "execute",
+          "description",
+          "fetchmany exact size",
+          "rows and exceptions",
+          "close"
+        ],
+        "record_before_assert": true,
+        "may_generate_rows_or_expected_return": false,
+        "may_preassert_expected_fetch_or_description": false,
+        "caller_settings_setter_attempts_in_product": 0,
+        "product_cursor_row_factory_required": null,
+        "close_attempt_count_each": 1
+      },
+      "direct_counter_scope": "D18H-01 OPEN; no native method count/leaf-return identity fabricated from hooks or terminal result",
+      "query_trace_is_not_fetch_or_close_count": true
+    },
+    "cases": [
+      {
+        "descriptive_candidate": "empty parity",
+        "semantic_candidates_proposed": 1,
+        "nodes_proposed": 1,
+        "formal_ID": null,
+        "pytest_nodeid": null,
+        "calls": [
+          {
+            "descriptive_call_key": "empty-direct",
+            "native_mode_proposed": "native_direct",
+            "fresh_native_connections": 1,
+            "collector_calls": 1,
+            "DDL": null,
+            "fixture": {
+              "native_constructor_proposal": {
+                "callable": "sqlite3.connect",
+                "args": [
+                  ":memory:"
+                ],
+                "kwargs": {
+                  "isolation_level": null
+                },
+                "future_driver_precondition": "record actual module/version and require no active TX before explicit BEGIN; mismatch is fixture/input report, not silent repair"
+              },
+              "caller_state": {
+                "row_factory": "native sqlite3.Row callable identity",
+                "text_factory": "exact builtin str callable identity",
+                "isolation_level": null,
+                "in_transaction_during_product": true
+              },
+              "hook_setup": {
+                "trace_sentinel": {
+                  "behavior": "append actual statements to phase-tagged in-memory log; no expected assertions in callback",
+                  "identity_getter_available": false
+                },
+                "progress_sentinel": {
+                  "interval_opcodes_proposed": 1,
+                  "return_value": 0,
+                  "behavior": "increment phase-tagged counter; do not cancel or assert expected counts",
+                  "identity_getter_available": false
+                },
+                "preservation_proof": "observable before/during/after behavior + proxy setter attempts + static restriction; never claim direct native callback getter identity"
+              },
+              "ordered_steps": [
+                {
+                  "phase": "fixture_connect",
+                  "new_native_connections": 1,
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_DDL",
+                  "SQL": "case exact DDL or none; use own native cursor then close",
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_state",
+                  "actions": [
+                    "set caller row_factory=sqlite3.Row",
+                    "text_factory=str",
+                    "install trace/progress sentinels"
+                  ],
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_BEGIN",
+                  "SQL": "BEGIN",
+                  "own_cursor_close": true,
+                  "expected_in_transaction": true,
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_preread",
+                  "queries": [
+                    {
+                      "SQL": "PRAGMA main.schema_version",
+                      "description": [
+                        [
+                          "schema_version",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": {
+                        "relation": "fixture.pre_read.schema_version.scalar",
+                        "row_shape": "one native exact tuple of width1",
+                        "cell_domain": {
+                          "exact_builtin_type": "int",
+                          "bool_allowed": false,
+                          "minimum": -9223372036854775808,
+                          "maximum": 9223372036854775807
+                        },
+                        "numeric_value_not_fabricated": true
+                      }
+                    },
+                    {
+                      "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                      "description": [
+                        [
+                          "type",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "tbl_name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "sql",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": "case frozen raw ObjectRows in exact original order"
+                    },
+                    {
+                      "SQL": "PRAGMA main.table_list",
+                      "description": [
+                        [
+                          "schema",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "type",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "ncol",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "wr",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "strict",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": "case fixed multiset; native order logged"
+                    }
+                  ],
+                  "cursor_row_factory": null,
+                  "fetch_method": "fixture fetchall outside product budget",
+                  "each_cursor_close": 1,
+                  "product_cost": false
+                },
+                {
+                  "phase": "open_product_window",
+                  "reset_only_measurement_counters": true,
+                  "snapshot": [
+                    "caller factories",
+                    "TX",
+                    "isolation_level",
+                    "sentinel baselines",
+                    "callable/code/globals/hash"
+                  ]
+                },
+                {
+                  "phase": "product_call",
+                  "collector_calls": 1,
+                  "new_connect_fileDB_ATTACH_backup_writeSQL_TXchange_connectionclose": 0
+                },
+                {
+                  "phase": "close_product_window",
+                  "copy_actual_observations_then_compare_independent_literals": true
+                },
+                {
+                  "phase": "fixture_postcheck",
+                  "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                  "row_factory": null,
+                  "value_oracle": "same frozen raw schema rows",
+                  "require_connection_usable": true,
+                  "require_caller_factory_TX_unchanged": true,
+                  "sentinel_behavior_before_during_after": "record; no native identity getter claim",
+                  "closed_product_cursor_probe": "where proxy retained native cursor, fetchone after close must raise sqlite3.ProgrammingError; no exact message invented",
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_cleanup",
+                  "SQL": "ROLLBACK if explicit fixture BEGIN is active",
+                  "own_cursor_close": true,
+                  "clear_fixture_hooks": true,
+                  "close_caller_connection": true,
+                  "product_cost": false
+                }
+              ],
+              "failure_cleanup": "preserve first driver/DDL/preread/exception/version facts; cleanup own native resources; do not skip/xfail/repair expected; no product call if fixture facts mismatch",
+              "same_call_identity_scope": {
+                "compare_is_only": "native fetch row seen by forwarding cursor -> real D16 arguments -> Projection raw row where retained",
+                "excluded": [
+                  "JSON-built expected tuples",
+                  "pre-read rows from earlier query",
+                  "different fresh connections",
+                  "stamp/table_list consumed rows",
+                  "normalized outer containers"
+                ],
+                "direct_native_leaf": "unresolved D18H-01; helper-return tuple identity is not direct C-return measurement"
+              },
+              "current_coverage_sys_tracer": "not hijacked; no extra observer/profile implementation authorized"
+            },
+            "pre_read_raw_schema_literal": [],
+            "pre_read_table_list": {
+              "value_multiset": [
+                [
+                  "main",
+                  "sqlite_schema",
+                  "table",
+                  5,
+                  0,
+                  0
+                ]
+              ],
+              "order": "single row; native order retained"
+            },
+            "budget": {
+              "constructor": "real _InventoryReadBudget",
+              "exact_builtin_int_positional": [
+                3,
+                95
+              ],
+              "no_bool_or_subclass": true
+            },
+            "product_query_program": [
+              {
+                "ordinal": 1,
+                "SQL": "PRAGMA main.schema_version",
+                "SQL_UTF8_SHA256": "4806ff831cbb51c6a739ebed28c708396802dc4a7da4c939ff3bab1d101b8468",
+                "description_literal": [
+                  [
+                    "schema_version",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "relation": "fixture.pre_read.schema_version.scalar",
+                  "row_shape": "one native exact tuple of width1",
+                  "cell_domain": {
+                    "exact_builtin_type": "int",
+                    "bool_allowed": false,
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036854775807
+                  },
+                  "numeric_value_not_fabricated": true
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 14,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  4,
+                  3
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "relation": "fixture.pre_read.schema_version.scalar",
+                      "row_shape": "one native exact tuple of width1",
+                      "cell_domain": {
+                        "exact_builtin_type": "int",
+                        "bool_allowed": false,
+                        "minimum": -9223372036854775808,
+                        "maximum": 9223372036854775807
+                      },
+                      "numeric_value_not_fabricated": true
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  1,
+                  14
+                ]
+              },
+              {
+                "ordinal": 2,
+                "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                "SQL_UTF8_SHA256": "8f779f391bfb537d173c8b574da144fe943cf0c8f7231d35bda394398b2b69c3",
+                "description_literal": [
+                  [
+                    "type",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "tbl_name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "sql",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": [],
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 0,
+                "header_UTF8_bytes": 19,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  3
+                ],
+                "native_chunks": [
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  1,
+                  33
+                ]
+              },
+              {
+                "ordinal": 3,
+                "SQL": "PRAGMA main.table_list",
+                "SQL_UTF8_SHA256": "a281934480801ac37d9cf4480848fe02d043fdf79f93269746097f306eb2592b",
+                "description_literal": [
+                  [
+                    "schema",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "type",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "ncol",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "wr",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "strict",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "value_multiset": [
+                    [
+                      "main",
+                      "sqlite_schema",
+                      "table",
+                      5,
+                      0,
+                      0
+                    ]
+                  ],
+                  "order": "single row; native order retained"
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 26,
+                "row_string_UTF8_bytes_on_full_processing": 22,
+                "fetchmany_requests": [
+                  3,
+                  2
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "value_multiset": [
+                        [
+                          "main",
+                          "sqlite_schema",
+                          "table",
+                          5,
+                          0,
+                          0
+                        ]
+                      ],
+                      "order": "single row; native order retained"
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  2,
+                  81
+                ]
+              },
+              {
+                "ordinal": 4,
+                "SQL": "PRAGMA main.schema_version",
+                "SQL_UTF8_SHA256": "4806ff831cbb51c6a739ebed28c708396802dc4a7da4c939ff3bab1d101b8468",
+                "description_literal": [
+                  [
+                    "schema_version",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "relation": "fixture.pre_read.schema_version.scalar",
+                  "row_shape": "one native exact tuple of width1",
+                  "cell_domain": {
+                    "exact_builtin_type": "int",
+                    "bool_allowed": false,
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036854775807
+                  },
+                  "numeric_value_not_fabricated": true
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 14,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  2,
+                  1
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "relation": "fixture.pre_read.schema_version.scalar",
+                      "row_shape": "one native exact tuple of width1",
+                      "cell_domain": {
+                        "exact_builtin_type": "int",
+                        "bool_allowed": false,
+                        "minimum": -9223372036854775808,
+                        "maximum": 9223372036854775807
+                      },
+                      "numeric_value_not_fabricated": true
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  3,
+                  95
+                ]
+              }
+            ],
+            "oracle": {
+              "normal_complete": true,
+              "actual_D16_calls": 1,
+              "actual_matcher_calls": 1,
+              "accepted_stamp_relation": {
+                "start_equals_independent_preread": true,
+                "accepted_end_exists": true,
+                "accepted_end_equals_start_equals_preread": true,
+                "numeric_stamp_literal": null
+              },
+              "product_table_list_observed": true,
+              "identity_observation_status": "planned, direct native missing seam D18H-01",
+              "current_observed_result": "NONE_NOT_EXECUTED",
+              "independent_result5": {
+                "source_case_pointer": "core151#/cases/12",
+                "literal": {
+                  "kind": "Projection",
+                  "matcher_calls": 1,
+                  "fields_order": [
+                    "logical_objects",
+                    "logical_object_rows",
+                    "engine_object_rows",
+                    "table_evidence",
+                    "profile_candidate"
+                  ],
+                  "fields": {
+                    "logical_objects": [],
+                    "logical_object_rows": [],
+                    "engine_object_rows": [],
+                    "table_evidence": [],
+                    "profile_candidate": null
+                  },
+                  "original_row_identity_indices": {
+                    "logical": [],
+                    "engine": []
+                  },
+                  "all_input_rows_accounted_once": true,
+                  "actual_shape_CURRENT_EMPTY_or_authority": false
+                }
+              },
+              "counters": {
+                "queries": 4,
+                "rows": 3,
+                "text_bytes": 95,
+                "fetchmany": 7,
+                "close_attempts": 4
+              },
+              "product_table_list_order_policy": "fixed multiset plus actual native raw order retained, no generated order",
+              "actual_D16_input_value_oracle": {
+                "literal_ref": "provenance.empty_original_input",
+                "compare": "exact tuple-valued raw Objects/Evidence after explicit permitted infos permutation",
+                "actual_function_required": true
+              },
+              "matcher_argument_value_oracle": {
+                "literal_values": [],
+                "actual_function_required": true
+              }
+            },
+            "direct_method_observation_requirement": "OPEN D18H-01",
+            "runtime_authorized": false
+          },
+          {
+            "descriptive_call_key": "empty-forward",
+            "native_mode_proposed": "native_forwarding",
+            "fresh_native_connections": 1,
+            "collector_calls": 1,
+            "DDL": null,
+            "fixture": {
+              "native_constructor_proposal": {
+                "callable": "sqlite3.connect",
+                "args": [
+                  ":memory:"
+                ],
+                "kwargs": {
+                  "isolation_level": null
+                },
+                "future_driver_precondition": "record actual module/version and require no active TX before explicit BEGIN; mismatch is fixture/input report, not silent repair"
+              },
+              "caller_state": {
+                "row_factory": "native sqlite3.Row callable identity",
+                "text_factory": "exact builtin str callable identity",
+                "isolation_level": null,
+                "in_transaction_during_product": true
+              },
+              "hook_setup": {
+                "trace_sentinel": {
+                  "behavior": "append actual statements to phase-tagged in-memory log; no expected assertions in callback",
+                  "identity_getter_available": false
+                },
+                "progress_sentinel": {
+                  "interval_opcodes_proposed": 1,
+                  "return_value": 0,
+                  "behavior": "increment phase-tagged counter; do not cancel or assert expected counts",
+                  "identity_getter_available": false
+                },
+                "preservation_proof": "observable before/during/after behavior + proxy setter attempts + static restriction; never claim direct native callback getter identity"
+              },
+              "ordered_steps": [
+                {
+                  "phase": "fixture_connect",
+                  "new_native_connections": 1,
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_DDL",
+                  "SQL": "case exact DDL or none; use own native cursor then close",
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_state",
+                  "actions": [
+                    "set caller row_factory=sqlite3.Row",
+                    "text_factory=str",
+                    "install trace/progress sentinels"
+                  ],
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_BEGIN",
+                  "SQL": "BEGIN",
+                  "own_cursor_close": true,
+                  "expected_in_transaction": true,
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_preread",
+                  "queries": [
+                    {
+                      "SQL": "PRAGMA main.schema_version",
+                      "description": [
+                        [
+                          "schema_version",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": {
+                        "relation": "fixture.pre_read.schema_version.scalar",
+                        "row_shape": "one native exact tuple of width1",
+                        "cell_domain": {
+                          "exact_builtin_type": "int",
+                          "bool_allowed": false,
+                          "minimum": -9223372036854775808,
+                          "maximum": 9223372036854775807
+                        },
+                        "numeric_value_not_fabricated": true
+                      }
+                    },
+                    {
+                      "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                      "description": [
+                        [
+                          "type",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "tbl_name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "sql",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": "case frozen raw ObjectRows in exact original order"
+                    },
+                    {
+                      "SQL": "PRAGMA main.table_list",
+                      "description": [
+                        [
+                          "schema",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "type",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "ncol",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "wr",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "strict",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": "case fixed multiset; native order logged"
+                    }
+                  ],
+                  "cursor_row_factory": null,
+                  "fetch_method": "fixture fetchall outside product budget",
+                  "each_cursor_close": 1,
+                  "product_cost": false
+                },
+                {
+                  "phase": "open_product_window",
+                  "reset_only_measurement_counters": true,
+                  "snapshot": [
+                    "caller factories",
+                    "TX",
+                    "isolation_level",
+                    "sentinel baselines",
+                    "callable/code/globals/hash"
+                  ]
+                },
+                {
+                  "phase": "product_call",
+                  "collector_calls": 1,
+                  "new_connect_fileDB_ATTACH_backup_writeSQL_TXchange_connectionclose": 0
+                },
+                {
+                  "phase": "close_product_window",
+                  "copy_actual_observations_then_compare_independent_literals": true
+                },
+                {
+                  "phase": "fixture_postcheck",
+                  "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                  "row_factory": null,
+                  "value_oracle": "same frozen raw schema rows",
+                  "require_connection_usable": true,
+                  "require_caller_factory_TX_unchanged": true,
+                  "sentinel_behavior_before_during_after": "record; no native identity getter claim",
+                  "closed_product_cursor_probe": "where proxy retained native cursor, fetchone after close must raise sqlite3.ProgrammingError; no exact message invented",
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_cleanup",
+                  "SQL": "ROLLBACK if explicit fixture BEGIN is active",
+                  "own_cursor_close": true,
+                  "clear_fixture_hooks": true,
+                  "close_caller_connection": true,
+                  "product_cost": false
+                }
+              ],
+              "failure_cleanup": "preserve first driver/DDL/preread/exception/version facts; cleanup own native resources; do not skip/xfail/repair expected; no product call if fixture facts mismatch",
+              "same_call_identity_scope": {
+                "compare_is_only": "native fetch row seen by forwarding cursor -> real D16 arguments -> Projection raw row where retained",
+                "excluded": [
+                  "JSON-built expected tuples",
+                  "pre-read rows from earlier query",
+                  "different fresh connections",
+                  "stamp/table_list consumed rows",
+                  "normalized outer containers"
+                ],
+                "direct_native_leaf": "unresolved D18H-01; helper-return tuple identity is not direct C-return measurement"
+              },
+              "current_coverage_sys_tracer": "not hijacked; no extra observer/profile implementation authorized"
+            },
+            "pre_read_raw_schema_literal": [],
+            "pre_read_table_list": {
+              "value_multiset": [
+                [
+                  "main",
+                  "sqlite_schema",
+                  "table",
+                  5,
+                  0,
+                  0
+                ]
+              ],
+              "order": "single row; native order retained"
+            },
+            "budget": {
+              "constructor": "real _InventoryReadBudget",
+              "exact_builtin_int_positional": [
+                3,
+                95
+              ],
+              "no_bool_or_subclass": true
+            },
+            "product_query_program": [
+              {
+                "ordinal": 1,
+                "SQL": "PRAGMA main.schema_version",
+                "SQL_UTF8_SHA256": "4806ff831cbb51c6a739ebed28c708396802dc4a7da4c939ff3bab1d101b8468",
+                "description_literal": [
+                  [
+                    "schema_version",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "relation": "fixture.pre_read.schema_version.scalar",
+                  "row_shape": "one native exact tuple of width1",
+                  "cell_domain": {
+                    "exact_builtin_type": "int",
+                    "bool_allowed": false,
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036854775807
+                  },
+                  "numeric_value_not_fabricated": true
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 14,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  4,
+                  3
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "relation": "fixture.pre_read.schema_version.scalar",
+                      "row_shape": "one native exact tuple of width1",
+                      "cell_domain": {
+                        "exact_builtin_type": "int",
+                        "bool_allowed": false,
+                        "minimum": -9223372036854775808,
+                        "maximum": 9223372036854775807
+                      },
+                      "numeric_value_not_fabricated": true
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  1,
+                  14
+                ]
+              },
+              {
+                "ordinal": 2,
+                "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                "SQL_UTF8_SHA256": "8f779f391bfb537d173c8b574da144fe943cf0c8f7231d35bda394398b2b69c3",
+                "description_literal": [
+                  [
+                    "type",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "tbl_name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "sql",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": [],
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 0,
+                "header_UTF8_bytes": 19,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  3
+                ],
+                "native_chunks": [
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  1,
+                  33
+                ]
+              },
+              {
+                "ordinal": 3,
+                "SQL": "PRAGMA main.table_list",
+                "SQL_UTF8_SHA256": "a281934480801ac37d9cf4480848fe02d043fdf79f93269746097f306eb2592b",
+                "description_literal": [
+                  [
+                    "schema",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "type",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "ncol",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "wr",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "strict",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "value_multiset": [
+                    [
+                      "main",
+                      "sqlite_schema",
+                      "table",
+                      5,
+                      0,
+                      0
+                    ]
+                  ],
+                  "order": "single row; native order retained"
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 26,
+                "row_string_UTF8_bytes_on_full_processing": 22,
+                "fetchmany_requests": [
+                  3,
+                  2
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "value_multiset": [
+                        [
+                          "main",
+                          "sqlite_schema",
+                          "table",
+                          5,
+                          0,
+                          0
+                        ]
+                      ],
+                      "order": "single row; native order retained"
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  2,
+                  81
+                ]
+              },
+              {
+                "ordinal": 4,
+                "SQL": "PRAGMA main.schema_version",
+                "SQL_UTF8_SHA256": "4806ff831cbb51c6a739ebed28c708396802dc4a7da4c939ff3bab1d101b8468",
+                "description_literal": [
+                  [
+                    "schema_version",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "relation": "fixture.pre_read.schema_version.scalar",
+                  "row_shape": "one native exact tuple of width1",
+                  "cell_domain": {
+                    "exact_builtin_type": "int",
+                    "bool_allowed": false,
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036854775807
+                  },
+                  "numeric_value_not_fabricated": true
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 14,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  2,
+                  1
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "relation": "fixture.pre_read.schema_version.scalar",
+                      "row_shape": "one native exact tuple of width1",
+                      "cell_domain": {
+                        "exact_builtin_type": "int",
+                        "bool_allowed": false,
+                        "minimum": -9223372036854775808,
+                        "maximum": 9223372036854775807
+                      },
+                      "numeric_value_not_fabricated": true
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  3,
+                  95
+                ]
+              }
+            ],
+            "oracle": {
+              "normal_complete": true,
+              "actual_D16_calls": 1,
+              "actual_matcher_calls": 1,
+              "accepted_stamp_relation": {
+                "start_equals_independent_preread": true,
+                "accepted_end_exists": true,
+                "accepted_end_equals_start_equals_preread": true,
+                "numeric_stamp_literal": null
+              },
+              "product_table_list_observed": true,
+              "identity_observation_status": "planned actual forwarding row identity, not executed",
+              "current_observed_result": "NONE_NOT_EXECUTED",
+              "independent_result5": {
+                "source_case_pointer": "core151#/cases/12",
+                "literal": {
+                  "kind": "Projection",
+                  "matcher_calls": 1,
+                  "fields_order": [
+                    "logical_objects",
+                    "logical_object_rows",
+                    "engine_object_rows",
+                    "table_evidence",
+                    "profile_candidate"
+                  ],
+                  "fields": {
+                    "logical_objects": [],
+                    "logical_object_rows": [],
+                    "engine_object_rows": [],
+                    "table_evidence": [],
+                    "profile_candidate": null
+                  },
+                  "original_row_identity_indices": {
+                    "logical": [],
+                    "engine": []
+                  },
+                  "all_input_rows_accounted_once": true,
+                  "actual_shape_CURRENT_EMPTY_or_authority": false
+                }
+              },
+              "counters": {
+                "queries": 4,
+                "rows": 3,
+                "text_bytes": 95,
+                "fetchmany": 7,
+                "close_attempts": 4
+              },
+              "product_table_list_order_policy": "fixed multiset plus actual native raw order retained, no generated order",
+              "actual_D16_input_value_oracle": {
+                "literal_ref": "provenance.empty_original_input",
+                "compare": "exact tuple-valued raw Objects/Evidence after explicit permitted infos permutation",
+                "actual_function_required": true
+              },
+              "matcher_argument_value_oracle": {
+                "literal_values": [],
+                "actual_function_required": true
+              }
+            },
+            "direct_method_observation_requirement": "actual unchanged native forwarding records",
+            "runtime_authorized": false
+          }
+        ]
+      },
+      {
+        "descriptive_candidate": "empty row2 quota",
+        "semantic_candidates_proposed": 1,
+        "nodes_proposed": 1,
+        "formal_ID": null,
+        "pytest_nodeid": null,
+        "calls": [
+          {
+            "descriptive_call_key": "empty-row2",
+            "native_mode_proposed": "native_forwarding",
+            "fresh_native_connections": 1,
+            "collector_calls": 1,
+            "DDL": null,
+            "fixture": {
+              "native_constructor_proposal": {
+                "callable": "sqlite3.connect",
+                "args": [
+                  ":memory:"
+                ],
+                "kwargs": {
+                  "isolation_level": null
+                },
+                "future_driver_precondition": "record actual module/version and require no active TX before explicit BEGIN; mismatch is fixture/input report, not silent repair"
+              },
+              "caller_state": {
+                "row_factory": "native sqlite3.Row callable identity",
+                "text_factory": "exact builtin str callable identity",
+                "isolation_level": null,
+                "in_transaction_during_product": true
+              },
+              "hook_setup": {
+                "trace_sentinel": {
+                  "behavior": "append actual statements to phase-tagged in-memory log; no expected assertions in callback",
+                  "identity_getter_available": false
+                },
+                "progress_sentinel": {
+                  "interval_opcodes_proposed": 1,
+                  "return_value": 0,
+                  "behavior": "increment phase-tagged counter; do not cancel or assert expected counts",
+                  "identity_getter_available": false
+                },
+                "preservation_proof": "observable before/during/after behavior + proxy setter attempts + static restriction; never claim direct native callback getter identity"
+              },
+              "ordered_steps": [
+                {
+                  "phase": "fixture_connect",
+                  "new_native_connections": 1,
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_DDL",
+                  "SQL": "case exact DDL or none; use own native cursor then close",
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_state",
+                  "actions": [
+                    "set caller row_factory=sqlite3.Row",
+                    "text_factory=str",
+                    "install trace/progress sentinels"
+                  ],
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_BEGIN",
+                  "SQL": "BEGIN",
+                  "own_cursor_close": true,
+                  "expected_in_transaction": true,
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_preread",
+                  "queries": [
+                    {
+                      "SQL": "PRAGMA main.schema_version",
+                      "description": [
+                        [
+                          "schema_version",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": {
+                        "relation": "fixture.pre_read.schema_version.scalar",
+                        "row_shape": "one native exact tuple of width1",
+                        "cell_domain": {
+                          "exact_builtin_type": "int",
+                          "bool_allowed": false,
+                          "minimum": -9223372036854775808,
+                          "maximum": 9223372036854775807
+                        },
+                        "numeric_value_not_fabricated": true
+                      }
+                    },
+                    {
+                      "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                      "description": [
+                        [
+                          "type",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "tbl_name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "sql",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": "case frozen raw ObjectRows in exact original order"
+                    },
+                    {
+                      "SQL": "PRAGMA main.table_list",
+                      "description": [
+                        [
+                          "schema",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "type",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "ncol",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "wr",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "strict",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": "case fixed multiset; native order logged"
+                    }
+                  ],
+                  "cursor_row_factory": null,
+                  "fetch_method": "fixture fetchall outside product budget",
+                  "each_cursor_close": 1,
+                  "product_cost": false
+                },
+                {
+                  "phase": "open_product_window",
+                  "reset_only_measurement_counters": true,
+                  "snapshot": [
+                    "caller factories",
+                    "TX",
+                    "isolation_level",
+                    "sentinel baselines",
+                    "callable/code/globals/hash"
+                  ]
+                },
+                {
+                  "phase": "product_call",
+                  "collector_calls": 1,
+                  "new_connect_fileDB_ATTACH_backup_writeSQL_TXchange_connectionclose": 0
+                },
+                {
+                  "phase": "close_product_window",
+                  "copy_actual_observations_then_compare_independent_literals": true
+                },
+                {
+                  "phase": "fixture_postcheck",
+                  "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                  "row_factory": null,
+                  "value_oracle": "same frozen raw schema rows",
+                  "require_connection_usable": true,
+                  "require_caller_factory_TX_unchanged": true,
+                  "sentinel_behavior_before_during_after": "record; no native identity getter claim",
+                  "closed_product_cursor_probe": "where proxy retained native cursor, fetchone after close must raise sqlite3.ProgrammingError; no exact message invented",
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_cleanup",
+                  "SQL": "ROLLBACK if explicit fixture BEGIN is active",
+                  "own_cursor_close": true,
+                  "clear_fixture_hooks": true,
+                  "close_caller_connection": true,
+                  "product_cost": false
+                }
+              ],
+              "failure_cleanup": "preserve first driver/DDL/preread/exception/version facts; cleanup own native resources; do not skip/xfail/repair expected; no product call if fixture facts mismatch",
+              "same_call_identity_scope": {
+                "compare_is_only": "native fetch row seen by forwarding cursor -> real D16 arguments -> Projection raw row where retained",
+                "excluded": [
+                  "JSON-built expected tuples",
+                  "pre-read rows from earlier query",
+                  "different fresh connections",
+                  "stamp/table_list consumed rows",
+                  "normalized outer containers"
+                ],
+                "direct_native_leaf": "unresolved D18H-01; helper-return tuple identity is not direct C-return measurement"
+              },
+              "current_coverage_sys_tracer": "not hijacked; no extra observer/profile implementation authorized"
+            },
+            "pre_read_raw_schema_literal": [],
+            "pre_read_table_list": {
+              "value_multiset": [
+                [
+                  "main",
+                  "sqlite_schema",
+                  "table",
+                  5,
+                  0,
+                  0
+                ]
+              ],
+              "order": "single row; native order retained"
+            },
+            "budget": {
+              "constructor": "real _InventoryReadBudget",
+              "exact_builtin_int_positional": [
+                2,
+                95
+              ],
+              "no_bool_or_subclass": true
+            },
+            "product_query_program": [
+              {
+                "ordinal": 1,
+                "SQL": "PRAGMA main.schema_version",
+                "SQL_UTF8_SHA256": "4806ff831cbb51c6a739ebed28c708396802dc4a7da4c939ff3bab1d101b8468",
+                "description_literal": [
+                  [
+                    "schema_version",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "relation": "fixture.pre_read.schema_version.scalar",
+                  "row_shape": "one native exact tuple of width1",
+                  "cell_domain": {
+                    "exact_builtin_type": "int",
+                    "bool_allowed": false,
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036854775807
+                  },
+                  "numeric_value_not_fabricated": true
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 14,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  3,
+                  2
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "relation": "fixture.pre_read.schema_version.scalar",
+                      "row_shape": "one native exact tuple of width1",
+                      "cell_domain": {
+                        "exact_builtin_type": "int",
+                        "bool_allowed": false,
+                        "minimum": -9223372036854775808,
+                        "maximum": 9223372036854775807
+                      },
+                      "numeric_value_not_fabricated": true
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  1,
+                  14
+                ]
+              },
+              {
+                "ordinal": 2,
+                "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                "SQL_UTF8_SHA256": "8f779f391bfb537d173c8b574da144fe943cf0c8f7231d35bda394398b2b69c3",
+                "description_literal": [
+                  [
+                    "type",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "tbl_name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "sql",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": [],
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 0,
+                "header_UTF8_bytes": 19,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  2
+                ],
+                "native_chunks": [
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  1,
+                  33
+                ]
+              },
+              {
+                "ordinal": 3,
+                "SQL": "PRAGMA main.table_list",
+                "SQL_UTF8_SHA256": "a281934480801ac37d9cf4480848fe02d043fdf79f93269746097f306eb2592b",
+                "description_literal": [
+                  [
+                    "schema",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "type",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "ncol",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "wr",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "strict",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "value_multiset": [
+                    [
+                      "main",
+                      "sqlite_schema",
+                      "table",
+                      5,
+                      0,
+                      0
+                    ]
+                  ],
+                  "order": "single row; native order retained"
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 26,
+                "row_string_UTF8_bytes_on_full_processing": 22,
+                "fetchmany_requests": [
+                  2,
+                  1
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "value_multiset": [
+                        [
+                          "main",
+                          "sqlite_schema",
+                          "table",
+                          5,
+                          0,
+                          0
+                        ]
+                      ],
+                      "order": "single row; native order retained"
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  2,
+                  81
+                ]
+              },
+              {
+                "ordinal": 4,
+                "SQL": "PRAGMA main.schema_version",
+                "SQL_UTF8_SHA256": "4806ff831cbb51c6a739ebed28c708396802dc4a7da4c939ff3bab1d101b8468",
+                "description_literal": [
+                  [
+                    "schema_version",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "relation": "fixture.pre_read.schema_version.scalar",
+                  "row_shape": "one native exact tuple of width1",
+                  "cell_domain": {
+                    "exact_builtin_type": "int",
+                    "bool_allowed": false,
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036854775807
+                  },
+                  "numeric_value_not_fabricated": true
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 14,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  1
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "relation": "fixture.pre_read.schema_version.scalar",
+                      "row_shape": "one native exact tuple of width1",
+                      "cell_domain": {
+                        "exact_builtin_type": "int",
+                        "bool_allowed": false,
+                        "minimum": -9223372036854775808,
+                        "maximum": 9223372036854775807
+                      },
+                      "numeric_value_not_fabricated": true
+                    },
+                    "count": 1
+                  }
+                ],
+                "EOF_requested": false,
+                "expected_usage_after_complete_query": null,
+                "failure_prefix": {
+                  "phase": "row-slot check before row framing",
+                  "current_source_raise_line": 3251,
+                  "usage_at_error": [
+                    2,
+                    95
+                  ],
+                  "offered_end_response": true,
+                  "accepted_end_stamp": false,
+                  "raw_end_value_validation_by_collector": false,
+                  "end_comparison": false,
+                  "completed_row_count_before_error": 2
+                }
+              }
+            ],
+            "oracle": {
+              "normal_complete": false,
+              "actual_D16_calls": 0,
+              "actual_matcher_calls": 0,
+              "accepted_stamp_relation": {
+                "start_equals_independent_preread": true,
+                "accepted_end_exists": false,
+                "accepted_end_equals_start_equals_preread": "NOT_REQUIRED_NOT_ACCEPTED",
+                "numeric_stamp_literal": null
+              },
+              "product_table_list_observed": true,
+              "identity_observation_status": "planned actual forwarding row identity, not executed",
+              "current_observed_result": "NONE_NOT_EXECUTED",
+              "exception": {
+                "exact_class": "recoryn.schema._InventoryCollectionError",
+                "args": [
+                  "LIMIT"
+                ],
+                "reason_attribute_assumed": false
+              },
+              "returned_value": "NO_RESULT_EXCEPTION_NOT_SEMANTIC_NONE",
+              "counters": {
+                "queries": 4,
+                "offered_rows": 3,
+                "usage_rows": 2,
+                "text_bytes": 95,
+                "fetchmany": 6,
+                "close_attempts": 4
+              },
+              "offered_end_only": true,
+              "product_end_query_reached": true,
+              "end_EOF_or_accepted_end_claim": false,
+              "actual_D16_input_value_oracle": {
+                "calls": 0,
+                "arguments": "NOT_PRODUCED_DO_NOT_INVENT"
+              },
+              "matcher_argument_value_oracle": {
+                "calls": 0,
+                "arguments": "NOT_PRODUCED_DO_NOT_INVENT"
+              }
+            },
+            "direct_method_observation_requirement": "actual unchanged native forwarding records",
+            "runtime_authorized": false
+          }
+        ]
+      },
+      {
+        "descriptive_candidate": "R08 positive",
+        "semantic_candidates_proposed": 1,
+        "nodes_proposed": 1,
+        "formal_ID": null,
+        "pytest_nodeid": null,
+        "calls": [
+          {
+            "descriptive_call_key": "r08-positive",
+            "native_mode_proposed": "native_forwarding",
+            "fresh_native_connections": 1,
+            "collector_calls": 1,
+            "DDL": {
+              "SQL": "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)",
+              "UTF8_bytes": 78,
+              "UTF8_SHA256": "1d47005d9cd608860b9f0f0b40801f7c9b22b1ceac117f05c1844e6b3467164b"
+            },
+            "fixture": {
+              "native_constructor_proposal": {
+                "callable": "sqlite3.connect",
+                "args": [
+                  ":memory:"
+                ],
+                "kwargs": {
+                  "isolation_level": null
+                },
+                "future_driver_precondition": "record actual module/version and require no active TX before explicit BEGIN; mismatch is fixture/input report, not silent repair"
+              },
+              "caller_state": {
+                "row_factory": "native sqlite3.Row callable identity",
+                "text_factory": "exact builtin str callable identity",
+                "isolation_level": null,
+                "in_transaction_during_product": true
+              },
+              "hook_setup": {
+                "trace_sentinel": {
+                  "behavior": "append actual statements to phase-tagged in-memory log; no expected assertions in callback",
+                  "identity_getter_available": false
+                },
+                "progress_sentinel": {
+                  "interval_opcodes_proposed": 1,
+                  "return_value": 0,
+                  "behavior": "increment phase-tagged counter; do not cancel or assert expected counts",
+                  "identity_getter_available": false
+                },
+                "preservation_proof": "observable before/during/after behavior + proxy setter attempts + static restriction; never claim direct native callback getter identity"
+              },
+              "ordered_steps": [
+                {
+                  "phase": "fixture_connect",
+                  "new_native_connections": 1,
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_DDL",
+                  "SQL": "case exact DDL or none; use own native cursor then close",
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_state",
+                  "actions": [
+                    "set caller row_factory=sqlite3.Row",
+                    "text_factory=str",
+                    "install trace/progress sentinels"
+                  ],
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_BEGIN",
+                  "SQL": "BEGIN",
+                  "own_cursor_close": true,
+                  "expected_in_transaction": true,
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_preread",
+                  "queries": [
+                    {
+                      "SQL": "PRAGMA main.schema_version",
+                      "description": [
+                        [
+                          "schema_version",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": {
+                        "relation": "fixture.pre_read.schema_version.scalar",
+                        "row_shape": "one native exact tuple of width1",
+                        "cell_domain": {
+                          "exact_builtin_type": "int",
+                          "bool_allowed": false,
+                          "minimum": -9223372036854775808,
+                          "maximum": 9223372036854775807
+                        },
+                        "numeric_value_not_fabricated": true
+                      }
+                    },
+                    {
+                      "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                      "description": [
+                        [
+                          "type",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "tbl_name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "sql",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": "case frozen raw ObjectRows in exact original order"
+                    },
+                    {
+                      "SQL": "PRAGMA main.table_list",
+                      "description": [
+                        [
+                          "schema",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "type",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "ncol",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "wr",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "strict",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": "case fixed multiset; native order logged"
+                    }
+                  ],
+                  "cursor_row_factory": null,
+                  "fetch_method": "fixture fetchall outside product budget",
+                  "each_cursor_close": 1,
+                  "product_cost": false
+                },
+                {
+                  "phase": "open_product_window",
+                  "reset_only_measurement_counters": true,
+                  "snapshot": [
+                    "caller factories",
+                    "TX",
+                    "isolation_level",
+                    "sentinel baselines",
+                    "callable/code/globals/hash"
+                  ]
+                },
+                {
+                  "phase": "product_call",
+                  "collector_calls": 1,
+                  "new_connect_fileDB_ATTACH_backup_writeSQL_TXchange_connectionclose": 0
+                },
+                {
+                  "phase": "close_product_window",
+                  "copy_actual_observations_then_compare_independent_literals": true
+                },
+                {
+                  "phase": "fixture_postcheck",
+                  "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                  "row_factory": null,
+                  "value_oracle": "same frozen raw schema rows",
+                  "require_connection_usable": true,
+                  "require_caller_factory_TX_unchanged": true,
+                  "sentinel_behavior_before_during_after": "record; no native identity getter claim",
+                  "closed_product_cursor_probe": "where proxy retained native cursor, fetchone after close must raise sqlite3.ProgrammingError; no exact message invented",
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_cleanup",
+                  "SQL": "ROLLBACK if explicit fixture BEGIN is active",
+                  "own_cursor_close": true,
+                  "clear_fixture_hooks": true,
+                  "close_caller_connection": true,
+                  "product_cost": false
+                }
+              ],
+              "failure_cleanup": "preserve first driver/DDL/preread/exception/version facts; cleanup own native resources; do not skip/xfail/repair expected; no product call if fixture facts mismatch",
+              "same_call_identity_scope": {
+                "compare_is_only": "native fetch row seen by forwarding cursor -> real D16 arguments -> Projection raw row where retained",
+                "excluded": [
+                  "JSON-built expected tuples",
+                  "pre-read rows from earlier query",
+                  "different fresh connections",
+                  "stamp/table_list consumed rows",
+                  "normalized outer containers"
+                ],
+                "direct_native_leaf": "unresolved D18H-01; helper-return tuple identity is not direct C-return measurement"
+              },
+              "current_coverage_sys_tracer": "not hijacked; no extra observer/profile implementation authorized"
+            },
+            "pre_read_raw_schema_literal": [
+              [
+                "table",
+                "Sessions",
+                "Sessions",
+                "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)"
+              ],
+              [
+                "index",
+                "sqlite_autoindex_Sessions_1",
+                "Sessions",
+                null
+              ],
+              [
+                "index",
+                "sqlite_autoindex_Sessions_2",
+                "Sessions",
+                null
+              ]
+            ],
+            "pre_read_table_list": {
+              "value_multiset": [
+                [
+                  "main",
+                  "Sessions",
+                  "table",
+                  2,
+                  0,
+                  0
+                ],
+                [
+                  "main",
+                  "sqlite_schema",
+                  "table",
+                  5,
+                  0,
+                  0
+                ]
+              ],
+              "order": "native order recorded; no fabricated/sorted order; multiset value oracle"
+            },
+            "budget": {
+              "constructor": "real _InventoryReadBudget",
+              "exact_builtin_int_positional": [
+                15,
+                526
+              ],
+              "no_bool_or_subclass": true
+            },
+            "product_query_program": [
+              {
+                "ordinal": 1,
+                "SQL": "PRAGMA main.schema_version",
+                "SQL_UTF8_SHA256": "4806ff831cbb51c6a739ebed28c708396802dc4a7da4c939ff3bab1d101b8468",
+                "description_literal": [
+                  [
+                    "schema_version",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "relation": "fixture.pre_read.schema_version.scalar",
+                  "row_shape": "one native exact tuple of width1",
+                  "cell_domain": {
+                    "exact_builtin_type": "int",
+                    "bool_allowed": false,
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036854775807
+                  },
+                  "numeric_value_not_fabricated": true
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 14,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  16,
+                  15
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "relation": "fixture.pre_read.schema_version.scalar",
+                      "row_shape": "one native exact tuple of width1",
+                      "cell_domain": {
+                        "exact_builtin_type": "int",
+                        "bool_allowed": false,
+                        "minimum": -9223372036854775808,
+                        "maximum": 9223372036854775807
+                      },
+                      "numeric_value_not_fabricated": true
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  1,
+                  14
+                ]
+              },
+              {
+                "ordinal": 2,
+                "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                "SQL_UTF8_SHA256": "8f779f391bfb537d173c8b574da144fe943cf0c8f7231d35bda394398b2b69c3",
+                "description_literal": [
+                  [
+                    "type",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "tbl_name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "sql",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": [
+                  [
+                    "table",
+                    "Sessions",
+                    "Sessions",
+                    "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)"
+                  ],
+                  [
+                    "index",
+                    "sqlite_autoindex_Sessions_1",
+                    "Sessions",
+                    null
+                  ],
+                  [
+                    "index",
+                    "sqlite_autoindex_Sessions_2",
+                    "Sessions",
+                    null
+                  ]
+                ],
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 3,
+                "header_UTF8_bytes": 19,
+                "row_string_UTF8_bytes_on_full_processing": 179,
+                "fetchmany_requests": [
+                  15,
+                  12
+                ],
+                "native_chunks": [
+                  {
+                    "rows": [
+                      [
+                        "table",
+                        "Sessions",
+                        "Sessions",
+                        "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)"
+                      ],
+                      [
+                        "index",
+                        "sqlite_autoindex_Sessions_1",
+                        "Sessions",
+                        null
+                      ],
+                      [
+                        "index",
+                        "sqlite_autoindex_Sessions_2",
+                        "Sessions",
+                        null
+                      ]
+                    ],
+                    "count": 3
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  4,
+                  212
+                ]
+              },
+              {
+                "ordinal": 3,
+                "SQL": "PRAGMA main.table_list",
+                "SQL_UTF8_SHA256": "a281934480801ac37d9cf4480848fe02d043fdf79f93269746097f306eb2592b",
+                "description_literal": [
+                  [
+                    "schema",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "type",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "ncol",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "wr",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "strict",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "value_multiset": [
+                    [
+                      "main",
+                      "Sessions",
+                      "table",
+                      2,
+                      0,
+                      0
+                    ],
+                    [
+                      "main",
+                      "sqlite_schema",
+                      "table",
+                      5,
+                      0,
+                      0
+                    ]
+                  ],
+                  "order": "native order recorded; no fabricated/sorted order; multiset value oracle"
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 2,
+                "header_UTF8_bytes": 26,
+                "row_string_UTF8_bytes_on_full_processing": 39,
+                "fetchmany_requests": [
+                  12,
+                  10
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "value_multiset": [
+                        [
+                          "main",
+                          "Sessions",
+                          "table",
+                          2,
+                          0,
+                          0
+                        ],
+                        [
+                          "main",
+                          "sqlite_schema",
+                          "table",
+                          5,
+                          0,
+                          0
+                        ]
+                      ],
+                      "order": "native order recorded; no fabricated/sorted order; multiset value oracle"
+                    },
+                    "count": 2
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  6,
+                  277
+                ]
+              },
+              {
+                "ordinal": 4,
+                "SQL": "PRAGMA main.table_xinfo(\"Sessions\")",
+                "SQL_UTF8_SHA256": "abf9975cd9621f4ed3cb69f60eb77daa376a429953ec8dc28b568d43a7883015",
+                "description_literal": [
+                  [
+                    "cid",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "type",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "notnull",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "dflt_value",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "pk",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "hidden",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": [
+                  [
+                    0,
+                    "Session_ID",
+                    "TEXT",
+                    0,
+                    null,
+                    1,
+                    0
+                  ],
+                  [
+                    1,
+                    "Input_Key",
+                    "TEXT",
+                    0,
+                    null,
+                    0,
+                    0
+                  ]
+                ],
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 2,
+                "header_UTF8_bytes": 36,
+                "row_string_UTF8_bytes_on_full_processing": 27,
+                "fetchmany_requests": [
+                  10,
+                  8
+                ],
+                "native_chunks": [
+                  {
+                    "rows": [
+                      [
+                        0,
+                        "Session_ID",
+                        "TEXT",
+                        0,
+                        null,
+                        1,
+                        0
+                      ],
+                      [
+                        1,
+                        "Input_Key",
+                        "TEXT",
+                        0,
+                        null,
+                        0,
+                        0
+                      ]
+                    ],
+                    "count": 2
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  8,
+                  340
+                ]
+              },
+              {
+                "ordinal": 5,
+                "SQL": "PRAGMA main.index_list(\"Sessions\")",
+                "SQL_UTF8_SHA256": "e141e0a30c99a8d5cfec985bdc42dec1f8337f55da85a861ec13021548d335f9",
+                "description_literal": [
+                  [
+                    "seq",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "unique",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "origin",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "partial",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": [
+                  [
+                    0,
+                    "sqlite_autoindex_Sessions_2",
+                    1,
+                    "u",
+                    0
+                  ],
+                  [
+                    1,
+                    "sqlite_autoindex_Sessions_1",
+                    1,
+                    "pk",
+                    0
+                  ]
+                ],
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 2,
+                "header_UTF8_bytes": 26,
+                "row_string_UTF8_bytes_on_full_processing": 57,
+                "fetchmany_requests": [
+                  8,
+                  6
+                ],
+                "native_chunks": [
+                  {
+                    "rows": [
+                      [
+                        0,
+                        "sqlite_autoindex_Sessions_2",
+                        1,
+                        "u",
+                        0
+                      ],
+                      [
+                        1,
+                        "sqlite_autoindex_Sessions_1",
+                        1,
+                        "pk",
+                        0
+                      ]
+                    ],
+                    "count": 2
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  10,
+                  423
+                ]
+              },
+              {
+                "ordinal": 6,
+                "SQL": "PRAGMA main.index_xinfo(\"sqlite_autoindex_Sessions_1\")",
+                "SQL_UTF8_SHA256": "8405902023f44bb0ac3cf2861ab0181b023266ab49fb6f2fe4521f8db3b4a4f1",
+                "description_literal": [
+                  [
+                    "seqno",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "cid",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "desc",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "coll",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "key",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": [
+                  [
+                    0,
+                    0,
+                    "Session_ID",
+                    0,
+                    "BINARY",
+                    1
+                  ],
+                  [
+                    1,
+                    -1,
+                    null,
+                    0,
+                    "BINARY",
+                    0
+                  ]
+                ],
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 2,
+                "header_UTF8_bytes": 23,
+                "row_string_UTF8_bytes_on_full_processing": 22,
+                "fetchmany_requests": [
+                  6,
+                  4
+                ],
+                "native_chunks": [
+                  {
+                    "rows": [
+                      [
+                        0,
+                        0,
+                        "Session_ID",
+                        0,
+                        "BINARY",
+                        1
+                      ],
+                      [
+                        1,
+                        -1,
+                        null,
+                        0,
+                        "BINARY",
+                        0
+                      ]
+                    ],
+                    "count": 2
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  12,
+                  468
+                ]
+              },
+              {
+                "ordinal": 7,
+                "SQL": "PRAGMA main.index_xinfo(\"sqlite_autoindex_Sessions_2\")",
+                "SQL_UTF8_SHA256": "db0c7f894b4177b40385b4548cfb593c8d4808d0450afd61cdd2c93568a2b739",
+                "description_literal": [
+                  [
+                    "seqno",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "cid",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "desc",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "coll",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "key",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": [
+                  [
+                    0,
+                    1,
+                    "Input_Key",
+                    0,
+                    "BINARY",
+                    1
+                  ],
+                  [
+                    1,
+                    -1,
+                    null,
+                    0,
+                    "BINARY",
+                    0
+                  ]
+                ],
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 2,
+                "header_UTF8_bytes": 23,
+                "row_string_UTF8_bytes_on_full_processing": 21,
+                "fetchmany_requests": [
+                  4,
+                  2
+                ],
+                "native_chunks": [
+                  {
+                    "rows": [
+                      [
+                        0,
+                        1,
+                        "Input_Key",
+                        0,
+                        "BINARY",
+                        1
+                      ],
+                      [
+                        1,
+                        -1,
+                        null,
+                        0,
+                        "BINARY",
+                        0
+                      ]
+                    ],
+                    "count": 2
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  14,
+                  512
+                ]
+              },
+              {
+                "ordinal": 8,
+                "SQL": "PRAGMA main.schema_version",
+                "SQL_UTF8_SHA256": "4806ff831cbb51c6a739ebed28c708396802dc4a7da4c939ff3bab1d101b8468",
+                "description_literal": [
+                  [
+                    "schema_version",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "relation": "fixture.pre_read.schema_version.scalar",
+                  "row_shape": "one native exact tuple of width1",
+                  "cell_domain": {
+                    "exact_builtin_type": "int",
+                    "bool_allowed": false,
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036854775807
+                  },
+                  "numeric_value_not_fabricated": true
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 14,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  2,
+                  1
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "relation": "fixture.pre_read.schema_version.scalar",
+                      "row_shape": "one native exact tuple of width1",
+                      "cell_domain": {
+                        "exact_builtin_type": "int",
+                        "bool_allowed": false,
+                        "minimum": -9223372036854775808,
+                        "maximum": 9223372036854775807
+                      },
+                      "numeric_value_not_fabricated": true
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  15,
+                  526
+                ]
+              }
+            ],
+            "oracle": {
+              "normal_complete": true,
+              "actual_D16_calls": 1,
+              "actual_matcher_calls": 1,
+              "accepted_stamp_relation": {
+                "start_equals_independent_preread": true,
+                "accepted_end_exists": true,
+                "accepted_end_equals_start_equals_preread": true,
+                "numeric_stamp_literal": null
+              },
+              "product_table_list_observed": true,
+              "identity_observation_status": "planned actual forwarding row identity, not executed",
+              "current_observed_result": "NONE_NOT_EXECUTED",
+              "independent_result5": {
+                "source_case_pointer": "core151#/cases/7",
+                "literal": {
+                  "kind": "Projection",
+                  "matcher_calls": 1,
+                  "fields_order": [
+                    "logical_objects",
+                    "logical_object_rows",
+                    "engine_object_rows",
+                    "table_evidence",
+                    "profile_candidate"
+                  ],
+                  "fields": {
+                    "logical_objects": [
+                      [
+                        "sessions",
+                        "table"
+                      ]
+                    ],
+                    "logical_object_rows": [
+                      [
+                        "table",
+                        "Sessions",
+                        "Sessions",
+                        "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)"
+                      ]
+                    ],
+                    "engine_object_rows": [
+                      [
+                        "index",
+                        "sqlite_autoindex_Sessions_1",
+                        "Sessions",
+                        null
+                      ],
+                      [
+                        "index",
+                        "sqlite_autoindex_Sessions_2",
+                        "Sessions",
+                        null
+                      ]
+                    ],
+                    "table_evidence": [
+                      [
+                        "Sessions",
+                        [
+                          [
+                            0,
+                            "Session_ID",
+                            "TEXT",
+                            0,
+                            null,
+                            1,
+                            0
+                          ],
+                          [
+                            1,
+                            "Input_Key",
+                            "TEXT",
+                            0,
+                            null,
+                            0,
+                            0
+                          ]
+                        ],
+                        [
+                          [
+                            0,
+                            "sqlite_autoindex_Sessions_2",
+                            1,
+                            "u",
+                            0
+                          ],
+                          [
+                            1,
+                            "sqlite_autoindex_Sessions_1",
+                            1,
+                            "pk",
+                            0
+                          ]
+                        ],
+                        [
+                          [
+                            "sqlite_autoindex_Sessions_1",
+                            [
+                              [
+                                0,
+                                0,
+                                "Session_ID",
+                                0,
+                                "BINARY",
+                                1
+                              ],
+                              [
+                                1,
+                                -1,
+                                null,
+                                0,
+                                "BINARY",
+                                0
+                              ]
+                            ]
+                          ],
+                          [
+                            "sqlite_autoindex_Sessions_2",
+                            [
+                              [
+                                0,
+                                1,
+                                "Input_Key",
+                                0,
+                                "BINARY",
+                                1
+                              ],
+                              [
+                                1,
+                                -1,
+                                null,
+                                0,
+                                "BINARY",
+                                0
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ],
+                    "profile_candidate": null
+                  },
+                  "original_row_identity_indices": {
+                    "logical": [
+                      0
+                    ],
+                    "engine": [
+                      1,
+                      2
+                    ]
+                  },
+                  "all_input_rows_accounted_once": true,
+                  "actual_shape_CURRENT_EMPTY_or_authority": false
+                }
+              },
+              "counters": {
+                "queries": 8,
+                "rows": 15,
+                "text_bytes": 526,
+                "fetchmany": 16,
+                "close_attempts": 8
+              },
+              "product_table_list_order_policy": "fixed multiset plus actual native raw order retained, no generated order",
+              "actual_D16_input_value_oracle": {
+                "literal_ref": "provenance.R08_candidate_input",
+                "compare": "exact tuple-valued raw Objects/Evidence after explicit permitted infos permutation",
+                "actual_function_required": true
+              },
+              "matcher_argument_value_oracle": {
+                "literal_values": [
+                  [
+                    "sessions",
+                    "table"
+                  ]
+                ],
+                "actual_function_required": true
+              }
+            },
+            "direct_method_observation_requirement": "actual unchanged native forwarding records",
+            "runtime_authorized": false
+          }
+        ]
+      },
+      {
+        "descriptive_candidate": "R08 row text33 quota",
+        "semantic_candidates_proposed": 1,
+        "nodes_proposed": 1,
+        "formal_ID": null,
+        "pytest_nodeid": null,
+        "calls": [
+          {
+            "descriptive_call_key": "r08-text33",
+            "native_mode_proposed": "native_forwarding",
+            "fresh_native_connections": 1,
+            "collector_calls": 1,
+            "DDL": {
+              "SQL": "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)",
+              "UTF8_bytes": 78,
+              "UTF8_SHA256": "1d47005d9cd608860b9f0f0b40801f7c9b22b1ceac117f05c1844e6b3467164b"
+            },
+            "fixture": {
+              "native_constructor_proposal": {
+                "callable": "sqlite3.connect",
+                "args": [
+                  ":memory:"
+                ],
+                "kwargs": {
+                  "isolation_level": null
+                },
+                "future_driver_precondition": "record actual module/version and require no active TX before explicit BEGIN; mismatch is fixture/input report, not silent repair"
+              },
+              "caller_state": {
+                "row_factory": "native sqlite3.Row callable identity",
+                "text_factory": "exact builtin str callable identity",
+                "isolation_level": null,
+                "in_transaction_during_product": true
+              },
+              "hook_setup": {
+                "trace_sentinel": {
+                  "behavior": "append actual statements to phase-tagged in-memory log; no expected assertions in callback",
+                  "identity_getter_available": false
+                },
+                "progress_sentinel": {
+                  "interval_opcodes_proposed": 1,
+                  "return_value": 0,
+                  "behavior": "increment phase-tagged counter; do not cancel or assert expected counts",
+                  "identity_getter_available": false
+                },
+                "preservation_proof": "observable before/during/after behavior + proxy setter attempts + static restriction; never claim direct native callback getter identity"
+              },
+              "ordered_steps": [
+                {
+                  "phase": "fixture_connect",
+                  "new_native_connections": 1,
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_DDL",
+                  "SQL": "case exact DDL or none; use own native cursor then close",
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_state",
+                  "actions": [
+                    "set caller row_factory=sqlite3.Row",
+                    "text_factory=str",
+                    "install trace/progress sentinels"
+                  ],
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_BEGIN",
+                  "SQL": "BEGIN",
+                  "own_cursor_close": true,
+                  "expected_in_transaction": true,
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_preread",
+                  "queries": [
+                    {
+                      "SQL": "PRAGMA main.schema_version",
+                      "description": [
+                        [
+                          "schema_version",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": {
+                        "relation": "fixture.pre_read.schema_version.scalar",
+                        "row_shape": "one native exact tuple of width1",
+                        "cell_domain": {
+                          "exact_builtin_type": "int",
+                          "bool_allowed": false,
+                          "minimum": -9223372036854775808,
+                          "maximum": 9223372036854775807
+                        },
+                        "numeric_value_not_fabricated": true
+                      }
+                    },
+                    {
+                      "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                      "description": [
+                        [
+                          "type",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "tbl_name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "sql",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": "case frozen raw ObjectRows in exact original order"
+                    },
+                    {
+                      "SQL": "PRAGMA main.table_list",
+                      "description": [
+                        [
+                          "schema",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "name",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "type",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "ncol",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "wr",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ],
+                        [
+                          "strict",
+                          null,
+                          null,
+                          null,
+                          null,
+                          null,
+                          null
+                        ]
+                      ],
+                      "expected_rows": "case fixed multiset; native order logged"
+                    }
+                  ],
+                  "cursor_row_factory": null,
+                  "fetch_method": "fixture fetchall outside product budget",
+                  "each_cursor_close": 1,
+                  "product_cost": false
+                },
+                {
+                  "phase": "open_product_window",
+                  "reset_only_measurement_counters": true,
+                  "snapshot": [
+                    "caller factories",
+                    "TX",
+                    "isolation_level",
+                    "sentinel baselines",
+                    "callable/code/globals/hash"
+                  ]
+                },
+                {
+                  "phase": "product_call",
+                  "collector_calls": 1,
+                  "new_connect_fileDB_ATTACH_backup_writeSQL_TXchange_connectionclose": 0
+                },
+                {
+                  "phase": "close_product_window",
+                  "copy_actual_observations_then_compare_independent_literals": true
+                },
+                {
+                  "phase": "fixture_postcheck",
+                  "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                  "row_factory": null,
+                  "value_oracle": "same frozen raw schema rows",
+                  "require_connection_usable": true,
+                  "require_caller_factory_TX_unchanged": true,
+                  "sentinel_behavior_before_during_after": "record; no native identity getter claim",
+                  "closed_product_cursor_probe": "where proxy retained native cursor, fetchone after close must raise sqlite3.ProgrammingError; no exact message invented",
+                  "product_cost": false
+                },
+                {
+                  "phase": "fixture_cleanup",
+                  "SQL": "ROLLBACK if explicit fixture BEGIN is active",
+                  "own_cursor_close": true,
+                  "clear_fixture_hooks": true,
+                  "close_caller_connection": true,
+                  "product_cost": false
+                }
+              ],
+              "failure_cleanup": "preserve first driver/DDL/preread/exception/version facts; cleanup own native resources; do not skip/xfail/repair expected; no product call if fixture facts mismatch",
+              "same_call_identity_scope": {
+                "compare_is_only": "native fetch row seen by forwarding cursor -> real D16 arguments -> Projection raw row where retained",
+                "excluded": [
+                  "JSON-built expected tuples",
+                  "pre-read rows from earlier query",
+                  "different fresh connections",
+                  "stamp/table_list consumed rows",
+                  "normalized outer containers"
+                ],
+                "direct_native_leaf": "unresolved D18H-01; helper-return tuple identity is not direct C-return measurement"
+              },
+              "current_coverage_sys_tracer": "not hijacked; no extra observer/profile implementation authorized"
+            },
+            "pre_read_raw_schema_literal": [
+              [
+                "table",
+                "Sessions",
+                "Sessions",
+                "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)"
+              ],
+              [
+                "index",
+                "sqlite_autoindex_Sessions_1",
+                "Sessions",
+                null
+              ],
+              [
+                "index",
+                "sqlite_autoindex_Sessions_2",
+                "Sessions",
+                null
+              ]
+            ],
+            "pre_read_table_list": {
+              "value_multiset": [
+                [
+                  "main",
+                  "Sessions",
+                  "table",
+                  2,
+                  0,
+                  0
+                ],
+                [
+                  "main",
+                  "sqlite_schema",
+                  "table",
+                  5,
+                  0,
+                  0
+                ]
+              ],
+              "order": "native order recorded; no fabricated/sorted order; multiset value oracle"
+            },
+            "budget": {
+              "constructor": "real _InventoryReadBudget",
+              "exact_builtin_int_positional": [
+                15,
+                33
+              ],
+              "no_bool_or_subclass": true
+            },
+            "product_query_program": [
+              {
+                "ordinal": 1,
+                "SQL": "PRAGMA main.schema_version",
+                "SQL_UTF8_SHA256": "4806ff831cbb51c6a739ebed28c708396802dc4a7da4c939ff3bab1d101b8468",
+                "description_literal": [
+                  [
+                    "schema_version",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": {
+                  "relation": "fixture.pre_read.schema_version.scalar",
+                  "row_shape": "one native exact tuple of width1",
+                  "cell_domain": {
+                    "exact_builtin_type": "int",
+                    "bool_allowed": false,
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036854775807
+                  },
+                  "numeric_value_not_fabricated": true
+                },
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 1,
+                "header_UTF8_bytes": 14,
+                "row_string_UTF8_bytes_on_full_processing": 0,
+                "fetchmany_requests": [
+                  16,
+                  15
+                ],
+                "native_chunks": [
+                  {
+                    "rows": {
+                      "relation": "fixture.pre_read.schema_version.scalar",
+                      "row_shape": "one native exact tuple of width1",
+                      "cell_domain": {
+                        "exact_builtin_type": "int",
+                        "bool_allowed": false,
+                        "minimum": -9223372036854775808,
+                        "maximum": 9223372036854775807
+                      },
+                      "numeric_value_not_fabricated": true
+                    },
+                    "count": 1
+                  },
+                  {
+                    "literal": [],
+                    "count": 0
+                  }
+                ],
+                "EOF_requested": true,
+                "expected_usage_after_complete_query": [
+                  1,
+                  14
+                ]
+              },
+              {
+                "ordinal": 2,
+                "SQL": "SELECT type,name,tbl_name,sql FROM main.sqlite_schema",
+                "SQL_UTF8_SHA256": "8f779f391bfb537d173c8b574da144fe943cf0c8f7231d35bda394398b2b69c3",
+                "description_literal": [
+                  [
+                    "type",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "tbl_name",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ],
+                  [
+                    "sql",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                ],
+                "description_construction": "actual native tuple of exact tuple7; JSON arrays are independent expected values only",
+                "row_values_or_relation": [
+                  [
+                    "table",
+                    "Sessions",
+                    "Sessions",
+                    "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)"
+                  ],
+                  [
+                    "index",
+                    "sqlite_autoindex_Sessions_1",
+                    "Sessions",
+                    null
+                  ],
+                  [
+                    "index",
+                    "sqlite_autoindex_Sessions_2",
+                    "Sessions",
+                    null
+                  ]
+                ],
+                "native_container": "exact list of native exact tuples; no conversion by forwarder",
+                "returned_row_count_on_complete_first_chunk": 3,
+                "header_UTF8_bytes": 19,
+                "row_string_UTF8_bytes_on_full_processing": 179,
+                "fetchmany_requests": [
+                  15
+                ],
+                "native_chunks": [
+                  {
+                    "rows": [
+                      [
+                        "table",
+                        "Sessions",
+                        "Sessions",
+                        "CREATE TABLE \"Sessions\"(\"Session_ID\" TEXT PRIMARY KEY,\"Input_Key\" TEXT UNIQUE)"
+                      ],
+                      [
+                        "index",
+                        "sqlite_autoindex_Sessions_1",
+                        "Sessions",
+                        null
+                      ],
+                      [
+                        "index",
+                        "sqlite_autoindex_Sessions_2",
+                        "Sessions",
+                        null
+                      ]
+                    ],
+                    "count": 3
+                  }
+                ],
+                "EOF_requested": false,
+                "expected_usage_after_complete_query": null,
+                "failure_prefix": {
+                  "phase": "inner row string byte quota",
+                  "current_source_raise_line": 3260,
+                  "usage_at_error": [
+                    2,
+                    38
+                  ],
+                  "slot_counter_includes_partial_schema_row": true,
+                  "fully_processed_rows_before_error": 1,
+                  "first_schema_cell": {
+                    "row": 0,
+                    "column": 0,
+                    "value": "table",
+                    "UTF8_bytes": 5
+                  },
+                  "remaining_cells_or_rows_processed": false,
+                  "product_table_list_query": false,
+                  "product_end_query": false
+                }
+              }
+            ],
+            "oracle": {
+              "normal_complete": false,
+              "actual_D16_calls": 0,
+              "actual_matcher_calls": 0,
+              "accepted_stamp_relation": {
+                "start_equals_independent_preread": true,
+                "accepted_end_exists": false,
+                "accepted_end_equals_start_equals_preread": "NOT_REQUIRED_NOT_ACCEPTED",
+                "numeric_stamp_literal": null
+              },
+              "product_table_list_observed": false,
+              "identity_observation_status": "planned actual forwarding row identity, not executed",
+              "current_observed_result": "NONE_NOT_EXECUTED",
+              "exception": {
+                "exact_class": "recoryn.schema._InventoryCollectionError",
+                "args": [
+                  "LIMIT"
+                ],
+                "reason_attribute_assumed": false
+              },
+              "returned_value": "NO_RESULT_EXCEPTION_NOT_SEMANTIC_NONE",
+              "counters": {
+                "queries": 2,
+                "offered_rows": 4,
+                "usage_rows": 2,
+                "fully_processed_rows": 1,
+                "text_bytes": 38,
+                "fetchmany": 3,
+                "close_attempts": 2
+              },
+              "offered_end_only": false,
+              "product_end_query_reached": false,
+              "end_EOF_or_accepted_end_claim": false,
+              "actual_D16_input_value_oracle": {
+                "calls": 0,
+                "arguments": "NOT_PRODUCED_DO_NOT_INVENT"
+              },
+              "matcher_argument_value_oracle": {
+                "calls": 0,
+                "arguments": "NOT_PRODUCED_DO_NOT_INVENT"
+              }
+            },
+            "direct_method_observation_requirement": "actual unchanged native forwarding records",
+            "runtime_authorized": false
+          }
+        ]
+      }
+    ],
+    "fixture_audit_before_product": {
+      "per_case_or_session_setup_condition": true,
+      "extra_node": false,
+      "checks": [
+        "fixed hashes and exact DDL78B",
+        "core7/12 input+expected deep equality",
+        "only explicit infos swap and inverse",
+        "header tuple7 shape/None metadata",
+        "finite case/call count",
+        "hand scalar sums/fetch vectors",
+        "no dynamic or product-generated expected"
+      ],
+      "driver_fact_mismatch": "preserve facts/version/DDL/pre-read and actual error, report INPUT_OR_ENVIRONMENT_MISMATCH; no repair/skip/xfail"
+    },
+    "source_binding": {
+      "current_source_SHA256": "ec384a2a7e91e4d9b510ff4f7df66e897dab442b3db967cc7dc483a931a14563",
+      "locations_for_future_rebinding_only": {
+        "read_rows": [
+          3216,
+          3264
+        ],
+        "stamp": [
+          3267,
+          3271
+        ],
+        "collector": [
+          3274,
+          3345
+        ],
+        "project": [
+          3065,
+          3178
+        ],
+        "inner_text_raise": 3260,
+        "slot_raise": 3251
+      },
+      "future_source_BASE_pin_required": true,
+      "origin_probe_parent_actual_spawn": "source/unit/code/globals/module hash only; no native connection or collector calls in origin probe"
+    },
+    "open_seams": [
+      {
+        "ID": "D18H-01",
+        "status": "OPEN",
+        "case": "empty parity/native_direct",
+        "required_but_not_currently_instrumented": [
+          "actual fetchmany/close counts",
+          "native C-return row identity leaf",
+          "direct setter attempt observation distinction"
+        ],
+        "facts": "normal return5 and SQL hook do not expose native cursor/method return; real read_rows returns names/rows only",
+        "alternatives_not_adopted": [
+          "root explicitly separates direct terminal/query/caller state/helper-return evidence from forwarding actual native method/row evidence",
+          "separately approve true direct native observation seam and callback/profile coexistence; profiling C calls alone cannot expose return row or all attribute setters"
+        ],
+        "scope_preservation": "no sixth native connection, no native subclass re-labeled direct, no product/source or oracle weakening without root decision"
+      }
+    ],
+    "mutation_candidates_max3_unadopted": [
+      {
+        "proposed_site": "own cursor factory setting removal",
+        "current_source_line": 3225,
+        "normal_control": "empty parity at original source",
+        "target": "same positive parity with caller Row, actual tuple/result oracle",
+        "original_test_reference": "test_private_supplied_inventory_collection[CINV004] is a protocol-double Row control, not native proof",
+        "reach": "actual source setting site, then native row framing/result observed; direct measurements remain OPEN",
+        "masking": "pre-asserting expected factory/rows or stale setup can hide the actual guard; never count setup-only failure",
+        "adopted": false,
+        "executed": false,
+        "exact_future_span_hash_control_target_requires_X00": true
+      },
+      {
+        "proposed_site": "inner row text raise removal",
+        "current_source_line": 3260,
+        "normal_control": "R08 positive15/526",
+        "target": "R08 text33 actual inner raise/usage2,38/SQLprefix2",
+        "original_test_reference": "CINV033 text94 covers a header limit and is not an inner/native replacement",
+        "counterfactual_only": {
+          "usage_rows": 4,
+          "text_bytes": 238,
+          "query_prefix": 3,
+          "fetchmany": 4,
+          "close": 3,
+          "actual_execution": false
+        },
+        "classification": "span reached + exact phase/usage/prefix assertion FAIL is target sensitivity, later LIMIT reason alone proves nothing; earlier interception is MASKED",
+        "adopted": false,
+        "executed": false,
+        "exact_future_span_hash_control_target_requires_X00": true
+      },
+      {
+        "proposed_site": "row slot >= to >",
+        "current_source_line": 3250,
+        "normal_control": "empty3/95",
+        "target": "empty row2 offered-end vs accepted-end/EOF/usage2,95 before framing",
+        "original_test_reference": "CINV006 positive and CINV111/112 protocol row-slot pair are existing controls, not native measurements",
+        "risk": "mutant may request fetchmany0 after accepting excess row; record actual native behavior and exact assertion, never pre-reject request to force kill",
+        "adopted": false,
+        "executed": false,
+        "exact_future_span_hash_control_target_requires_X00": true
+      }
+    ],
+    "unchanged_denominators": {
+      "formal": 70,
+      "legacy_semantic": 4105,
+      "explicit_comparison": 245,
+      "held": 10,
+      "CINV_selected": 119,
+      "D17_selected_with_audit": 120,
+      "combined": 697,
+      "historical_planned_full": 30842,
+      "new_adopted_increment": 0
+    },
+    "future_activation": "D17 exact publication + sameSHA CI3 + X00 exact newBASE/scope/hash/hand review/observer decision/time and selection; no guessed BASE/current PASS",
+    "executed_product_SQLite_DB_SQL_tests_mutations_network_Git": 0,
+    "self_oracle_final_approval": false
+  },
+  "observability": {
+    "format": "D18_HAND_FIX2_OBSERVABILITY_ADDENDUM_V1",
+    "status": "STATIC_ALLOCATION_ONLY_FROZEN_PENDING_INDEPENDENT_HAND_REVIEW",
+    "author": "w5:pB; author of original hand, not its independent final oracle approver",
+    "authority": {
+      "root_FIX2_raw_sha256": "f132e711aa07e2c27ec32ed0b395c55cf118695d7bb310b34fe4abbcc94b9fc2",
+      "root_X00_allocation_acceptance_sha256": "47af803d5a9dffd4db92a1dca27aa393927f67f31f1fe296a05ece2ee987c346",
+      "p8_independent_allocation_report_sha256": "4e2ae42986661818f9a1c11056b5f48e3c778395b7d20d7c5840e3b70445c5e2",
+      "precedence": "Only allocation obligations are limited by root FIX2; original hand bytes and D18H-01 historical OPEN remain untouched."
+    },
+    "small_observation_schema": {
+      "basis_enum": [
+        "DIRECT_OBSERVATION",
+        "HELPER_RETURN_DERIVATION",
+        "CONTRACT_DERIVATION",
+        "UNOBSERVED",
+        "NOT_APPLICABLE"
+      ],
+      "DIRECT_OBSERVATION": "Future real event/value observation plan, not current execution evidence.",
+      "HELPER_RETURN_DERIVATION": "Independent arithmetic from actual original Python helper return, not native C-return or method telemetry.",
+      "CONTRACT_DERIVATION": "Finite normal-program expectation, no claim of measured native count.",
+      "UNOBSERVED": "No measurement/claim in this allocation.",
+      "NOT_APPLICABLE": "Absent target/no permitted inference, not a PASS.",
+      "actual_enum": [
+        "NOT_RUN"
+      ],
+      "runtime_actual_everywhere": "NOT_RUN"
+    },
+    "shared_observation_requirements": [
+      {
+        "metric": "fixture_product_separation",
+        "basis": "DIRECT_OBSERVATION",
+        "evidence_plan": "Phase-tag setup, DDL, hooks/TX, pre-read, product call, post-check, rollback and close. Only product-phase events count.",
+        "actual": "NOT_RUN"
+      },
+      {
+        "metric": "real_original_collector_D16_matcher",
+        "basis": "DIRECT_OBSERVATION",
+        "evidence_plan": "Call real original functions with original arguments/return/exception; capture exact callable/code/globals and restore identities in finally. Negative D16/matcher calls remain zero.",
+        "actual": "NOT_RUN"
+      },
+      {
+        "metric": "caller_state_and_sentinels",
+        "basis": "DIRECT_OBSERVATION",
+        "evidence_plan": "Observe caller row_factory/text_factory/TX/aliveness before/after and available trace/progress sentinel behavior. Do not infer hidden hook identity from absence of a getter.",
+        "actual": "NOT_RUN"
+      },
+      {
+        "metric": "hidden_hook_identity_native_internal_allocation",
+        "basis": "UNOBSERVED",
+        "evidence_plan": "No getter identity claim, native allocator bound, operational owner/ACK/admission or production safety approval.",
+        "actual": "NOT_RUN"
+      }
+    ],
+    "wrapper_constraints": {
+      "original_callable_code_globals_arguments_return_exception_identity_preserved": true,
+      "restore_all_wrapped_bindings_in_finally": true,
+      "source_modification": false,
+      "expected_Projection_stub_or_preasserted_native_response": false,
+      "profile_sys_trace_c_call_replacement": false,
+      "native_subclass": false,
+      "sixth_connection": false,
+      "new_API": false,
+      "hook_getter_identity_fabrication": false,
+      "separate_failure_evidence": "Preserve actual exceptions/facts; do not repair oracle, skip/xfail or replace failures."
+    },
+    "calls": [
+      {
+        "descriptive_call_key": "empty-direct",
+        "original_binding": {
+          "original_file": "build/g09a-native-memory-d18-hand-coordinate-fix1/literals.json",
+          "original_file_raw_sha256": "0e73a261465b9b18132551e7846ee4099885b9e74a8babac4d065e361880a564",
+          "json_pointer": "/cases/0/calls/0",
+          "whole_original_call_canonical_sha256": "7f258014fef3325f95cc980f6d1f197b347cdb9ea4ba36acc41415b0b8a6ae1c",
+          "canonical_definition": "UTF8 ensure_ascii=False sort_keys=True compact allow_nan=False no final LF; metadata binding only, not product-derived expected"
+        },
+        "native_mode_unchanged": "native_direct",
+        "observation_allocation": [
+          {
+            "metric": "unwrapped_builtin_connection",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Use genuine sqlite3.Connection itself, no subclass/proxy relabeling; only original fixture connection1.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "product_SQL_order",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Phase-tagged actual native trace for exact original four SQL statements. Fixture traces excluded.",
+            "actual": "NOT_RUN",
+            "unchanged_expected": 4
+          },
+          {
+            "metric": "independent_result5_candidate_None",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Compare real returned five-field result and candidate None with original hand literal, no expected generation.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "accepted_stamp_relation",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Original helper accepted start/end equal independent fixture pre-read on completed positive; do not invent numeric stamp.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "real_helper_return_names_accepted_rows",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Passthrough Python wrapper invokes original _inventory_read_rows and records original names/accepted rows without copying/converting/replacing; code/globals/return/exception preserved.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "accepted_row_sum",
+            "basis": "HELPER_RETURN_DERIVATION",
+            "evidence_plan": "Sum accepted rows across real helper returns; not native chunks/offered rows.",
+            "actual": "NOT_RUN",
+            "unchanged_expected": 3
+          },
+          {
+            "metric": "header_and_cell_UTF8_sum",
+            "basis": "HELPER_RETURN_DERIVATION",
+            "evidence_plan": "Independently sum original header strings and string cells in accepted helper returns; do not read product budget counter as expected generator.",
+            "actual": "NOT_RUN",
+            "unchanged_expected": 95
+          },
+          {
+            "metric": "fetchmany_count",
+            "basis": "CONTRACT_DERIVATION",
+            "evidence_plan": "Unchanged finite normal program expected count; never report direct native method-count PASS.",
+            "actual": "NOT_RUN",
+            "unchanged_expected": 7
+          },
+          {
+            "metric": "cursor_close_count",
+            "basis": "CONTRACT_DERIVATION",
+            "evidence_plan": "Unchanged finite normal program expected count; not directly measured close calls.",
+            "actual": "NOT_RUN",
+            "unchanged_expected": 4
+          },
+          {
+            "metric": "native_fetch_requests_chunks_EOF",
+            "basis": "UNOBSERVED",
+            "evidence_plan": "Helper returns do not expose native fetch requests/chunks or EOF calls.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "native_setter_attempts_close_exact_and_closed_cursor_probe",
+            "basis": "UNOBSERVED",
+            "evidence_plan": "Do not assert direct measurements of native setter attempts, per-cursor close, or retained closed-cursor probes.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "raw_C_return_leaf_identity",
+            "basis": "UNOBSERVED",
+            "evidence_plan": "Python helper-return references are not evidence of C-return row identity.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "retained_raw_leaf_identity",
+            "basis": "NOT_APPLICABLE",
+            "evidence_plan": "Empty retained schema/index raw rows are zero. No vacuous identity success, no cross-connection/JSON identity comparison.",
+            "actual": "NOT_RUN",
+            "unchanged_expected": 0
+          }
+        ],
+        "shared_observation_requirements_ref": "/shared_observation_requirements",
+        "all_input_query_header_row_budget_exception_result5_accepted_prefix_permutation": "EXACT_ORIGINAL_BINDING_UNCHANGED",
+        "actual": "NOT_RUN",
+        "runtime_authorized": false
+      },
+      {
+        "descriptive_call_key": "empty-forward",
+        "original_binding": {
+          "original_file": "build/g09a-native-memory-d18-hand-coordinate-fix1/literals.json",
+          "original_file_raw_sha256": "0e73a261465b9b18132551e7846ee4099885b9e74a8babac4d065e361880a564",
+          "json_pointer": "/cases/0/calls/1",
+          "whole_original_call_canonical_sha256": "f594db3f9db13435d71fd69e8db0d11efb4b72160de5d60a797cd5fd196c42a0",
+          "canonical_definition": "UTF8 ensure_ascii=False sort_keys=True compact allow_nan=False no final LF; metadata binding only, not product-derived expected"
+        },
+        "native_mode_unchanged": "native_forwarding",
+        "observation_allocation": [
+          {
+            "metric": "actual_native_execute_description",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Real forwarding cursor delegates unchanged execute/description to its fresh native connection. Record actual events before hand comparisons.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "fetch_requests_actual_chunks_and_reached_EOF",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Delegate original sizes unchanged and retain actual native return references. Observe only original reached prefix; do not inject responses, preassert expected sizes or force EOF.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "native_close_own_cursor_factory_observable_setters",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Record actual native method forwarding, own cursor row_factory=None and close/finally, observable caller setter attempts and closed-cursor probe per original hand lifetime. No hidden hook identity claim.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "cost_and_exact_failure_cut",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Use original budget/query/fetch/close/usage/phase prefix. Real traceback code/globals/raise and original exception args; no .reason fabrication.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "offered_vs_accepted_row_and_stamp",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Preserve FIX1 offered/accepted distinction. Compare pre-read relation only for accepted prefix; fixture pre-read is not product reach.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "native_leaf_to_D16_and_Projection_identity",
+            "basis": "NOT_APPLICABLE",
+            "evidence_plan": "Only same-call actual retained leaf rows through real D16 arguments and Projection; no normalized outer container, consumed stamp/table_list, JSON tuple or cross-call identity. Empty retained leaves0; negative D16/matcher0 so no such result identity target.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "transfer_native_method_counts_to_direct",
+            "basis": "NOT_APPLICABLE",
+            "evidence_plan": "Four forwarding calls never certify direct native method counts.",
+            "actual": "NOT_RUN"
+          }
+        ],
+        "shared_observation_requirements_ref": "/shared_observation_requirements",
+        "all_input_query_header_row_budget_exception_result5_accepted_prefix_permutation": "EXACT_ORIGINAL_BINDING_UNCHANGED",
+        "actual": "NOT_RUN",
+        "runtime_authorized": false
+      },
+      {
+        "descriptive_call_key": "empty-row2",
+        "original_binding": {
+          "original_file": "build/g09a-native-memory-d18-hand-coordinate-fix1/literals.json",
+          "original_file_raw_sha256": "0e73a261465b9b18132551e7846ee4099885b9e74a8babac4d065e361880a564",
+          "json_pointer": "/cases/1/calls/0",
+          "whole_original_call_canonical_sha256": "3ce0f971a55c4fd8599788f1b266467827a318515f4f5c47ae703c263e338e33",
+          "canonical_definition": "UTF8 ensure_ascii=False sort_keys=True compact allow_nan=False no final LF; metadata binding only, not product-derived expected"
+        },
+        "native_mode_unchanged": "native_forwarding",
+        "observation_allocation": [
+          {
+            "metric": "actual_native_execute_description",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Real forwarding cursor delegates unchanged execute/description to its fresh native connection. Record actual events before hand comparisons.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "fetch_requests_actual_chunks_and_reached_EOF",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Delegate original sizes unchanged and retain actual native return references. Observe only original reached prefix; do not inject responses, preassert expected sizes or force EOF.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "native_close_own_cursor_factory_observable_setters",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Record actual native method forwarding, own cursor row_factory=None and close/finally, observable caller setter attempts and closed-cursor probe per original hand lifetime. No hidden hook identity claim.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "cost_and_exact_failure_cut",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Use original budget/query/fetch/close/usage/phase prefix. Real traceback code/globals/raise and original exception args; no .reason fabrication.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "offered_vs_accepted_row_and_stamp",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Preserve FIX1 offered/accepted distinction. Compare pre-read relation only for accepted prefix; fixture pre-read is not product reach.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "native_leaf_to_D16_and_Projection_identity",
+            "basis": "NOT_APPLICABLE",
+            "evidence_plan": "Only same-call actual retained leaf rows through real D16 arguments and Projection; no normalized outer container, consumed stamp/table_list, JSON tuple or cross-call identity. Empty retained leaves0; negative D16/matcher0 so no such result identity target.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "transfer_native_method_counts_to_direct",
+            "basis": "NOT_APPLICABLE",
+            "evidence_plan": "Four forwarding calls never certify direct native method counts.",
+            "actual": "NOT_RUN"
+          }
+        ],
+        "shared_observation_requirements_ref": "/shared_observation_requirements",
+        "all_input_query_header_row_budget_exception_result5_accepted_prefix_permutation": "EXACT_ORIGINAL_BINDING_UNCHANGED",
+        "actual": "NOT_RUN",
+        "runtime_authorized": false
+      },
+      {
+        "descriptive_call_key": "r08-positive",
+        "original_binding": {
+          "original_file": "build/g09a-native-memory-d18-hand-coordinate-fix1/literals.json",
+          "original_file_raw_sha256": "0e73a261465b9b18132551e7846ee4099885b9e74a8babac4d065e361880a564",
+          "json_pointer": "/cases/2/calls/0",
+          "whole_original_call_canonical_sha256": "40f0f3064b4480e9afba613ddb2ba3e5c6587bfda3fd7fd7f3c10f7af74fbf36",
+          "canonical_definition": "UTF8 ensure_ascii=False sort_keys=True compact allow_nan=False no final LF; metadata binding only, not product-derived expected"
+        },
+        "native_mode_unchanged": "native_forwarding",
+        "observation_allocation": [
+          {
+            "metric": "actual_native_execute_description",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Real forwarding cursor delegates unchanged execute/description to its fresh native connection. Record actual events before hand comparisons.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "fetch_requests_actual_chunks_and_reached_EOF",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Delegate original sizes unchanged and retain actual native return references. Observe only original reached prefix; do not inject responses, preassert expected sizes or force EOF.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "native_close_own_cursor_factory_observable_setters",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Record actual native method forwarding, own cursor row_factory=None and close/finally, observable caller setter attempts and closed-cursor probe per original hand lifetime. No hidden hook identity claim.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "cost_and_exact_failure_cut",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Use original budget/query/fetch/close/usage/phase prefix. Real traceback code/globals/raise and original exception args; no .reason fabrication.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "offered_vs_accepted_row_and_stamp",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Preserve FIX1 offered/accepted distinction. Compare pre-read relation only for accepted prefix; fixture pre-read is not product reach.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "native_leaf_to_D16_and_Projection_identity",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Only same-call actual retained leaf rows through real D16 arguments and Projection; no normalized outer container, consumed stamp/table_list, JSON tuple or cross-call identity. Empty retained leaves0; negative D16/matcher0 so no such result identity target.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "transfer_native_method_counts_to_direct",
+            "basis": "NOT_APPLICABLE",
+            "evidence_plan": "Four forwarding calls never certify direct native method counts.",
+            "actual": "NOT_RUN"
+          }
+        ],
+        "shared_observation_requirements_ref": "/shared_observation_requirements",
+        "all_input_query_header_row_budget_exception_result5_accepted_prefix_permutation": "EXACT_ORIGINAL_BINDING_UNCHANGED",
+        "actual": "NOT_RUN",
+        "runtime_authorized": false
+      },
+      {
+        "descriptive_call_key": "r08-text33",
+        "original_binding": {
+          "original_file": "build/g09a-native-memory-d18-hand-coordinate-fix1/literals.json",
+          "original_file_raw_sha256": "0e73a261465b9b18132551e7846ee4099885b9e74a8babac4d065e361880a564",
+          "json_pointer": "/cases/3/calls/0",
+          "whole_original_call_canonical_sha256": "ae4056aafe2baa6a0d7373a4a8a1cb5ae78239cac6967b16db3e0ad17127feb6",
+          "canonical_definition": "UTF8 ensure_ascii=False sort_keys=True compact allow_nan=False no final LF; metadata binding only, not product-derived expected"
+        },
+        "native_mode_unchanged": "native_forwarding",
+        "observation_allocation": [
+          {
+            "metric": "actual_native_execute_description",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Real forwarding cursor delegates unchanged execute/description to its fresh native connection. Record actual events before hand comparisons.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "fetch_requests_actual_chunks_and_reached_EOF",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Delegate original sizes unchanged and retain actual native return references. Observe only original reached prefix; do not inject responses, preassert expected sizes or force EOF.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "native_close_own_cursor_factory_observable_setters",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Record actual native method forwarding, own cursor row_factory=None and close/finally, observable caller setter attempts and closed-cursor probe per original hand lifetime. No hidden hook identity claim.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "cost_and_exact_failure_cut",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Use original budget/query/fetch/close/usage/phase prefix. Real traceback code/globals/raise and original exception args; no .reason fabrication.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "offered_vs_accepted_row_and_stamp",
+            "basis": "DIRECT_OBSERVATION",
+            "evidence_plan": "Preserve FIX1 offered/accepted distinction. Compare pre-read relation only for accepted prefix; fixture pre-read is not product reach.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "native_leaf_to_D16_and_Projection_identity",
+            "basis": "NOT_APPLICABLE",
+            "evidence_plan": "Only same-call actual retained leaf rows through real D16 arguments and Projection; no normalized outer container, consumed stamp/table_list, JSON tuple or cross-call identity. Empty retained leaves0; negative D16/matcher0 so no such result identity target.",
+            "actual": "NOT_RUN"
+          },
+          {
+            "metric": "transfer_native_method_counts_to_direct",
+            "basis": "NOT_APPLICABLE",
+            "evidence_plan": "Four forwarding calls never certify direct native method counts.",
+            "actual": "NOT_RUN"
+          }
+        ],
+        "shared_observation_requirements_ref": "/shared_observation_requirements",
+        "all_input_query_header_row_budget_exception_result5_accepted_prefix_permutation": "EXACT_ORIGINAL_BINDING_UNCHANGED",
+        "actual": "NOT_RUN",
+        "runtime_authorized": false
+      }
+    ],
+    "negative_prefix_invariants": {
+      "empty-row2": "start accepted=pre-read; end raw row offered, rejected before framing at row slot. No accepted end/last EOF/end compare; original usage2/text95/query4/fetch6/close4, D16/matcher0 unchanged.",
+      "r08-text33": "start accepted=pre-read; schema first string table5 bytes gives usage2/text38 at inner text raise. Product table_list/end0; no schema EOF. Original query2/fetch3/close2, D16/matcher0 unchanged."
+    },
+    "unchanged_counts": {
+      "semantic_candidates": 4,
+      "nodes": 4,
+      "native_connections": 5,
+      "collector_calls": 5,
+      "direct": 1,
+      "forwarding": 4,
+      "extra_audit_node": 0,
+      "new_formal_ID": 0,
+      "adopted_denominator_increment": 0
+    },
+    "unchanged_denominators_reference": {
+      "original_literals_pointer": "/unchanged_denominators",
+      "canonical_sha256": "3f088a0b87697373266cc0055480e187e8312776c0e8726417893b971bbe0da9"
+    },
+    "D18H01": {
+      "historical_status": "OPEN_PRESERVED_IN_ORIGINAL_HAND3",
+      "effective_allocation": "Root FIX2 explicitly limits the strong direct-counter obligation by selecting option A; not retroactive satisfaction or measurement.",
+      "original_hand_modified": false,
+      "self_oracle_final_approval": false
+    },
+    "new_allocation_OPEN": [],
+    "remaining_gates": [
+      "Independent oracle review of frozen original hand3 plus this new addendum2",
+      "D17 exact publication and new same-SHA CI3 success confirmed by X00",
+      "X00 separately pins actual BASE, exact scope, source hashes/selection/time and authorizes execution"
+    ],
+    "actual_native_product_or_test_execution": "NOT_RUN",
+    "runtime_activation": false,
+    "current_QA_or_progress_pA_access": false
+  },
+  "selection": {
+    "semantic_count": 4,
+    "node_count": 4,
+    "native_connections": 5,
+    "planned_nodes": [
+      "tests/unit/test_schema_catalog.py::test_private_inventory_native_empty_parity",
+      "tests/unit/test_schema_catalog.py::test_private_inventory_native_empty_row_limit",
+      "tests/unit/test_schema_catalog.py::test_private_inventory_native_r08_projection",
+      "tests/unit/test_schema_catalog.py::test_private_inventory_native_r08_text_limit"
+    ]
+  },
+  "source_metadata": {
+    "literals_raw_sha256": "0e73a261465b9b18132551e7846ee4099885b9e74a8babac4d065e361880a564",
+    "observability_raw_sha256": "6df581cd6a587f72e11eb206feb11f7de447d80d6ef42f6513e85bf73fb8448f"
+  }
+}

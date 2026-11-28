@@ -310,6 +310,16 @@ def _private_supplied_inventory_collection_nodes():
     }
 
 
+def _private_inventory_native_memory_nodes():
+    base = "tests/unit/test_schema_catalog.py::"
+    return {
+        base + "test_private_inventory_native_empty_parity",
+        base + "test_private_inventory_native_empty_row_limit",
+        base + "test_private_inventory_native_r08_projection",
+        base + "test_private_inventory_native_r08_text_limit",
+    }
+
+
 def test_management_wire_selected_scope(request):
     own = (
         "tests/unit/test_schema_catalog.py::",
@@ -326,6 +336,7 @@ def test_management_wire_selected_scope(request):
         | _private_schema_read_error_nodes()
         | _private_supplied_inventory_nodes()
         | _private_supplied_inventory_collection_nodes()
+        | _private_inventory_native_memory_nodes()
     )
     assert not any(
         item.get_closest_marker("skip") or item.get_closest_marker("xfail")

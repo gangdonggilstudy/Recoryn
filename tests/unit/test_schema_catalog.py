@@ -5560,3 +5560,528 @@ def test_private_supplied_inventory_collection_literal_audit():
                 hashlib.sha256(_cinv_json(value).encode("utf8")).hexdigest()
                 == auxiliary["canonical_sha256"]
             )
+
+
+# D18: caller-owned native memory facts, without operational authority.
+def _native_memory_tuple(value):
+    if type(value) is list:
+        return tuple(_native_memory_tuple(item) for item in value)
+    return value
+
+
+def _native_memory_fixture():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures/g09_inventory_native_memory_literals_v1.json"
+    )
+    raw = path.read_bytes()
+    assert len(raw) == 181424
+    assert (
+        hashlib.sha256(raw).hexdigest()
+        == "a7285387178335c6ada4f0159e612149c32711efee74d55359f53e2898a2bbef"
+    )
+    data = json.loads(raw)
+    assert set(data) == {"format", "literals", "observability", "selection", "source_metadata"}
+    assert data["format"] == "recoryn.inventory-native-memory-literals.v1"
+    assert set(data["selection"]) == {
+        "semantic_count",
+        "node_count",
+        "native_connections",
+        "planned_nodes",
+    }
+    assert set(data["source_metadata"]) == {"literals_raw_sha256", "observability_raw_sha256"}
+    assert data["selection"]["semantic_count"] == data["selection"]["node_count"] == 4
+    assert data["selection"]["native_connections"] == 5
+    expected = {
+        "empty-direct": "7f258014fef3325f95cc980f6d1f197b347cdb9ea4ba36acc41415b0b8a6ae1c",
+        "empty-forward": "f594db3f9db13435d71fd69e8db0d11efb4b72160de5d60a797cd5fd196c42a0",
+        "empty-row2": "3ce0f971a55c4fd8599788f1b266467827a318515f4f5c47ae703c263e338e33",
+        "r08-positive": "40f0f3064b4480e9afba613ddb2ba3e5c6587bfda3fd7fd7f3c10f7af74fbf36",
+        "r08-text33": "ae4056aafe2baa6a0d7373a4a8a1cb5ae78239cac6967b16db3e0ad17127feb6",
+    }
+    calls = [call for case in data["literals"]["cases"] for call in case["calls"]]
+    assert [call["descriptive_call_key"] for call in calls] == list(expected)
+    for call, observation in zip(calls, data["observability"]["calls"], strict=True):
+        canonical = json.dumps(
+            call, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        assert (
+            hashlib.sha256(canonical.encode("utf8")).hexdigest()
+            == expected[call["descriptive_call_key"]]
+        )
+        assert (
+            observation["original_binding"]["whole_original_call_canonical_sha256"]
+            == expected[call["descriptive_call_key"]]
+        )
+        assert observation["descriptive_call_key"] == call["descriptive_call_key"]
+    return data, {call["descriptive_call_key"]: call for call in calls}
+
+
+class _NativeMemoryCursor:
+    def __init__(self, inner, record):
+        self.inner = inner
+        self.record = record
+
+    @property
+    def row_factory(self):
+        return self.inner.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value):
+        self.inner.row_factory = value
+        self.record["factory_sets"].append(value)
+
+    def execute(self, sql):
+        result = self.inner.execute(sql)
+        self.record["sql"] = sql
+        return result
+
+    @property
+    def description(self):
+        result = self.inner.description
+        self.record["description"] = result
+        return result
+
+    def fetchmany(self, size):
+        result = self.inner.fetchmany(size)
+        self.record["fetch_requests"].append(size)
+        self.record["chunks"].append(result)
+        return result
+
+    def close(self):
+        self.record["close_attempts"] += 1
+        result = self.inner.close()
+        self.record["close_completed"] = True
+        return result
+
+
+class _NativeMemoryConnection:
+    def __init__(self, inner, records):
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "_records", records)
+        object.__setattr__(self, "_setters", [])
+        object.__setattr__(self, "_other_calls", [])
+
+    def cursor(self, *args, **kwargs):
+        inner = self._inner.cursor(*args, **kwargs)
+        record = {
+            "factory_initial_is_Row": inner.row_factory is sqlite3.Row,
+            "factory_sets": [],
+            "fetch_requests": [],
+            "chunks": [],
+            "close_attempts": 0,
+            "close_completed": False,
+        }
+        cursor = _NativeMemoryCursor(inner, record)
+        record["cursor"] = cursor
+        self._records.append(record)
+        return cursor
+
+    def __getattr__(self, name):
+        value = getattr(self._inner, name)
+        if name in {"row_factory", "text_factory", "isolation_level", "in_transaction"}:
+            return value
+        if not callable(value):
+            return value
+
+        def forwarded(*args, **kwargs):
+            try:
+                return value(*args, **kwargs)
+            finally:
+                self._other_calls.append(name)
+
+        return forwarded
+
+    def __setattr__(self, name, value):
+        setattr(self._inner, name, value)
+        self._setters.append(name)
+
+
+def _native_memory_leaves(value):
+    if type(value) is not tuple:
+        return []
+    if value and all(type(cell) in (str, int, type(None)) for cell in value):
+        return [value]
+    return [leaf for item in value for leaf in _native_memory_leaves(item)]
+
+
+def _native_memory_expected_rows(value, stamp, table_list):
+    if type(value) is list:
+        return _native_memory_tuple(value)
+    if "relation" in value:
+        return ((stamp,),)
+    assert "value_multiset" in value
+    return table_list
+
+
+def _native_memory_call(key, monkeypatch, request):
+    import _sqlite3
+
+    data, calls = _native_memory_fixture()
+    call = calls[key]
+    oracle = call["oracle"]
+    phase = ["fixture"]
+    trace = []
+    progress = Counter()
+    cursors = []
+    helper_returns = []
+    accepted_stamps = []
+    projects = []
+    matches = []
+    forbidden = []
+    connection_count = []
+    log = {
+        "call_key": key,
+        "python": sys.version,
+        "sqlite_version": sqlite3.sqlite_version,
+        "direct": key == "empty-direct",
+        "actual": "STARTED",
+        "source_file": s.__file__,
+    }
+    originals = {
+        name: getattr(s, name)
+        for name in (
+            "_inventory_read_rows",
+            "_inventory_stamp",
+            "_project_supplied_inventory",
+            "_current_profile_candidate",
+        )
+    }
+    original_connect = sqlite3.connect
+    native = None
+    forwarded = None
+    result = None
+    caught = None
+    old_trace, old_profile = sys.gettrace(), sys.getprofile()
+
+    def read_fixture(sql):
+        cursor = native.cursor()
+        try:
+            cursor.row_factory = None
+            cursor.execute(sql)
+            return cursor.description, cursor.fetchall()
+        finally:
+            cursor.close()
+
+    def connect(*args, **kwargs):
+        connection_count.append((phase[0], args, kwargs))
+        assert (
+            phase[0] == "fixture" and args == (":memory:",) and kwargs == {"isolation_level": None}
+        ), "NATIVE_FIXTURE_CONNECT_BOUNDARY"
+        return original_connect(*args, **kwargs)
+
+    def forbid_io(original, name):
+        def checked(*args, **kwargs):
+            if phase[0] == "product":
+                forbidden.append(name)
+                raise AssertionError("PRODUCT_IO_FORBIDDEN:" + name)
+            return original(*args, **kwargs)
+
+        return checked
+
+    def observed_read(connection, sql, header, budget, usage):
+        record = {"sql": sql, "usage_before": list(usage), "returned": False}
+        try:
+            actual = originals["_inventory_read_rows"](connection, sql, header, budget, usage)
+            record.update(returned=True, names=actual[0], rows=actual[1])
+            return actual
+        except BaseException as error:
+            record["exception"] = {"class": type(error).__name__, "args": error.args}
+            tb = error.__traceback__
+            try:
+                while tb is not None:
+                    if tb.tb_frame.f_code is originals["_inventory_read_rows"].__code__:
+                        record["raise_line"] = tb.tb_lineno
+                        record["raise_code_matches"] = tb.tb_frame.f_globals is s.__dict__
+                    tb = tb.tb_next
+            finally:
+                del tb
+            raise
+        finally:
+            record["usage_after"] = list(usage)
+            helper_returns.append(record)
+
+    def observed_stamp(rows):
+        value = originals["_inventory_stamp"](rows)
+        accepted_stamps.append(value)
+        return value
+
+    def observed_project(objects, evidence):
+        projects.append((objects, evidence))
+        return originals["_project_supplied_inventory"](objects, evidence)
+
+    def observed_matcher(objects):
+        matches.append(objects)
+        return originals["_current_profile_candidate"](objects)
+
+    def trace_sentinel(sql):
+        trace.append((phase[0], sql))
+
+    def progress_sentinel():
+        progress[phase[0]] += 1
+        return 0
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(sqlite3, "connect", connect)
+            patch.setattr(_sqlite3, "connect", connect)
+            for obj, name in (
+                (builtins, "open"),
+                (Path, "open"),
+                (os, "open"),
+                (socket, "create_connection"),
+                (socket, "getaddrinfo"),
+                (socket.socket, "connect"),
+                (socket.socket, "connect_ex"),
+            ):
+                patch.setattr(obj, name, forbid_io(getattr(obj, name), str(obj) + "." + name))
+            for name, observer in (
+                ("_inventory_read_rows", observed_read),
+                ("_inventory_stamp", observed_stamp),
+                ("_project_supplied_inventory", observed_project),
+                ("_current_profile_candidate", observed_matcher),
+            ):
+                assert inspect.unwrap(originals[name]).__globals__ is s.__dict__
+                patch.setattr(s, name, observer)
+            native = sqlite3.connect(":memory:", isolation_level=None)
+            assert type(native) is sqlite3.Connection and not native.in_transaction
+            if call["DDL"] is not None:
+                read_fixture(call["DDL"]["SQL"])
+            native.row_factory = sqlite3.Row
+            native.text_factory = str
+            native.set_trace_callback(trace_sentinel)
+            native.set_progress_handler(progress_sentinel, 1)
+            read_fixture("BEGIN")
+            assert native.in_transaction
+            pre_reads = call["fixture"]["ordered_steps"][4]["queries"]
+            facts = [read_fixture(item["SQL"]) for item in pre_reads]
+            log["independent_preread"] = [
+                {"SQL": item["SQL"], "description": fact[0], "rows": fact[1]}
+                for item, fact in zip(pre_reads, facts, strict=True)
+            ]
+            for item, fact in zip(pre_reads, facts, strict=True):
+                assert fact[0] == _native_memory_tuple(item["description"]), (
+                    "NATIVE_FIXTURE_MISMATCH_HEADER",
+                    log,
+                )
+            stamp_rows, schema_rows, table_rows = (fact[1] for fact in facts)
+            assert (
+                len(stamp_rows) == 1 and type(stamp_rows[0]) is tuple and len(stamp_rows[0]) == 1
+            ), ("NATIVE_FIXTURE_MISMATCH_STAMP", log)
+            stamp = stamp_rows[0][0]
+            assert type(stamp) is int and -(2**63) <= stamp <= 2**63 - 1, (
+                "NATIVE_FIXTURE_MISMATCH_STAMP",
+                log,
+            )
+            assert tuple(schema_rows) == _native_memory_tuple(
+                call["pre_read_raw_schema_literal"]
+            ), ("NATIVE_FIXTURE_MISMATCH_SCHEMA", log)
+            assert Counter(table_rows) == Counter(
+                _native_memory_tuple(call["pre_read_table_list"]["value_multiset"])
+            ), ("NATIVE_FIXTURE_MISMATCH_TABLE_LIST", log)
+            table_rows = tuple(table_rows)
+            forwarded = _NativeMemoryConnection(native, cursors) if key != "empty-direct" else None
+            connection = forwarded if forwarded is not None else native
+            args = call["budget"]["exact_builtin_int_positional"]
+            budget = s._InventoryReadBudget(*args)
+            phase[0] = "product"
+            try:
+                result = s._collect_supplied_inventory(connection, budget)
+            except BaseException as error:
+                caught = error
+            finally:
+                phase[0] = "post"
+            log.update(
+                helper_returns=helper_returns,
+                accepted_stamps=accepted_stamps,
+                D16_calls=len(projects),
+                matcher_calls=len(matches),
+                native_connections=len(connection_count),
+                product_queries=[sql for stage, sql in trace if stage == "product"],
+                cursor_records=[
+                    {k: v for k, v in record.items() if k != "cursor"} for record in cursors
+                ],
+            )
+            assert native.row_factory is sqlite3.Row and native.text_factory is str
+            assert native.isolation_level is None and native.in_transaction
+            assert sys.gettrace() is old_trace and sys.getprofile() is old_profile
+            assert not forbidden and len(connection_count) == 1
+            assert log["product_queries"] == [item["SQL"] for item in call["product_query_program"]]
+            assert (
+                len(projects) == oracle["actual_D16_calls"]
+                and len(matches) == oracle["actual_matcher_calls"]
+            )
+            assert accepted_stamps == ([stamp, stamp] if oracle["normal_complete"] else [stamp])
+            if oracle["normal_complete"]:
+                assert caught is None, log
+                expected = oracle["independent_result5"]["literal"]
+                assert type(result) is s._SuppliedInventoryProjection
+                for field_name in expected["fields_order"]:
+                    assert getattr(result, field_name) == _native_memory_tuple(
+                        expected["fields"][field_name]
+                    )
+                ref = "empty_original_input" if key.startswith("empty") else "R08_candidate_input"
+                expected_input = data["literals"]["provenance"][ref]
+                assert projects == [
+                    (
+                        _native_memory_tuple(expected_input["objects"]),
+                        _native_memory_tuple(expected_input["evidence"]),
+                    )
+                ]
+                assert matches == [
+                    _native_memory_tuple(oracle["matcher_argument_value_oracle"]["literal_values"])
+                ]
+            else:
+                assert type(caught) is s._InventoryCollectionError and caught.args == ("LIMIT",), (
+                    log
+                )
+                last = helper_returns[-1]
+                program = call["product_query_program"][-1]
+                assert last["usage_after"] == program["failure_prefix"]["usage_at_error"]
+                assert last["raise_line"] == program["failure_prefix"]["current_source_raise_line"]
+                assert last["raise_code_matches"]
+                log["closed_error"] = {
+                    "class": type(caught).__name__,
+                    "args": caught.args,
+                    "line": last["raise_line"],
+                }
+                caught.__traceback__ = None
+            if forwarded is None:
+                complete = [record for record in helper_returns if record["returned"]]
+                rows = sum(len(record["rows"]) for record in complete)
+                text = sum(
+                    sum(len(name.encode("utf8")) for name in record["names"])
+                    + sum(
+                        len(cell.encode("utf8"))
+                        for row in record["rows"]
+                        for cell in row
+                        if type(cell) is str
+                    )
+                    for record in complete
+                )
+                assert (rows, text) == (3, 95)
+                log["direct_helper_return_derived"] = {"rows": rows, "text_bytes": text}
+                log["contract_derived_not_measured"] = {"fetchmany": 7, "close": 4}
+                log["native_method_Creturn_setter_close_probe"] = "UNOBSERVED"
+                log["retained_raw_leaf_identity"] = "NOT_APPLICABLE_EMPTY_RETAINED0"
+            else:
+                assert forwarded._setters == [] and forwarded._other_calls == []
+                assert len(cursors) == oracle["counters"]["queries"]
+                for record, program in zip(cursors, call["product_query_program"], strict=True):
+                    assert record["factory_initial_is_Row"] and record["factory_sets"] == [None]
+                    assert record["close_attempts"] == 1 and record["close_completed"]
+                    assert record["description"] == _native_memory_tuple(
+                        program["description_literal"]
+                    )
+                    assert record["fetch_requests"] == program["fetchmany_requests"]
+                    assert len(record["chunks"]) == len(program["native_chunks"])
+                    for chunk, expected_chunk in zip(
+                        record["chunks"], program["native_chunks"], strict=True
+                    ):
+                        assert type(chunk) is list and all(type(row) is tuple for row in chunk)
+                        value = expected_chunk.get("literal", expected_chunk.get("rows"))
+                        assert tuple(chunk) == _native_memory_expected_rows(
+                            value, stamp, table_rows
+                        )
+                    with pytest.raises(sqlite3.ProgrammingError):
+                        record["cursor"].inner.fetchone()
+                observed = {
+                    "fetchmany": sum(len(record["fetch_requests"]) for record in cursors),
+                    "close_attempts": sum(record["close_attempts"] for record in cursors),
+                    "offered_rows": sum(
+                        len(chunk) for record in cursors for chunk in record["chunks"]
+                    ),
+                    "usage_rows": helper_returns[-1]["usage_after"][0],
+                    "text_bytes": helper_returns[-1]["usage_after"][1],
+                }
+                for name, expected_value in oracle["counters"].items():
+                    if name == "queries":
+                        assert len(cursors) == expected_value
+                    elif name == "rows":
+                        assert observed["offered_rows"] == observed["usage_rows"] == expected_value
+                    elif name == "fully_processed_rows":
+                        assert (
+                            sum(
+                                len(record["rows"])
+                                for record in helper_returns
+                                if record["returned"]
+                            )
+                            == expected_value
+                        )
+                    else:
+                        assert observed[name] == expected_value
+                log["native_directly_observed"] = observed
+                if key == "r08-positive":
+                    kept = [
+                        row
+                        for record in cursors
+                        if record["sql"]
+                        not in ("PRAGMA main.schema_version", "PRAGMA main.table_list")
+                        for chunk in record["chunks"]
+                        for row in chunk
+                    ]
+                    d16 = _native_memory_leaves(projects[0])
+                    projected = _native_memory_leaves(
+                        (
+                            result.logical_object_rows,
+                            result.engine_object_rows,
+                            result.table_evidence,
+                        )
+                    )
+                    assert kept and Counter(map(id, kept)) == Counter(map(id, d16)) == Counter(
+                        map(id, projected)
+                    )
+                    log["same_call_native_D16_Projection_leaf_identity"] = len(kept)
+                else:
+                    log["retained_raw_leaf_identity"] = "NOT_APPLICABLE_EMPTY_OR_NO_D16_RESULT"
+            assert read_fixture(pre_reads[1]["SQL"])[1] == schema_rows
+            assert all(progress[stage] > 0 for stage in ("fixture", "product", "post"))
+            assert all(
+                any(stage == wanted for stage, _ in trace)
+                for wanted in ("fixture", "product", "post")
+            )
+            log["caller_state_preserved"] = True
+            log["sentinel_behavior"] = dict(progress)
+            log["actual"] = "COMPLETED_EXPECTED_ORACLE"
+    finally:
+        phase[0] = "cleanup"
+        if caught is not None:
+            log.setdefault("caught", {"class": type(caught).__name__, "args": caught.args})
+            caught.__traceback__ = None
+        for record in cursors:
+            record["cursor"].inner.close()
+        if native is not None:
+            try:
+                if native.in_transaction:
+                    read_fixture("ROLLBACK")
+                native.set_trace_callback(None)
+                native.set_progress_handler(None, 0)
+            finally:
+                native.close()
+            log["caller_connection_closed"] = True
+        log["original_functions_restored"] = all(
+            getattr(s, name) is original for name, original in originals.items()
+        )
+        log["connection_factory_restored"] = sqlite3.connect is original_connect
+        log["trace_by_phase"] = trace
+        log["forbidden_IO_attempts"] = forbidden
+        request.node.user_properties.append(
+            ("d18_native_memory", json.dumps(log, ensure_ascii=True, default=str))
+        )
+
+
+def test_private_inventory_native_empty_parity(monkeypatch, request):
+    _native_memory_call("empty-direct", monkeypatch, request)
+    _native_memory_call("empty-forward", monkeypatch, request)
+
+
+def test_private_inventory_native_empty_row_limit(monkeypatch, request):
+    _native_memory_call("empty-row2", monkeypatch, request)
+
+
+def test_private_inventory_native_r08_projection(monkeypatch, request):
+    _native_memory_call("r08-positive", monkeypatch, request)
+
+
+def test_private_inventory_native_r08_text_limit(monkeypatch, request):
+    _native_memory_call("r08-text33", monkeypatch, request)

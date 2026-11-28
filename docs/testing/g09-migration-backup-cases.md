@@ -1875,3 +1875,56 @@ X00은 독립45+self의 실제 XML/phase/profile·coverage JSON/원3arc·rawpref
 정식70·legacy semantic4105·명시245·보류10·기존 fixture/golden과119+감사1/기존577/합697은 불변이다. native-memory의 후보4/결정과 stamp 관계·실제 driver/전30profile 확대는 별도 준비이며 현재 실행/채택으로 합치지 않는다. root의 새 정확7은 최종unit·새공식review·이 추가상태·H03 시점snapshot을 별도 scope에 고정하고, unit/scope/tree 도구 pin과 비작성자 문서 전사 검토 뒤에만452/비소유445의 실제 tree를 만든다.
 
 이 최종 상태도 전체 검증 전 스냅샷이다. full예상30842의 단일실행/전체85%·coverage7/offline wheel87·copy/wheel 부모/실spawn origin8와 smoke·commit/일반 HTTPS push/새동일SHA CI3는 아직 후속이다. X00이 실제 immutable state/final·정확 tree·실remote/ref/run으로 최종 결과를 별도 인수한다. 승인 UI 입력·자동 재실행·원 실패를 PASS로 확대하는 처리는 없다. 범위 밖 dirty4와 최신 live H03는 보존하고, 자기SHA를 넣기 위한 반복 문서commit은 만들지 않는다.
+
+
+### D18 실제 native 메모리 SQLite의 private collector 시험 보강
+
+기준은 D17 collector 및 CI3.11 시험 보정까지 공개한 `6622c1f7c65f32cbfeff9eccb171d420ac6c8598` / tree `06b8218c774257ab6c7547b13bd3a0089c157952`다. 같은 SHA의 main/push CI46123097168에서 core3.11·core3.13·optional-runtime 세 작업의 실제 성공과 ref/tree·전체 메시지/trailer0을 확인했다. 원 deb32a4의 실제3.11 실패와 D17 callback/coverage 실패·MASKED 이력은 보존한다. 새 성공으로 이전 실행을 소급 변경하지 않는다.
+
+이 단위는 기존 private `_collect_supplied_inventory`의 **시험 보강**이다. 제품 source·public API·caller·budget·D16/matcher·오류 계약은 변경하지 않는다. caller가 제공한 연결의 실제 native driver 반응을 원 protocol-double 증거와 구분해 확인하며, 파일DB/readonly/WAL·안정 snapshot·단일DB 완전성/권위·CURRENT/EMPTY/입장/owner/ACK를 추가 인증하지 않는다. SQLite allocator나 실제 메모리의 강제 상한도 이 행/텍스트 응답 quota와 다르다.
+
+새 유한 선택은 semantic4/node4/정상 조건 fresh native 연결5다. 각각 고유 `:memory:` 연결을 사용하며 parity 한 node만 builtin direct1과 forwarding1을 별도 연결로 비교한다. fixture SQL·BEGIN·독립 pre-read·hook 설정·사후 probe·ROLLBACK/연결 close는 제품 비용 밖이다. 기존 관리 선택697에 새4를 더한 결합은701, 전체 기대는30846이며 실제 수집/phase/XML와 대조하기 전 PASS 수가 아니다. formal70·legacy semantic4105·명시 비교245·보류10·원 관리/golden fixture와 기존 S1/codec/API/DTO는 불변이다.
+
+| 새 node | 실제 연결과 입력 | 독립 손 기대 및 도달 경계 |
+| --- | --- | --- |
+| `test_private_inventory_native_empty_parity` | builtin direct1 + native forwarding1, 각 빈 memory | 각 row3/text95/query4, 결과 Projection5(candidate=None), 실제 D16/matcher 각1. forwarding fetch7/close4 |
+| `test_private_inventory_native_empty_row_limit` | forwarding1, 같은 빈 입력·budget(2,95) | usage2/text95/query4/fetch6/close4, end row는 offered되나 수락 전 LIMIT. 끝 stamp 수락/EOF/D16/matcher 미도달 |
+| `test_private_inventory_native_r08_projection` | forwarding1, 원 R08 DDL·동일 core7·infos 순열 | row15/text526/query8/fetch16/close8, 결과 Projection5(candidate=None), 실제 D16/matcher 각1·같은-call retained raw leaf11 identity |
+| `test_private_inventory_native_r08_text_limit` | forwarding1, 같은 R08·text budget33 | header14+19=33 뒤 첫 cell table5로 usage2/text38, query2/fetch3/close2·offered4/완전처리1에서 inner-text LIMIT. table_list/end/D16/matcher 미도달 |
+
+손 기대는 새 versioned `tests/fixtures/g09_inventory_native_memory_literals_v1.json`의 고정 payload다. raw181424B/SHA256 `a7285387178335c6ada4f0159e612149c32711efee74d55359f53e2898a2bbef`, envelope5·의미 선택4·whole-call SHA5·관측배분을 봉인했다. runtime은 이 저장소 fixture만 읽고, metadata의 ignored build 경로/과거 selected=false 등의 역사 문자열을 실행 의존성이나 새 승인으로 해석하지 않는다. 제품 catalog/parser/실제 반환으로 expected를 만들거나 원 hand 입력을 성공에 맞춰 수선하지 않는다.
+
+R08 DDL은 `CREATE TABLE "Sessions"("Session_ID" TEXT PRIMARY KEY,"Input_Key" TEXT UNIQUE)`의78B/SHA1d47005d9cd608860b9f0f0b40801f7c9b22b1ceac117f05c1844e6b3467164b다. native index_list 원순서 `_2,_1`은 유지하고 수집기의 infos 정렬 `_1,_2`만 원 계약으로 확인한다. 같은-call native fetch raw leaf→실제 D16 인수→Projection의 유지된11행만 identity 대상으로 삼는다. 소모된 stamp/table_list·정규화 outer·JSON tuple·다른 연결·retained0을 identity 증거에 섞지 않는다.
+
+forwarding4는 native execute/description/fetchmany/close에 **먼저 실제 위임**하고 원 응답/오류를 그대로 전달한 뒤 계수를 대조한다. expected stub·행변환·제품 전에 기대를 강제하는 방식은 쓰지 않는다. direct builtin의 native fetch/chunk/EOF/setter/close 및 C-return identity는 UNOBSERVED다. direct의 실제 query/result/caller 상태와 read-helper 반환에서 도출한 row3/text95, 계약에서 도출한 fetch7/close4를 forwarding 실측과 구분한다.
+
+caller의 실제 row_factory=sqlite3.Row/text_factory=str·열린 transaction/연결 생존과 trace/progress sentinel의 전/중/후 동작을 관측한다. getter 없는 hook identity·모든 오류의 native cleanup은 보장하지 않는다. 원 read/stamp/D16/matcher callable·기존 세션 감사 래퍼를 실제 호출하고 finally에서 원 identity/trace/profile/연결 factory를 복원한다. traceback은 필요한 source code/globals/raise 좌표와 usage scalar만 기록한 뒤 참조를 정리한다. row-slot raise3251·inner-text raise3260은 raw source 좌표이며 coverage statement 정규화 좌표와 다르다.
+
+최초 단독4의 실제 PASS/native5/phase12/XML4·준비3.847초·Python3.13.1/SQLite3.45.3을 인수했다. 원 unit prefix1813398B/Assert AST227·제품 sourceec384a2a·비소유452 raw·fixturea728은 보존됐다. 이 단독 실행은 property-first 호스트·결합701·full/실3.11을 검증하지 않는다. root는 기존 property session fixture가 D16을 @wraps로 감싸는 경우 새 metadata의 직접 globals 단언이 원 native 호출 전에 거부할 수 있는 D18INT01을 정적으로 식별했다. 원 성공을 삭제하지 않고 원 호스트 재현·출처 판단 최소 정정·같은 wrapped 실제 호출 유지 검증을 별도 배정했다. 그 후속의 실제 결과·새 hash·독립 검토는 후속 상태절에 결속한다.
+
+정확 push 계획은 unit/native fixture/root property3·이 case/gap2·assignments snapshot1·[공식 신규 시험 독립 검토](../reviews/g09a-native-memory-d18-review.md)1의7파일이다. BASE453→최종455/비소유448, source 변경0이며 다른 readiness/g10/g14 dirty와 build 증거 전체는 포함하지 않는다. pB 신규 시험은 비작성자 pA, X00 companion/공용 상태 전사는 p8, p8 QA 도구는 비작성자 X00가 검토한다. 옛 본인 source/손·포장 검토를 자기 최종 승인하지 않는다.
+
+이 절 작성 시 결합701/원697·독립 실제 반례·민감도/정확7 full30846·coverage7/offline wheel87·부모/실spawn origin8·기존 smoke 및 범위 commit/push/새SHA CI3는 아직 후속이다. 최종 결과는 immutable state/final·정확 tree·실제 ref/run으로 별도 결속한다. 이 시험 보강을 전체 G09a/v1·Windows 실장비·실제 운영 DB/전원 내구성 완료로 확대하지 않는다.
+
+
+### D18 고정 후보의 독립 인수와 정확7 준비 상태(전체 검증 전 스냅샷)
+
+앞 절은 최초 단독4 뒤의 정적 예측·후속 미인수 시점으로 보존한다. 이후 property-first의 원 unit7e348은 실제 control1 PASS/전제FAIL4·native/collector0이었다. 제품 호출 전 시험 전제 실패이며 제품FAIL/INVALID로 바꾸지 않는다. 최종 unit `9732ba45831c3eec13362da39c80a79cb263d0297bbd06dc8644d1e8a183d87f`는 출처 판단 한 식만 `inspect.unwrap(originals[name]).__globals__`로 고쳤고 실제 `originals[name](...)` 호출은 그대로다. 역치환하면 원 전체 raw/AST이며 원 prefix1813398B/Assert227·fixturea728/sourceec는 불변이다.
+
+작성자의 수정 단독4 PASS/native5·준비3.955초와 property-first hosted5 PASS/native5·3.843초를 인수했다. 실제 기존 감사 wrapper를 통한 D16 RETURNED3·schema code/globals·I/O0/원 wrapper 복원을 대조했다. 원 hosted 전제FAIL4·4.071초와 최초 단독4 PASS·3.847초·원38seal/후속56seal은 별도로 보존한다.
+
+같은 unit9732/fixturea728/root property6b44의 실제 property-first 결합은 **property3/unit413/API285=701 PASS**, XML 각1/2103phase PASS·준비포함7.795초였다. 실제 집합에서 신규4를 빼면 고정 원697과 같으며 별도697/정상 pair를 중복 실행하지 않았다. 새 native5/collector5와 기존 S1의 고유 TEMP 파일DB20·읽기20/연결 종료를 분리했다. 관리 codec/projection I/O0·원 source/비소유451 raw·부모/실spawn 출처·정적3종을 대조했다.
+
+승인 source 한 span3은 각각 새 TEMP에서 동일 정상 unit/fixture/property/expected를 유지했다. NM01의 cursor factory 설정 제거는 CINV012 control PASS 뒤 첫 direct의 실제 Row/usage1,14·INVALID_RESPONSE/query1로 원 query-prefix assertion FAIL, 두 번째 parity 연결 미도달이었다. NM02의 inner-text raise 제거는 parity control PASS 뒤 schema read가 usage4,212로 반환되고 다음 header LIMIT/usage4,238/query3에 이르러 원 query2 prefix assertion FAIL이었다. 같은 LIMIT 문자열로 검출한 것이 아니고 뒤 usage/raise 단언은 첫 실패 뒤 미도달이다. NM03의 row quota >=→>는 parity control PASS 뒤 usage3,95·accepted end2·실제 D16/matcher1이 되어 원 D160 assertion FAIL이었다.
+
+이 source 민감도는 control3 PASS→목표 assertion FAIL3·MASKED/INVALID/오류0, native 조건별1/3/3·각 준비포함4.218/4.002/3.958초다. 정상701까지707 invocation/704PASS/예정목표FAIL3·2121phase이며 새 의미 분모가 아니다. 도달 근거는 실제 반환/usage/예외와 고정 single-span CFG이고 추가 line-hit trace/profile 계측은 아니다. 후속 guard 도달과 원 site 선행 가림을 구분하며 전역 mutation coverage를 주장하지 않는다.
+
+비작성자 pA는 같은 정확3의 property-first hosted5를 별도 사본에서 실제5 PASS/native5·준비12.275초로 확인했다. 원 wrapper D16 RETURNED3·독립 결과5/원 leaf11·native→D16→Projection identity11·음성prefix/원함수·I/O/정리와 source 부모/실spawn을 대조했다. 정상 R08을 공유 control로, 원 projection 반환 뒤 값/정확 tuple 타입을 유지해 leaf1만 복제한 P1은 기존 identity Counter assertion FAIL, 제품 단계 연결 시도1을 추가한 P2는 local 요청2/실제 allocation1 상태에서 기존 단일 연결 assertion FAIL이었다. 추가 allocation0이며 각 native1/collector1·준비4.753/4.681초, runtime ERROR/SKIP/MASKED/INVALID0이다. 독립7은 정상5+반례2의 조건별 관측이고 source3 site와 합산한 고유 product fault5가 아니다.
+
+[공식 신규 시험 검토](../reviews/g09a-native-memory-d18-review.md)는 report90404d82 raw 그대로 채택했다. 보고서의 X00 인수 대기는 작성 당시 상태이며 root는76seal+final·XML5/1/1/21phase·부모/실spawn·실제 위임·복원·원 결과를 직접 대조해 신규 시험 delta 한정 CLOSED/새OPEN0으로 인수했다. 옛 S1/codec/source·본인 손/포장의 의미나 모든 오류 경로를 자기 재승인하지 않았다.
+
+검토의 추정 경로 읽기 오류1·dataclass import alias 정적 가정 오류1·정상 종료 뒤 기록 key 오기 후처리 오류1은 원본을 보존했다. 마지막 것은 저장 자료 재감사/키 한 곳 정정만 했고 정상 pytest 재실행0이다. 이를 제품 실패나 전체 검토 도구 INVALID0으로 전사하지 않는다. 작성 결합의 원 정상/변이 실패와 D18/D17 사건 이력도 그대로다.
+
+X00 common preliminary2의 원 raw prefix/손·계수/snapshot 전사, root UNIT pin 한 식·tree helper 적응은 비작성자 p8의 정적 CLOSED/OPEN0이다. p8 작성 QA 도구는 X00가 원5 전체 역raw/AST·원 flags/env17/coverage7/wheel87/origin8/smoke 보존과 기존 XML native4/record5 감사만 추가된 것을 확인했다. 저장 기록 도구 점검 양성1/부정4·UNIT 미pin 사전거부는 제품/DB/pytest/full 실행0이다. root XML utf8 선언 오류1과 tree adapter basename count5/실제4 가정 오류1은 각각 보존해 최소 교정했다. 도구 점검이나 pin을 실제 전체 실행으로 부르지 않는다.
+
+이 단위의 정확7은 source0, unit/native fixture/root property와 case/gap·assignments snapshot·공식 검토다. 전체455/비소유448·예상 수집30846을 동결 tree에 결속한다. 이 상태절 작성 시 최종 정확 tree full1회/coverage7/offline wheel Python87·copy/wheel 부모/실spawn origin8와 기존 smoke·범위 commit/push/새SHA CI3는 아직 후속이다. 실제 immutable state/final·tree/ref/run으로 별도 종결하며 자기 SHA 기입을 위한 반복 commit은 만들지 않는다. 전체 G09a/v1·실장비/readonly·안정 snapshot·CURRENT/EMPTY·운영 권위·native allocator 강제상한 완료는 아니다.
