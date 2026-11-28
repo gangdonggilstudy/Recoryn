@@ -177,3 +177,41 @@ source1bf8/unit a871/property10f에서작성자회귀actualFAIL→PASS·신규15
 원151/153부분집합에회귀1을추가한154·원423과합577·full예상30722·formal70/4105/245/보류10불변을유지한다. [현재독립제품검토](../reviews/g09a-supplied-inventory-projection-review.md)의3파일은최종제품/시험후보와byte동일하다. QA도구5의정적인수는완료됐지만실행성공이아니다. 도구검토의root키/import가정오류2도제품/full실패로합치지않고보존했다.
 
 공용상태·H03snapshot·공식review를포함한정확7의451파일/비소유444와단일full30722/coverage7/wheel87·부모/spawn함수6/원3+2·새2·전체메시지/trailer0·범위commit/일반push/실remote/newSHA CI3는이스냅샷시점의후속gate다. 최종tree와실행/인수/실ref/run으로결론을결속하며전체observer/G09a/v1·실장비·운영권위완료는아직아니다.
+
+
+### D17 private main inventory 수집 — 선정 정상 관측, 통합 검토 진행
+
+D16 공급 tuple 검증/투영과 matcher를 보존하고 caller 소유 연결에서 main stamp/schema/table_list/table·index PRAGMA를 읽는 private collector를 추가한다. budget은 exact int1..signed64max 두 필드의 frozen/slots/repr=False 값이며 cursor 전 검증, query별 own cursor finally close, bounded fetchmany/EOF, 누적 row/UTF8 비용, 엄격 description/row/cell 및 raw metadata/bijection/engine/stamp 순서를 검사한다. 실제 D16에 raw facts를 위임하며 기존 결과5/None/오류를 유지한다. 생성된 연결·운영 caller·transaction/handler 설정 변경·snapshot/readonly/ownership/ACK·CURRENT/EMPTY 권위를 제공하지 않는다.
+
+root 승인 private119+감사1=새120, 기존577과 합697이다. formal70/기존 semantic4105/명시 비교245/보류10·fixture/golden은 불변이다. sourceec384a2a/unit8829ee5d와 root companion8beacd0e의 격리 선정 검증에서 작성자120/577/697·각phase/XML1/정적3·실제 parent/spawn/I/O0을 인수했고 신규120 준비포함6.738403초였다. 원 하네스 INVALID3과 정적 준비 오류·원 손 OPEN/정정 이력을 보존한다. 작성자 관측을 비작성자 최종 제품승인이나 전수 검증으로 확대하지 않는다.
+
+독립 실제 제품 검토와 정확 source 단일 변이10의 결과 인수, 공용 상태 및 정확7/452파일·비소유445의 tree 봉인과 full예상30842 단일 실행/coverage7/wheel87·copy/wheel origin8·원 smoke/새2는 아직 후속이다. source/unit/property3+case/gap2+H03 snapshot1+새 공식 review1을 한 원인 단위로 통합한다. 전체 메시지/trailer0·실제 선행CI3·범위 commit/일반 push/실remote/newSHA CI3를 별도로 닫으며 whole observer/G09a/v1·실장비·실제 DB 권위 완료는 아니다.
+
+
+### D17 최종 통합 후보(정확 tree 전체 검증 전)
+
+sourceec384a2a/unit8829ee5d/root8beacd0e에서 비작성자 독립8/결합697의 각phase/XML1·실제 parent/spawn/pytest source·입력불변/I/O0·정적3종을 인수했고 새 제품 OPEN0/수정요청0이다. 독립 empty의 실제 D16/matcher·결과5/반환 identity, protocol E와 읽기 E→close F의 실제 순서를 확인했다. 작성자10은9목표 assertion FAIL/CM05 MASKED1/INVALID0, 독립 stamp/fetch2는 control PASS→목표 assertion FAIL2/새MASKED·INVALID0이다. CM05의 E/F mutant body 미도달은 보존하며 독립2를 그 소급 종결이나 신규 고유 fault site2로 합산하지 않는다.
+
+공식 비작성자 보고는 원 R1 prefix와 독립2 결과를 함께 보존한다. 원 작성 INVALID3·비작성자 후단 감사 오류2·root raw 메시지/format LF 가정 오류와 실제 제품 관측을 구분했다. 공용 preliminary·QA metadata 정정·source pin 값1 delta와 최종 도구/문서 인수도 각각 구분한다. formal70/legacy semantic4105/명시 비교245/보류10·원 fixture/golden 및 새119+감사1/기존577과합697은 불변이다.
+
+목적이 같은 private 구현/회귀/직접 문서 정확7을 한 단위로 통합하고 범위 밖 dirty 문서는 제외한다. 새 revert가 후퇴 단위이며 DB/사용자 파일 migration은 없다. 후속 caller 의존이 생기면 해당 의존을 확인해 회귀/CI로 검증한다. 이 스냅샷은 최종452/비소유445 tree의 full예상30842 단일 실행/coverage7/wheel87·origin8/새smoke2·범위 commit/일반 HTTPS push·실remote/newSHA CI3 완료 선언이 아니다. 전체 observer/G09a/v1·실장비·실제 DB/readonly/snapshot/운영 admission·owner/ACK/native 한도/내구성은 후속이다.
+
+
+### D17 전체 검증 전 계측 gate의 추가 이력
+
+위 unit8829의 정상 선정 검증 스냅샷과 원scope40d3는 그대로 보존한다. 전체 검증 준비에서 시험의 None-only trace 단언이 실제 CTracer와 충돌했고, 원 CINV001이 제품 본문 전에 실패한 기록을 남겼다. 부분선정85% floor의 별도 거부·중간 관측 손실/timeout도 원자료로 남겼으며 전체30842/85% 기준은 완화하지 않았다. source와 semantic oracle는 변경하지 않았다.
+
+FIX1 unit38e의120 nocov/697cov·정적3·source10 변이9목표/CM05 MASKED1은 작성 관측이었다. 독립 CINV001의 실제 pytest PASS와 후단 raw38 위치 감사 실패를 구분했다. coverage multiline 정규화3195/3196/3197→3195를 고정해 saved JSON의 canonical36·원3branch·정상 budget return을 재실행 없이 확인했다. 저장되지 않은 budget-valid 계수는 직접 관측으로 바꾸지 않았다.
+
+그러나 최초 독립 CINV116은 원제품 oracle PASS 뒤 callback 복원 단언에서 실제 call FAIL1이었다. 두 helper는 H→K 각1회 후 H236/176회 재호출·return H를 보였다. 원 CAPABILITY/close identity·source11/global G/map0의 성공으로 최신 local 복원 실패를 가리지 않았다. 원26+self와 R1/작성806을 보존하고, initial 등록frame의 최신 continuation을 not-relaying pop 전에 보존하는 단일 시험 계측 FIX2를 별도 배정했다. 다음 최종 상태절의 정확 hash/독립 재확인 전에는 D17TR-01이나 전체 gate가 닫히지 않는다.
+
+
+### D17 최종 FIX2 선정 경계 종결과 전체검증 후속
+
+sourceec384a2a/root8beacd0e와 손 입력/분모를 보존하고 unitda9d3b71의 initial 등록frame 최신 continuation 보존 한 span을 인수했다. 원38e 역raw/AST·모든 단언/다른 정의가 같고 원scope40d3/helper3e는 실행하지 않았다. 최종hash 작성120nocov/697cov·정적3과 원10 변이9목표/CM05 MASKED1/INVALID0을 확인했다. 같은plugin 작성회귀의 K복원 PASS와 최초 coverage/manual 사전조건 INVALID1은 별도다.
+
+최종hash의 비작성자 기존 CINV001cov/CINV116nocov 각1회는 XML각1/phase각3 PASS·새오류skipxfail/INVALID0이었다. 전자는6.872805초에 실제 CTracer·canonical36/원3branch·budget 정상복귀·global identity/map0을, 후자는1.634567초에 H→K각1/H재호출0/return K/global G와 source11/동일 CAPABILITY·close3264·I/O0을 확인했다. X00은45+self·원e88 rawprefix를 보존한 새공식40de295a·실제JSON/XML을 인수했다. 원 raw38 좌표감사 실패·원38e callback callFAIL/H236·176회·작성오류는 남긴다.
+
+D17TR-01 종결은 이 선정된 실제 CTracer/G·A·B·H→K 경계뿐이며 임의 tracer/모든frame·native driver/파일/WAL/snapshot/owner·ACK/운영입장 권위 승인이 아니다. 원source 검토/독립변이2는 과거조건 증거, 최종unit 독립실행은 기존2뿐이다.119+감사1/기존577/합697·formal70/4105/245/보류10·fixture/golden은 그대로이며 후속 native 후보4는 미실행/별도다.
+
+새 final7-trace-fix2의 정확scope·도구pin/비작성자 상태전사 검토 뒤 실제452/비소유445 tree를 만들고 full예상30842 단일실행·85%/coverage7/wheel87/origin8/smoke를 검증한다. 이 상태snapshot의 전체/게시승인은 아직 후속이며 실제 immutable state/final·commit/tree/message/trailer0·fresh 선행CI3·일반HTTPS push/새동일SHA CI3로 닫는다. 원scope·원자료·무관dirty4/최신H03를 보존하고 전체v1/실장비 완료로 확대하지 않는다.

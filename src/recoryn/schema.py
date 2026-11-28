@@ -3176,3 +3176,170 @@ def _project_supplied_inventory(
     return _SuppliedInventoryProjection(
         logical, logical_rows, engine_rows, normalized, _current_profile_candidate(logical)
     )
+
+
+@_mc_dataclass(frozen=True, slots=True, repr=False)
+class _InventoryReadBudget:
+    max_rows: int
+    max_text_bytes: int
+
+    def __post_init__(self) -> None:
+        _inventory_budget_valid(self)
+
+
+class _InventoryCollectionError(RuntimeError):
+    """A closed collector reason, without source SQL, names or driver messages."""
+
+
+def _inventory_budget_valid(budget: object) -> None:
+    if type(budget) is not _InventoryReadBudget or any(
+        type(value) is not int or not 1 <= value <= 2**63 - 1
+        for value in (budget.max_rows, budget.max_text_bytes)
+    ):
+        raise ValueError("INVALID_INVENTORY_READ_BUDGET")
+
+
+def _inventory_response(condition: bool) -> None:
+    if not condition:
+        raise _InventoryCollectionError("INVALID_RESPONSE")
+
+
+def _inventory_safe_text(value: object, *, name: bool = False) -> bool:
+    return (
+        type(value) is str
+        and (not name or bool(value))
+        and "\0" not in value
+        and not any(0xD800 <= ord(char) <= 0xDFFF for char in value)
+    )
+
+
+def _inventory_read_rows(
+    connection: sqlite3.Connection,
+    sql: str,
+    header: tuple[str, ...],
+    budget: _InventoryReadBudget,
+    usage: list[int],
+) -> tuple[tuple[str, ...], tuple[tuple[Any, ...], ...]]:
+    cursor = connection.cursor()
+    try:
+        cursor.row_factory = None
+        cursor.execute(sql)
+        description = cursor.description
+        if type(description) is not tuple or any(
+            type(column) is not tuple
+            or len(column) != 7
+            or type(column[0]) is not str
+            or any(value is not None for value in column[1:])
+            for column in description
+        ):
+            raise _InventoryCollectionError("CAPABILITY")
+        names = tuple(column[0] for column in description)
+        _inventory_response(all(_inventory_safe_text(name) for name in names))
+        if names != header:
+            raise _InventoryCollectionError("CAPABILITY")
+        usage[1] += sum(len(name.encode("utf8")) for name in names)
+        if usage[1] > budget.max_text_bytes:
+            raise _InventoryCollectionError("LIMIT")
+        result = []
+        while True:
+            chunk = cursor.fetchmany(min(128, budget.max_rows - usage[0] + 1))
+            _inventory_response(type(chunk) is list)
+            if not chunk:
+                break
+            for row in chunk:
+                if usage[0] >= budget.max_rows:
+                    raise _InventoryCollectionError("LIMIT")
+                usage[0] += 1
+                _inventory_response(type(row) is tuple and len(row) == len(header))
+                for cell in row:
+                    _inventory_response(type(cell) in (str, int, type(None)))
+                    if type(cell) is str:
+                        _inventory_response(_inventory_safe_text(cell))
+                        usage[1] += len(cell.encode("utf8"))
+                        if usage[1] > budget.max_text_bytes:
+                            raise _InventoryCollectionError("LIMIT")
+                result.append(row)
+        return names, tuple(result)
+    finally:
+        cursor.close()
+
+
+def _inventory_stamp(rows: tuple[tuple[Any, ...], ...]) -> int:
+    _inventory_response(len(rows) == 1)
+    value = rows[0][0]
+    _inventory_response(type(value) is int and -(2**63) <= value <= 2**63 - 1)
+    return _mc_cast(int, value)
+
+
+def _collect_supplied_inventory(
+    connection: sqlite3.Connection, budget: _InventoryReadBudget, /
+) -> _SuppliedInventoryProjection | None:
+    """Collect caller-view main facts; issue no snapshot, ownership or admission proof."""
+    _inventory_budget_valid(budget)
+    usage = [0, 0]
+
+    def read(sql: str, header: tuple[str, ...]) -> tuple[tuple[Any, ...], ...]:
+        return _inventory_read_rows(connection, sql, header, budget, usage)[1]
+
+    start = _inventory_stamp(read("PRAGMA main.schema_version", ("schema_version",)))
+    objects = read(
+        "SELECT type,name,tbl_name,sql FROM main.sqlite_schema", ("type", "name", "tbl_name", "sql")
+    )
+    for kind, name, owner, sql in objects:
+        _inventory_response(
+            all(_inventory_safe_text(value, name=True) for value in (kind, name, owner))
+        )
+        _inventory_response(sql is None or type(sql) is str)
+    listed = read("PRAGMA main.table_list", ("schema", "name", "type", "ncol", "wr", "strict"))
+    metadata = 0
+    actual = []
+    counts = {}
+    for schema, name, kind, ncol, wr, strict in listed:
+        _inventory_response(
+            all(_inventory_safe_text(value, name=True) for value in (schema, name, kind))
+        )
+        _inventory_response(schema == "main")
+        _inventory_response(type(ncol) is int and 0 <= ncol <= 2**63 - 1)
+        _inventory_response(type(wr) is int and wr in (0, 1))
+        _inventory_response(type(strict) is int and strict in (0, 1))
+        if kind not in ("table", "view"):
+            raise _InventoryCollectionError("UNSUPPORTED_ENGINE")
+        if name == "sqlite_schema":
+            _inventory_response(
+                (schema, name, kind, ncol, wr, strict)
+                == ("main", "sqlite_schema", "table", 5, 0, 0)
+            )
+            metadata += 1
+            continue
+        actual.append((name, kind))
+        counts[name] = ncol
+    expected = [(row[1], row[0]) for row in objects if row[0] in ("table", "view")]
+    _inventory_response(metadata == 1)
+    _inventory_response(len(set(actual)) == len(actual))
+    _inventory_response(len(set(expected)) == len(expected))
+    _inventory_response(sorted(actual) == sorted(expected))
+    evidence = []
+    for name in sorted(row[1] for row in objects if row[0] == "table"):
+        columns = read(
+            f"PRAGMA main.table_xinfo({_quote(name)})",
+            ("cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"),
+        )
+        _inventory_response(len(columns) == counts[name])
+        indexes = read(
+            f"PRAGMA main.index_list({_quote(name)})",
+            ("seq", "name", "unique", "origin", "partial"),
+        )
+        for row in indexes:
+            _inventory_response(_inventory_safe_text(row[1], name=True))
+        infos = []
+        for index_name in sorted(row[1] for row in indexes):
+            info = read(
+                f"PRAGMA main.index_xinfo({_quote(index_name)})",
+                ("seqno", "cid", "name", "desc", "coll", "key"),
+            )
+            infos.append((index_name, info))
+        evidence.append((name, columns, indexes, tuple(infos)))
+    end = _inventory_stamp(read("PRAGMA main.schema_version", ("schema_version",)))
+    if start != end:
+        raise _InventoryCollectionError("SCHEMA_CHANGED")
+    return _project_supplied_inventory(objects, tuple(evidence))

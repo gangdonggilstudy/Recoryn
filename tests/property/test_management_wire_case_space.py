@@ -300,6 +300,16 @@ def _private_supplied_inventory_nodes():
     }
 
 
+def _private_supplied_inventory_collection_nodes():
+    base = "tests/unit/test_schema_catalog.py::"
+    return {
+        base + "test_private_supplied_inventory_collection[CINV" + str(i).zfill(3) + "]"
+        for i in range(1, 120)
+    } | {
+        base + "test_private_supplied_inventory_collection_literal_audit",
+    }
+
+
 def test_management_wire_selected_scope(request):
     own = (
         "tests/unit/test_schema_catalog.py::",
@@ -315,6 +325,7 @@ def test_management_wire_selected_scope(request):
         | _private_current_profile_nodes()
         | _private_schema_read_error_nodes()
         | _private_supplied_inventory_nodes()
+        | _private_supplied_inventory_collection_nodes()
     )
     assert not any(
         item.get_closest_marker("skip") or item.get_closest_marker("xfail")
